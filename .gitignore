@@ -1,0 +1,70 @@
+# Claude Code local settings (machine-specific permission overrides)
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Secrets and vault material
+# ---------------------------------------------------------------------------
+# Never commit decrypted vaults, password files, or extra-vars dumps. The
+# PowerShell shim writes a tmpfs extra-vars file per run; this guards against
+# accidental check-ins if a future shim writes to the repo root by mistake.
+*.vault-password
+.vault_pass*
+vault-password*
+*.extra-vars.json
+*.extra-vars.yml
+*.extra-vars.yaml
+
+# SSH key material — never committed. Inventory and roles reference keys by
+# path, not by value.
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+known_hosts
+
+# ---------------------------------------------------------------------------
+# Ansible runtime artefacts
+# ---------------------------------------------------------------------------
+# Per-host fact cache and retry files written by ansible-playbook on failure.
+*.retry
+.ansible/
+fact_cache/
+
+# Collections and roles installed by ansible-galaxy into the repo. Pin
+# versions in requirements.yml; do not commit fetched bytes.
+collections/ansible_collections/
+roles/external/
+.galaxy_install_info
+
+# Generated inventory — the PowerShell shim derives inventory from the
+# VmProvisioner vault at runtime. The source of truth is the vault, not the
+# generated file.
+inventory/generated/
+inventory/*.generated.*
+
+# ---------------------------------------------------------------------------
+# Python virtualenvs (Ansible is Python; controllers commonly use a venv)
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# Editor and OS noise
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Test output
+# ---------------------------------------------------------------------------
+# Molecule (role tests) and any Pester output from PowerShell shim tests.
+.molecule/
+TestResults.xml
