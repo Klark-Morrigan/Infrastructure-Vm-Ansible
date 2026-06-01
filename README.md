@@ -30,6 +30,20 @@ inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in
 `requirements.yml`. Both stages are idempotent.
 
+## Tests and lint
+
+- [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) -> calls
+  `PowerShell-Common/.github/actions/run-unit-tests/Run-Tests.ps1`.
+- [`scripts/run-tests.sh`](scripts/run-tests.sh) -> calls
+  `GitHub-Common/scripts/run-tests.sh` with
+  `GHCOMMON_TARGET_REPO` pointed at this repo.
+- [`scripts/run-tests.bat`](scripts/run-tests.bat) -> Explorer-click
+  launcher; forwards to `GitHub-Common/scripts/run-tests.bat` with
+  `GHCOMMON_TARGET_REPO` set.
+
+Both shims assume `PowerShell-Common` and `GitHub-Common` are sibling
+checkouts under the same parent directory.
+
 ## Index
 
 - [Current feature: 02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)
