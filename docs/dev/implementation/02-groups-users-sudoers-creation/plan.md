@@ -21,9 +21,10 @@ See [problem.md](problem.md) for context, schema, and rationale.
 ## Step 1 - Repo scaffolding
 
 **Reason:** Get the repo into a state where Ansible can be invoked from
-WSL with the conventions every later step depends on. No behaviour ships
-in this step — it's the file layout and pinned-version baseline so
-nothing later has to discover "where does X live."
+WSL with the conventions every later step depends on, and where CI runs
+green from the very first commit. The CI gate ships in the same step as
+the substrate it guards — per the "CI alongside features" convention,
+no feature lands without the lint coverage that will police it.
 
 **Files**
 
@@ -33,15 +34,21 @@ nothing later has to discover "where does X live."
 - `inventory/.gitkeep` (new) - placeholder so the dir exists.
 - `roles/.gitkeep`, `playbooks/.gitkeep`, `scripts/.gitkeep` (new).
 - `README.md` (new) - one-paragraph stub describing the repo's purpose and pointing at this feature folder. Filled out properly in step 10.
+- `.github/workflows/ci-yaml.yml` (new) - single-job reusable-workflow caller of [GitHub-Common's `ci-yaml.yml`](../../../../GitHub-Common/.github/workflows/ci-yaml.yml). Four lint jobs run against this repo from day one: `actionlint`, `action-validator`, `yamllint`, `ansible-lint`. `actionlint` and `action-validator` exercise the new `ci.yml` itself; `yamllint` covers `requirements.yml`, `ansible.cfg`, and every YAML file added in later steps; `ansible-lint` auto-skips this commit (no `playbooks/` content yet) and starts gating from step 5 onward when the first role lands.
 
 **Behaviour**
 
-None — file presence only. `ansible-playbook --version` invoked manually
-after a venv install should report the pinned version.
+File presence only. Two reproducibility checks tied to this step:
+
+1. `ansible-playbook --version` invoked manually after a venv install (step 2) reports the pinned version from `requirements.txt`.
+2. The first CI run on the branch passes all four jobs. `ansible-lint` reports its auto-skip `::notice::` because no Ansible content is committed yet; the other three lint their respective surfaces clean.
 
 **Tests**
 
-None — covered indirectly by step 9 (smoke test).
+The CI run itself is the test - any finding from `yamllint`,
+`actionlint`, or `action-validator` against the scaffolded files is
+fixed in-line during this step, not relaxed at the workflow layer.
+Smoke-level end-to-end coverage of the substrate stays in step 9.
 
 ---
 
@@ -436,7 +443,7 @@ for "how do I use this."
 - **Config reference** — table of `VmUsersConfig` fields with types and notes.
 - **Bridge contract** — the extra-vars shape (`vm_provisioner_config`, `vm_users_config`) so future feature plans (runners, toolchains) know what they consume.
 - **Repo structure** tree, mirroring Vm-Provisioner's README style.
-- **CI** subsection — placeholder noting CI is added in a later feature.
+- **CI** subsection — documents the `ci-yaml.yml` wired in step 1: it calls [GitHub-Common's `ci-yaml.yml`](../../../../GitHub-Common/.github/workflows/ci-yaml.yml) reusable workflow, which runs `actionlint`, `action-validator`, `yamllint`, and `ansible-lint`. `ansible-lint` auto-detects Ansible content; the other three lint their respective surfaces unconditionally. No repo-local lint configuration files unless a real finding forces one - the shared bar is the bar.
 
 **README contents (per-role)**
 

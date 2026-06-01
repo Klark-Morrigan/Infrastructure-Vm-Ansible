@@ -8,6 +8,7 @@
     - [Controller bootstrap](#controller-bootstrap)
     - [Bash bridge: vault to extra-vars to ansible-playbook](#bash-bridge-vault-to-extra-vars-to-ansible-playbook)
     - [Inventory: YAML regenerated from vault JSON](#inventory-yaml-regenerated-from-vault-json)
+    - [CI: YAML and Ansible lint gate](#ci-yaml-and-ansible-lint-gate)
   - [Role: groups](#role-groups)
   - [Role: users](#role-users)
   - [Role: sudoers](#role-sudoers)
@@ -120,6 +121,23 @@ all:
 | Group | All VMs land in one group `vm_provisioner_hosts`. Per-VM groups can come later when a role needs them. |
 | Unreachable hosts | Inventory does not pre-filter — Ansible's normal reachability handling skips offline hosts with a warning. |
 | Why YAML over a custom Python plugin | The bridge runs every invocation anyway, so regenerating YAML is free, and the generated file is directly inspectable with `cat` while debugging. A custom plugin is the idiomatic Ansible answer but adds a third language (Python) to the repo for no v1 benefit. Migration is tracked in [05 - python inventory plugin](../05-python-inventory-plugin/notes.md). |
+
+#### CI: YAML and Ansible lint gate
+
+A single reusable-workflow caller (`.github/workflows/ci-yaml.yml`) wires
+the repo into [GitHub-Common's `ci-yaml.yml`](https://github.com/VitaliiAndreev/GitHub-Common/blob/master/.github/workflows/ci-yaml.yml)
+so every PR runs the four shared lint jobs: `actionlint`,
+`action-validator`, `yamllint`, `ansible-lint`. The substrate this
+feature ships (YAML inventory, requirements files, playbooks, roles)
+is exactly the surface those linters cover; landing CI in the same
+feature as the substrate keeps the bar synchronised from day one.
+
+| Decision | Value |
+|----------|-------|
+| Where the linters live | Centralised in `GitHub-Common`. This repo holds only the one-line caller, so version bumps and rule changes propagate org-wide via a single source. |
+| Auto-skip semantics | `ansible-lint` skips with a `::notice::` when `ansible.cfg` / `playbooks/` / `roles/` are absent; the other three jobs lint their respective surfaces unconditionally. The first commit of step 1 ships `ansible.cfg`, so `ansible-lint` runs but has no playbooks to lint until step 5. |
+| Repo-local lint config | None. The shared bar is the bar; per-repo `.yamllint` / `.ansible-lint` files only land if a real finding forces a documented relaxation. |
+| Failure surface | A red CI run blocks merge. No bypass, no per-feature suppression. |
 
 ### Role: groups
 
