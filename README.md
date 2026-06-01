@@ -10,6 +10,26 @@ This stub is filled out properly in
 of the current feature. Design history and rationale live under
 [docs/dev/implementation/](docs/dev/implementation/).
 
+## Controller bootstrap
+
+A fresh Windows host reaches the runnable state in one command:
+
+```
+pwsh ./ops/bootstrap-controller.ps1
+```
+
+or double-click
+[`ops/bootstrap-controller.bat`](ops/bootstrap-controller.bat)
+from Explorer (thin launcher: invokes `pwsh` against the `.ps1` and
+holds the window open).
+
+The PowerShell stage ensures WSL2 is installed (delegating to
+`Assert-Wsl2Ready` from `PowerShell.Common`) and then invokes
+[`ops/bootstrap-controller.sh`](ops/bootstrap-controller.sh)
+inside WSL to create the Python venv, install Ansible from
+`requirements.txt`, and pull the Galaxy collections pinned in
+`requirements.yml`. Both stages are idempotent.
+
 ## Index
 
 - [Current feature: 02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)
