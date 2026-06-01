@@ -1,19 +1,24 @@
 @echo off
 setlocal
-rem Explorer-double-click launcher for the bash test runner. The
-rem canonical runner is GitHub-Common\scripts\run-tests.bat, which
-rem resolves Git Bash and forwards to its own run-tests.sh; we point
-rem it at this repo via GHCOMMON_TARGET_REPO so the same single
-rem source of truth lints/tests this repo too.
+rem Explorer-double-click launcher for scripts/run-tests.sh (this
+rem repo's local entry). The local .sh transitively exec's
+rem GitHub-Common's canonical runner with GHCOMMON_TARGET_REPO set, so
+rem the chain is local.bat -> local.sh -> shared engine - one entry
+rem point per layer, no shortcutting.
+rem
+rem _find-bash.bat from GitHub-Common resolves Git Bash robustly and
+rem sets %BASH%; reused rather than duplicated.
 rem
 rem GitHub-Common is expected as a sibling checkout under the same
 rem parent directory (c:\a_Code\GitHub-Common alongside this repo).
 
-rem pushd/popd resolves the trailing `..` so docker mounts and bash
-rem cd targets get an absolute path with no `..` segments.
-pushd "%~dp0.."
-set "GHCOMMON_TARGET_REPO=%CD%"
-popd
+call "%~dp0..\..\GitHub-Common\scripts\_find-bash.bat" || exit /b 1
 
-call "%GHCOMMON_TARGET_REPO%\..\GitHub-Common\scripts\run-tests.bat" %*
-exit /b %errorlevel%
+rem GHCOMMON_NO_PAUSE silences the shared engine's EXIT trap pause;
+rem this .bat holds the window itself with the `pause` below so
+rem Explorer-click users can read the output.
+set GHCOMMON_NO_PAUSE=1
+"%BASH%" "%~dp0run-tests.sh" %*
+set rc=%errorlevel%
+pause
+exit /b %rc%
