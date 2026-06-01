@@ -1,3 +1,4 @@
+---
 # Galaxy collections required by the playbooks and roles in this repo.
 #
 # Pinned to specific versions so a fresh controller bootstrap is
