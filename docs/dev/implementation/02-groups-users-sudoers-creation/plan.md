@@ -2,6 +2,26 @@
 
 See [problem.md](problem.md) for context, schema, and rationale.
 
+## Directory layout (revised)
+
+This plan distinguishes two top-level script directories:
+
+- **`ops/`** - operator-facing entry points. Hand-invoked by a human:
+  `bootstrap-controller`, `setup-secrets`, `create-users`. Each
+  command typically ships as three sibling files - `*.ps1` (or `*.sh`)
+  + `*.bat` Explorer launcher.
+- **`scripts/`** - dev/test runners and bridge internals. Not
+  operator-facing: `run-tests.{ps1,sh,bat}` (delegates to the canonical
+  runners in `PowerShell-Common` and `GitHub-Common`), `run-playbook.sh`
+  (the bash bridge), `_pwsh_bridge.sh` (sourced helper).
+
+This split matches the GH-Common `ci-bash.yml` convention that labels
+`scripts/` as "runner bash" - production operator scripts shouldn't be
+lumped in there. Step 2 was originally implemented under `scripts/`;
+the revised step 2 below now lists the `ops/` paths, and the first act
+of resuming execution is to move the already-shipped files to those
+paths (a `git mv` plus internal-reference fixes - not a redo).
+
 ## Index
 
 - [Step 1 - Repo scaffolding](#step-1---repo-scaffolding)
@@ -74,15 +94,16 @@ runs from Windows; everything else runs inside WSL.
 
 **Files**
 
-- `scripts/bootstrap-controller.ps1` (new). Imports `PowerShell.Common`, calls `Assert-Wsl2Ready` inside a try/catch with the `Wsl2NotReady:` message-prefix branch documented in that cmdlet, then invokes `wsl -- ./scripts/bootstrap-controller.sh` from the repo root. Exits with the bash script's exit code.
-- `scripts/bootstrap-controller.sh` (new). Idempotent. Verifies `python3` available, creates `.venv` if absent, runs `pip install -r requirements.txt`, runs `ansible-galaxy collection install -r requirements.yml`, runs `which pwsh.exe` and fails with a clear message if absent (the bridge depends on it).
-- `Tests/scripts/Bootstrap-Controller.Tests.ps1` (new, Pester) - unit tests for the PS side: mocked `Assert-Wsl2Ready`, asserts the try/catch shape and exit code propagation.
+- `ops/bootstrap-controller.ps1` (new). Imports `PowerShell.Common`, calls `Assert-Wsl2Ready` inside a try/catch with the `Wsl2NotReady:` message-prefix branch documented in that cmdlet, then invokes `wsl -- ./ops/bootstrap-controller.sh` from the repo root. Exits with the bash script's exit code.
+- `ops/bootstrap-controller.sh` (new). Idempotent. Verifies `python3` available, creates `.venv` if absent, runs `pip install -r requirements.txt`, runs `ansible-galaxy collection install -r requirements.yml`, runs `which pwsh.exe` and fails with a clear message if absent (the bridge depends on it).
+- `ops/bootstrap-controller.bat` (new). Thin Explorer-double-click launcher; invokes `pwsh` against the `.ps1` with `-ExecutionPolicy Bypass` and holds the window open with `pause`. Mirrors the `Infrastructure-E2E/agent/setup-secrets.bat` pattern.
+- `Tests/ops/Bootstrap-Controller.Tests.ps1` (new, Pester) - unit tests for the PS side: mocked `Assert-Wsl2Ready`, asserts the try/catch shape and exit code propagation.
 
 **Behaviour (bootstrap-controller.ps1)**
 
 1. `Import-Module PowerShell.Common`.
 2. Try `Assert-Wsl2Ready`; catch `Wsl2NotReady:`-prefixed errors, print the reboot message in yellow, exit 0.
-3. Invoke `wsl -- ./scripts/bootstrap-controller.sh`.
+3. Invoke `wsl -- ./ops/bootstrap-controller.sh`.
 4. Exit with `$LASTEXITCODE`.
 
 **Behaviour (bootstrap-controller.sh)**
@@ -129,8 +150,8 @@ straightforward Ansible task tree on top.
 
 **Files**
 
-- `scripts/run-playbook.sh` (new). Takes one positional arg: the playbook path (e.g. `playbooks/create-users.yml`). Additional args are forwarded to `ansible-playbook`.
-- `scripts/_pwsh_bridge.sh` (new) - sourced helper. Wraps a single function `read_vault_secret <vault-name> <secret-name>` that invokes `pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault <vault-name> -Name <secret-name> -AsPlainText | Out-String"`, strips UTF-8 BOM, validates that the result parses as JSON, returns the JSON on stdout.
+- `scripts/run-playbook.sh` (new). Bridge internal - not operator-facing, hence `scripts/` not `ops/`. Takes one positional arg: the playbook path (e.g. `playbooks/create-users.yml`). Additional args are forwarded to `ansible-playbook`.
+- `scripts/_pwsh_bridge.sh` (new) - sourced helper, internal. Wraps a single function `read_vault_secret <vault-name> <secret-name>` that invokes `pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault <vault-name> -Name <secret-name> -AsPlainText | Out-String"`, strips UTF-8 BOM, validates that the result parses as JSON, returns the JSON on stdout.
 - `Tests/scripts/RunPlaybook.Tests.bats` (new, bats) - smoke tests against a stubbed `pwsh.exe` (a tiny bash script on `$PATH` that prints fixed JSON).
 - `playbooks/_noop.yml` (new) - a single-host `debug: msg="bridge ok"` task used by the smoke test in step 3 and step 9.
 
@@ -188,9 +209,10 @@ script lives in this repo (not Vm-Users) per the problem.md decision.
 
 **Files**
 
-- `scripts/setup-secrets.ps1` (new). Takes `-ConfigFile <path>`. Reads JSON, validates, registers the vault if absent, stores the secret.
-- `scripts/Private/Assert-VmUsersConfig.ps1` (new) - dot-sourced validator. Throws on malformed input; returns the parsed object on success.
-- `Tests/scripts/SetupSecrets.Tests.ps1` (new, Pester) - unit tests for the validator and the orchestration shape (mocked `Set-Secret`/`Get-SecretVault`).
+- `ops/setup-secrets.ps1` (new). Takes `-ConfigFile <path>`. Reads JSON, validates, registers the vault if absent, stores the secret.
+- `ops/setup-secrets.bat` (new). Thin Explorer-launcher; same pattern as `ops/bootstrap-controller.bat` - invokes `pwsh` against the `.ps1`, forwards `%~1` as `-ConfigFile`, holds the window with `pause`.
+- `ops/Private/Assert-VmUsersConfig.ps1` (new) - dot-sourced validator co-located with its single consumer. Throws on malformed input; returns the parsed object on success.
+- `Tests/ops/SetupSecrets.Tests.ps1` (new, Pester) - unit tests for the validator and the orchestration shape (mocked `Set-Secret`/`Get-SecretVault`).
 
 **Behaviour (setup-secrets.ps1)**
 
@@ -355,7 +377,8 @@ by an operator.
 **Files**
 
 - `playbooks/create-users.yml` (new) - one play targeting `vm_provisioner_hosts`, importing `roles/groups`, `roles/users`, `roles/sudoers` in order; tags `groups`, `users`, `sudoers` on each.
-- `scripts/create-users.sh` (new) - one-line wrapper invoking `./scripts/run-playbook.sh playbooks/create-users.yml "$@"`. The `"$@"` lets operators pass `--tags`, `--limit`, `--check`, etc., without modifying the wrapper.
+- `ops/create-users.sh` (new) - one-line operator wrapper invoking `./scripts/run-playbook.sh playbooks/create-users.yml "$@"` (run-playbook.sh stays under `scripts/` because it's a bridge internal). The `"$@"` lets operators pass `--tags`, `--limit`, `--check`, etc., without modifying the wrapper.
+- `ops/create-users.bat` (new) - Explorer launcher; resolves Git Bash via `GitHub-Common/scripts/_find-bash.bat`, then `exec`s `ops/create-users.sh`. Mirrors `scripts/run-tests.bat`'s sibling-find pattern.
 
 **Behaviour (playbook)**
 
@@ -404,9 +427,9 @@ by `Infrastructure-Vm-Provisioner`. No mock can prove this works.
 
 1. Provision one VM via Vm-Provisioner (standard config, no Ansible-managed users yet beyond the cloud-init admin).
 2. Author a minimal `VmUsersConfig` for that VM (one group, two users, one user with sudoersRules).
-3. Run `pwsh ./scripts/setup-secrets.ps1 -ConfigFile <path>`.
-4. Run `pwsh ./scripts/bootstrap-controller.ps1` (on a fresh host) or skip (on a host where WSL is already set up).
-5. Run `wsl ./scripts/create-users.sh -v` (verbose for the recorded transcript).
+3. Run `pwsh ./ops/setup-secrets.ps1 -ConfigFile <path>`.
+4. Run `pwsh ./ops/bootstrap-controller.ps1` (on a fresh host) or skip (on a host where WSL is already set up).
+5. Run `wsl ./ops/create-users.sh -v` (verbose for the recorded transcript).
 6. SSH to the VM and verify: `getent group`, `getent passwd`, `id`, `cat /etc/sudoers.d/<user>`, `visudo -c`.
 7. Re-run step 5; expect `changed: 0` across the board.
 8. Edit one field in the config (e.g. add a supplementary group); re-run; expect `changed: 1` on the user and `changed: 0` elsewhere.
@@ -436,10 +459,12 @@ for "how do I use this."
 - Index of feature folders under `docs/dev/implementation/` for design history.
 - **Quick start** subsection — the actual operator commands:
   ```
-  pwsh ./scripts/bootstrap-controller.ps1
-  pwsh ./scripts/setup-secrets.ps1 -ConfigFile C:\private\vm-users-config.json
-  wsl ./scripts/create-users.sh
+  pwsh ./ops/bootstrap-controller.ps1
+  pwsh ./ops/setup-secrets.ps1 -ConfigFile C:\private\vm-users-config.json
+  wsl ./ops/create-users.sh
   ```
+  Each command also has a sibling `.bat` Explorer launcher under
+  `ops/` for double-click use.
 - **Config reference** — table of `VmUsersConfig` fields with types and notes.
 - **Bridge contract** — the extra-vars shape (`vm_provisioner_config`, `vm_users_config`) so future feature plans (runners, toolchains) know what they consume.
 - **Repo structure** tree, mirroring Vm-Provisioner's README style.
@@ -511,7 +536,7 @@ symmetrically.
 
 - `agent/e2e/vm-users/Set-VmUsersForTest.ps1` (new) - the create-side dispatcher. Takes `-UsersFlow`, `-UsersPath`, `-AnsiblePath`, the VM definition, the entry to write. Switches on `-UsersFlow`:
   - `custom-powershell` → invokes `& "$UsersPath/hyper-v/ubuntu/create-users.ps1"` exactly as `Invoke-VmUsersTest` does today.
-  - `ansible` → invokes `wsl --cd $AnsiblePath -- ./scripts/create-users.sh` and propagates `$LASTEXITCODE`.
+  - `ansible` → invokes `wsl --cd $AnsiblePath -- ./ops/create-users.sh` and propagates `$LASTEXITCODE`.
   - Any other value throws with the allowed list named.
 - `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` (modified) - extract the existing inline `create-users.ps1` invocation into `Set-VmUsersForTest`. Add `[ValidateSet('custom-powershell','ansible')] [string] $UsersFlow = 'ansible'` and `[string] $AnsiblePath` parameters. Because the default flow now requires `AnsiblePath`, the parameter chain validates it at agent startup (see below). The teardown half is **unchanged** — it still calls `remove-users.ps1` regardless of flow. Feature 03 introduces the remove-side fork.
 - `agent/e2e/vm-users/Start-VmUsersTest.ps1` (modified) - add `-UsersFlow` and `-AnsiblePath` parameters with the same defaults and forward.
@@ -551,7 +576,7 @@ function Set-VmUsersForTest {
             if (-not $AnsiblePath) {
                 throw "UsersFlow=ansible requires -AnsiblePath"
             }
-            & wsl --cd $AnsiblePath -- ./scripts/create-users.sh
+            & wsl --cd $AnsiblePath -- ./ops/create-users.sh
             if ($LASTEXITCODE -ne 0) {
                 throw "Ansible create-users.sh exited $LASTEXITCODE"
             }

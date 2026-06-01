@@ -53,7 +53,7 @@ from the same vault.
 ### Repo substrate (introduced by this feature)
 
 The substrate is single-purpose: turn an operator's
-`wsl ./scripts/create-users.sh` invocation into an `ansible-playbook`
+`wsl ./ops/create-users.sh` invocation into an `ansible-playbook`
 invocation that runs against the right hosts with the right vars, on a
 controller that has Ansible installed. Three pieces.
 
@@ -65,8 +65,8 @@ boundary:
 
 | Script | Lang | Runs from | Purpose |
 |--------|------|-----------|---------|
-| `scripts/bootstrap-controller.ps1` | PowerShell | Windows | Calls `Assert-Wsl2Ready` from `PowerShell.Common` to ensure WSL2 is installed and a distro is registered, then invokes the inside-WSL setup. WSL detection and install logic is **not** reimplemented here — `Assert-Wsl2Ready` already handles install-if-missing + reboot-required messaging + the `Wsl2NotReady:` catch contract used elsewhere in the org's repos. |
-| `scripts/bootstrap-controller.sh` | bash | inside WSL | Creates the repo-local Python venv, installs Ansible, installs Galaxy collections. Operators can run this directly if WSL is already known to be present. |
+| `ops/bootstrap-controller.ps1` | PowerShell | Windows | Calls `Assert-Wsl2Ready` from `PowerShell.Common` to ensure WSL2 is installed and a distro is registered, then invokes the inside-WSL setup. WSL detection and install logic is **not** reimplemented here — `Assert-Wsl2Ready` already handles install-if-missing + reboot-required messaging + the `Wsl2NotReady:` catch contract used elsewhere in the org's repos. |
+| `ops/bootstrap-controller.sh` | bash | inside WSL | Creates the repo-local Python venv, installs Ansible, installs Galaxy collections. Operators can run this directly if WSL is already known to be present. |
 
 | Decision | Value |
 |----------|-------|
@@ -186,12 +186,14 @@ failure.
 ### Operator entry point and vault setup in this repo
 
 The operator-facing surface for the new code path lives in
-`Infrastructure-VM-Ansible/scripts/`:
+`Infrastructure-VM-Ansible/ops/`. `ops/` is reserved for hand-invoked
+operator commands; bridge internals and dev/test runners stay under
+`scripts/` (see plan.md's "Directory layout" preamble).
 
 | New script | Lang | Purpose |
 |------------|------|---------|
-| `scripts/create-users.sh` | bash | One-line wrapper that invokes `./scripts/run-playbook.sh playbooks/create-users.yml` with sensible defaults. Operators run it from inside WSL, or from Windows as `wsl ./scripts/create-users.sh`. No PowerShell layer — the rest of this repo is bash + WSL + Ansible, and an outer PS wrapper would add a process boundary for no benefit. |
-| `scripts/setup-secrets.ps1` | PowerShell | Registers the `VmUsers` vault and stores `VmUsersConfig`. Must be PowerShell — `Microsoft.PowerShell.SecretStore` is a .NET module whose vault is encrypted under Windows DPAPI bound to the operator's Windows user account. Bash (even from WSL) cannot register or write to a SecretStore vault. Operators run it from Windows: `pwsh scripts/setup-secrets.ps1`. |
+| `ops/create-users.sh` | bash | One-line wrapper that invokes `./scripts/run-playbook.sh playbooks/create-users.yml` with sensible defaults. Operators run it from inside WSL, or from Windows as `wsl ./ops/create-users.sh`. No PowerShell layer — the rest of this repo is bash + WSL + Ansible, and an outer PS wrapper would add a process boundary for no benefit. |
+| `ops/setup-secrets.ps1` | PowerShell | Registers the `VmUsers` vault and stores `VmUsersConfig`. Must be PowerShell — `Microsoft.PowerShell.SecretStore` is a .NET module whose vault is encrypted under Windows DPAPI bound to the operator's Windows user account. Bash (even from WSL) cannot register or write to a SecretStore vault. Operators run it from Windows: `pwsh ops/setup-secrets.ps1`. |
 
 `Infrastructure-Vm-Users` is **not touched** by this feature. Its scripts
 keep working as before. Both code paths coexist during the lifetime of
@@ -246,14 +248,14 @@ graph TD
     end
 
     subgraph Entry ["Infrastructure-VM-Ansible operator entry (new, this feature)"]
-        SH["scripts/create-users.sh\n(bash, calls bridge)"]
-        SS["scripts/setup-secrets.ps1\n(PS, SecretStore is Windows-only)"]
+        SH["ops/create-users.sh\n(bash, calls bridge)"]
+        SS["ops/setup-secrets.ps1\n(PS, SecretStore is Windows-only)"]
     end
 
     subgraph Substrate ["Infrastructure-VM-Ansible substrate (new, this feature)"]
-        BOOTPS["scripts/bootstrap-controller.ps1\n(Windows: install WSL if absent)"]
-        BOOT["scripts/bootstrap-controller.sh\n(inside WSL: venv + ansible + galaxy)"]
-        BR["scripts/run-playbook.sh\n(bash bridge)"]
+        BOOTPS["ops/bootstrap-controller.ps1\n(Windows: install WSL if absent)"]
+        BOOT["ops/bootstrap-controller.sh\n(inside WSL: venv + ansible + galaxy)"]
+        BR["scripts/run-playbook.sh\n(bash bridge, internal)"]
         INV["jq-generated hosts.yml\n(vmName -> SSH host)"]
     end
 
@@ -299,7 +301,7 @@ sequenceDiagram
     participant Ans as ansible-playbook
     participant Vm as VM
 
-    Op->>Sh: wsl ./scripts/create-users.sh
+    Op->>Sh: wsl ./ops/create-users.sh
     Sh->>Br: run-playbook.sh create-users.yml
     Br->>Pw: pwsh.exe Get-VmProvisionerConfig
     Pw->>Sec: read vault
