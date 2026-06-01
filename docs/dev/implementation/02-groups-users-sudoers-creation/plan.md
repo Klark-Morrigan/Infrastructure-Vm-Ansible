@@ -137,59 +137,164 @@ conditionals.)
 
 **Reason:** The single piece every later workflow depends on. Once this
 works against a no-op playbook, every subsequent role and playbook is a
-straightforward Ansible task tree on top.
+straightforward Ansible task tree on top. The bridge is split into four
+single-purpose scripts so each piece is independently testable (only its
+own external boundary stubbed) and the orchestrator stays a thin wiring
+layer; external contract — extra-vars shape, inventory shape, vault
+names, file permissions — does not depend on the partitioning.
 
 **Decisions locked**
 
+Carried over from the original step 3 design:
+
 - The bridge reads `VmProvisionerConfig` and `VmUsersConfig` from inside
   WSL by invoking `pwsh.exe` on the Windows host. UTF-8 BOM is stripped
-  centrally in the bridge.
-- Both the extra-vars file and the generated `hosts.yml` live in a
-  single per-invocation `mktemp -d` directory under `$TMPDIR`. A
+  centrally in the vault reader.
+- All per-invocation artefacts (vault payloads, inventory, extra-vars)
+  live in a single `mktemp -d` directory under `$TMPDIR`. A
   `trap 'rm -rf "$tmpdir"' EXIT` removes the whole directory on any
   exit path.
-- `chmod 700` on the tmpdir, `chmod 600` on the files. Belt-and-braces
-  against a misconfigured tmpfs.
+- `chmod 700` on the tmpdir, `chmod 600` on every file inside.
+  Belt-and-braces against a misconfigured tmpfs.
+
+New to this partitioning:
+
+- **Naming convention** for the helpers: kebab-case, verb-plus-noun (per
+  CLAUDE.md). No leading-underscore "internal" marker — each helper has
+  a documented contract and dedicated bats coverage, so the old
+  `_pwsh_bridge.sh` underscore is dropped.
+- **I/O contracts.** The three pure helpers read input from stdin or
+  explicit file paths and write output to stdout. Secrets never go on
+  argv (visible to `ps`); they flow as stdin or as files under the
+  chmod-700 tmpdir.
+- **Inventory format.** JSON, written as `$tmpdir/hosts.json`. Ansible
+  accepts JSON inventory natively, so emitting JSON via `jq` avoids
+  pulling in `yq` as a hard dependency.
 
 **Files**
 
-- `scripts/run-playbook.sh` (new). Bridge internal - not operator-facing, hence `scripts/` not `ops/`. Takes one positional arg: the playbook path (e.g. `playbooks/create-users.yml`). Additional args are forwarded to `ansible-playbook`.
-- `scripts/_pwsh_bridge.sh` (new) - sourced helper, internal. Wraps a single function `read_vault_secret <vault-name> <secret-name>` that invokes `pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault <vault-name> -Name <secret-name> -AsPlainText | Out-String"`, strips UTF-8 BOM, validates that the result parses as JSON, returns the JSON on stdout.
-- `Tests/scripts/run-playbook.bats` (new, bats) - smoke tests against a stubbed `pwsh.exe` (a tiny bash script on `$PATH` that prints fixed JSON). File name mirrors the target script per the `GitHub-Common` bats convention (`<script-name>.bats`).
-- `Tests/playbooks/_noop.yml` (new) - a single-host `debug: msg="bridge ok"` task used by the bats smoke test in step 3. Lives under `Tests/` because it is a test fixture, not operator-facing content; the bats setup transplants it into a throwaway repo tree at the path the bridge expects. The step-12 real-VM smoke uses `create-users.yml`, not this fixture.
+- `scripts/read-vault-config.sh` (new) — vault reader. **Args:** `<vault-name> <secret-name>`. Shells out to `pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault '<vault>' -Name '<secret>' -AsPlainText | Out-String"`, strips CRLF and UTF-8 BOM, validates the payload parses as JSON via `jq empty`, emits the payload on stdout. Non-zero exit with `<vault>/<secret>` named in the message on any failure (pwsh non-zero, empty payload, malformed JSON). Stdout-only output keeps it composable with `$(...)` and redirects.
+- `scripts/build-inventory.sh` (new) — pure transform. **Args:** none. **Stdin:** `vm_provisioner_config` JSON (array). **Stdout:** Ansible JSON inventory with group `vm_provisioner_hosts`, host key `vmName`, per-host vars `ansible_host` / `ansible_user` / `ansible_become: true` / `ansible_become_method: sudo` / `ansible_become_pass`. Pure `jq` pipeline; no I/O to pwsh; deterministic output for a given input.
+- `scripts/build-extra-vars.sh` (new) — pure transform. **Args:** `--provisioner-config <path> --users-config <path>` (file paths, not values, so secrets stay off argv). **Stdout:** `{"vm_provisioner_config": <provisioner>, "vm_users_config": <users>}`. Pure `jq` composition.
+- `scripts/run-playbook.sh` (new, thin) — orchestrator. **Args:** `<playbook-path> [forwarded args...]`. Validates args, sets up the tmpdir + EXIT trap, activates the venv, drives the three helpers in order, then dispatches `ansible-playbook`. Forwarded args follow the playbook path so operators can pass `--tags`, `--limit`, `--check`, etc. unchanged.
+- `Tests/scripts/read-vault-config.bats` (new) — covers the vault reader in isolation with a stubbed `pwsh.exe` on PATH.
+- `Tests/scripts/build-inventory.bats` (new) — covers the inventory transform with table-driven fixtures (no stubs needed; pure stdin → stdout).
+- `Tests/scripts/build-extra-vars.bats` (new) — covers the extra-vars transform with file fixtures.
+- `Tests/scripts/run-playbook.bats` (new, slim) — covers orchestration only: arg validation, missing playbook, tmpdir lifecycle, dispatch contract. Pwsh, ansible-playbook, and the three sibling scripts are stubbed because their own bats files cover their internals.
+- `Tests/playbooks/_noop.yml` (new) — a single-host `debug: msg="bridge ok"` task used by `run-playbook.bats`. Lives under `Tests/` because it is a test fixture, not operator-facing content; the bats setup transplants it into a throwaway repo tree at the path the bridge expects. The step-12 real-VM smoke uses `create-users.yml`, not this fixture.
+
+**Behaviour (read-vault-config.sh)**
+
+1. Argument count check; fail with usage on fewer than two args.
+2. `out=$(pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault '$1' -Name '$2' -AsPlainText | Out-String")` — single subshell, capture stderr too.
+3. Strip CR (pwsh emits CRLF), strip leading UTF-8 BOM, trim trailing newlines.
+4. Empty payload → non-zero exit, message names vault/secret.
+5. `printf '%s' "$out" | jq empty` → invalid JSON → non-zero exit, message names vault/secret.
+6. Else `printf '%s' "$out"` on stdout, exit 0.
+
+**Behaviour (build-inventory.sh)**
+
+1. Read all of stdin into a variable.
+2. `jq` pipeline: array of VM objects → `{all: {children: {vm_provisioner_hosts: {hosts: <map>}}}}` keyed by `vmName`.
+3. Empty input array → `hosts: {}` (the play recap will show zero hosts; not the inventory builder's job to error).
+4. Missing required field on any VM (no `vmName`, `ipAddress`, `username`, `password`) → non-zero exit with the offending array index named.
+
+**Behaviour (build-extra-vars.sh)**
+
+1. Flag parsing; both `--provisioner-config` and `--users-config` required; fail with usage otherwise.
+2. Each file must exist and parse as JSON; reject with a named error otherwise.
+3. `jq -n --slurpfile p <provisioner> --slurpfile u <users> '{vm_provisioner_config: $p[0], vm_users_config: $u[0]}'` → stdout.
 
 **Behaviour (run-playbook.sh)**
 
-1. `set -euo pipefail`. Require one playbook-path arg; reject otherwise.
-2. Activate `.venv` (`source .venv/bin/activate`).
-3. `tmpdir=$(mktemp -d -t vm-ansible.XXXX)`; `chmod 700 "$tmpdir"`; `trap 'rm -rf "$tmpdir"' EXIT`.
-4. Source `_pwsh_bridge.sh`.
-5. Read `VmProvisionerConfig` from `VmProvisioner` vault. Read `VmUsersConfig` from `VmUsers` vault. Both via `read_vault_secret`.
-6. Compose the extra-vars JSON: `{"vm_provisioner_config": <provisioner JSON>, "vm_users_config": <users JSON>}`. Write to `$tmpdir/extra-vars.json` with `chmod 600`.
-7. Run a `jq` pipeline against `vm_provisioner_config` to write `$tmpdir/hosts.yml` (shape per problem.md). Use `yq` if available; otherwise emit JSON inventory (Ansible accepts both natively) as `$tmpdir/hosts.json`. Document the format chosen.
-8. Invoke `ansible-playbook -i "$tmpdir/hosts.yml" --extra-vars "@$tmpdir/extra-vars.json" "$playbook_path" "$@"`.
-9. Exit with the playbook's exit code.
-
-**Behaviour (_pwsh_bridge.sh: read_vault_secret)**
-
-1. `out=$(pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault '$1' -Name '$2' -AsPlainText | Out-String")` — single subshell.
-2. Strip leading UTF-8 BOM (`sed '1s/^\xEF\xBB\xBF//'`).
-3. Validate JSON: `echo "$out" | jq empty` — fail loudly with a message naming the vault/secret if invalid.
-4. Print on stdout. Caller captures.
+1. `set -euo pipefail`; one positional arg required (the playbook path); fail with usage otherwise; reject if the playbook file is missing.
+2. `tmpdir=$(mktemp -d -t vm-ansible.XXXXXX)`; `chmod 700 "$tmpdir"`; `trap 'rm -rf "$tmpdir"' EXIT`.
+3. `source .venv/bin/activate` (fail-fast with the bootstrap hint if absent).
+4. `scripts/read-vault-config.sh VmProvisioner VmProvisionerConfig > "$tmpdir/provisioner.json"`; `chmod 600`.
+5. `scripts/read-vault-config.sh VmUsers VmUsersConfig > "$tmpdir/users.json"`; `chmod 600`.
+6. `scripts/build-inventory.sh < "$tmpdir/provisioner.json" > "$tmpdir/hosts.json"`; `chmod 600`.
+7. `scripts/build-extra-vars.sh --provisioner-config "$tmpdir/provisioner.json" --users-config "$tmpdir/users.json" > "$tmpdir/extra-vars.json"`; `chmod 600`.
+8. `cd` repo root; `ansible-playbook -i "$tmpdir/hosts.json" --extra-vars "@$tmpdir/extra-vars.json" "$playbook_path" "$@"`.
+9. Exit with the playbook's exit code (trap cleans up regardless).
 
 **Tests (bats)**
 
-- `pwsh.exe` stub returns valid JSON → bridge writes the expected `extra-vars.json` and `hosts.yml`, invokes the no-op playbook successfully, exits 0, and the tmpdir is gone after exit.
-- `pwsh.exe` stub returns malformed JSON → bridge fails loudly naming the vault/secret; tmpdir is still cleaned up.
-- `pwsh.exe` stub returns text with a BOM → bridge strips it; downstream `jq` succeeds.
-- Bridge invoked with no playbook arg → fails with a usage message; tmpdir never created.
-- `pwsh.exe` exits non-zero → bridge surfaces the error and exits non-zero; tmpdir is cleaned up.
+`read-vault-config.bats` — stubbed `pwsh.exe`:
+
+- Two args required → usage error otherwise.
+- Stub returns valid JSON → script prints the payload to stdout, exit 0.
+- Stub returns valid JSON with a leading UTF-8 BOM → script strips it; downstream `jq empty` succeeds.
+- Stub returns CRLF line endings → stripped; output is canonical.
+- Stub returns empty string → non-zero exit, message names vault/secret.
+- Stub returns malformed JSON → non-zero exit, message names vault/secret.
+- Stub exits non-zero → script surfaces non-zero, message names vault/secret.
+
+`build-inventory.bats` — fixtures only, no stubs:
+
+- Empty array → `{all: {children: {vm_provisioner_hosts: {hosts: {}}}}}`.
+- Single VM → expected shape with all five per-host vars.
+- Multi-VM → all hosts present, keyed by `vmName`, ordering deterministic.
+- VM missing `vmName` (or any other required field) → non-zero exit naming the offending index and field.
+
+`build-extra-vars.bats` — file fixtures only:
+
+- Both flags + valid files → expected `{vm_provisioner_config, vm_users_config}` JSON.
+- Missing either flag → usage error.
+- File path that does not exist → named error.
+- File present but not JSON → named error.
+
+`run-playbook.bats` — stubbed boundaries (`pwsh.exe`, `ansible-playbook`, plus the three sibling scripts as no-op stubs that drop the expected files):
+
+- No playbook arg → usage error; tmpdir never created.
+- Missing playbook file → named error.
+- Happy path → all three siblings invoked in order; `ansible-playbook` invoked with `-i tmpdir/hosts.json --extra-vars @tmpdir/extra-vars.json <playbook> <forwarded args>`; exit 0.
+- Tmpdir removed after a successful run.
+- Tmpdir removed when a sibling script fails mid-pipeline.
 
 **README update**
 
-Add a "Bridge contract" subsection in step-13 README work documenting the
+Refresh the "Bridge contract" subsection added during step 3 to enumerate
+the four scripts with a one-line responsibility each. External contract —
 extra-vars shape (`vm_provisioner_config`, `vm_users_config` as top-level
-keys), so later playbooks (runners, toolchains) know the input shape.
+keys) and inventory shape (group `vm_provisioner_hosts`, host key
+`vmName`) — does not change with the partitioning, so later playbooks
+(runners, toolchains) still consume the same inputs.
+
+**Diagram**
+
+```mermaid
+flowchart LR
+    subgraph orch ["run-playbook.sh (orchestrator)"]
+        TD[mktemp tmpdir<br/>chmod 700<br/>trap EXIT]
+        VENV[source .venv/bin/activate]
+        AP[ansible-playbook -i hosts.json<br/>--extra-vars @extra-vars.json<br/>playbook ...]
+    end
+
+    subgraph helpers ["scripts/ helpers (each independently testable)"]
+        RV[read-vault-config.sh<br/>vault, secret -> stdout JSON]
+        BI[build-inventory.sh<br/>stdin JSON -> stdout JSON]
+        BE[build-extra-vars.sh<br/>--provisioner --users -> stdout JSON]
+    end
+
+    subgraph ext ["external boundaries"]
+        PWSH["pwsh.exe<br/>Get-Secret"]
+    end
+
+    TD --> VENV --> RV
+    RV -- stdout --> P[(tmpdir/provisioner.json)]
+    RV -- stdout --> U[(tmpdir/users.json)]
+    RV -- shell out --> PWSH
+
+    P -- stdin --> BI
+    BI -- stdout --> H[(tmpdir/hosts.json)]
+
+    P --> BE
+    U --> BE
+    BE -- stdout --> X[(tmpdir/extra-vars.json)]
+
+    H --> AP
+    X --> AP
+```
 
 ---
 
