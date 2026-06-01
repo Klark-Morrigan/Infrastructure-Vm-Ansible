@@ -32,6 +32,22 @@ inside WSL to create the Python venv, install Ansible from
 
 ## Tests and lint
 
+CI is wired to two reusable workflows; nothing is copied per-repo:
+
+- [`.github/workflows/ci-powershell.yml`](.github/workflows/ci-powershell.yml)
+  -> `PowerShell-Common/.github/workflows/ci-powershell.yml@master`
+  (Pester unit tests + `lint-no-bare-return-empty-array`).
+- [`.github/workflows/ci-bash.yml`](.github/workflows/ci-bash.yml)
+  -> `GitHub-Common/.github/workflows/ci-bash.yml@master` (shellcheck
+  on production / runner bash + `*.bats` suites + `+x` bit check).
+- [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml)
+  -> `GitHub-Common/.github/workflows/ci-yaml.yml@master` (yamllint,
+  actionlint, action-validator, ansible-lint).
+
+The same checks run locally via thin shims that delegate to the
+canonical runners in the sibling repos (so a fix to the CI logic
+lands in one place):
+
 - [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) -> calls
   `PowerShell-Common/.github/actions/run-unit-tests/Run-Tests.ps1`.
 - [`scripts/run-tests.sh`](scripts/run-tests.sh) -> calls
