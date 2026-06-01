@@ -1,0 +1,6 @@
+# Python dependencies for the Ansible controller venv.
+#
+# Pin ansible-core (not the full `ansible` package) — we install Galaxy
+# collections explicitly via requirements.yml, so the batteries-included
+# meta-package would only add untracked surface area.
+ansible-core==2.18.1
