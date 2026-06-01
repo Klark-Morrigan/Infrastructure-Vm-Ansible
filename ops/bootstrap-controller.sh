@@ -35,6 +35,15 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
+# jq is required by the bash bridge (run-playbook.sh) for vault-payload
+# validation and inventory generation. Same fail-loud-with-the-fix-line
+# pattern as the python3 check above - the WSL Ubuntu default image
+# does not ship jq.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "jq not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y jq" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # 2. Venv create-or-reuse. The existence check pairs with a version
 #    probe so a stale venv (wrong Python major.minor) is recreated
@@ -90,3 +99,4 @@ echo "Controller bootstrap complete:"
 echo "  Python : $("$venv_dir/bin/python" --version)"
 echo "  Ansible: $("$venv_dir/bin/ansible" --version | head -n 1)"
 echo "  pwsh.exe: reachable"
+echo "  jq     : $(jq --version)"
