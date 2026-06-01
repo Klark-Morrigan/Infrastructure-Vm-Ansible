@@ -56,6 +56,11 @@ lands in one place):
 - [`scripts/run-tests.bat`](scripts/run-tests.bat) -> Explorer-click
   launcher; forwards to `GitHub-Common/scripts/run-tests.bat` with
   `GHCOMMON_TARGET_REPO` set.
+- [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) /
+  [`scripts/fix-permissions.bat`](scripts/fix-permissions.bat) ->
+  forward to `GitHub-Common/scripts/fix-permissions.{sh,bat}` to
+  re-stage `+x` on tracked `*.sh` files that lost it (heals what the
+  `check-sh-executable` CI gate flags).
 
 Both shims assume `PowerShell-Common` and `GitHub-Common` are sibling
 checkouts under the same parent directory.
