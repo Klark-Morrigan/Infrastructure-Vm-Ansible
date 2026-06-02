@@ -18,27 +18,29 @@ set -euo pipefail
 readonly EXPECTED_PYTHON_MAJOR_MINOR="3"
 
 # Anchor every path to the repo root so the script works regardless of
-# the caller's working directory.
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# the caller's working directory. Parameter expansion (rather than
+# `dirname`) keeps the script working even when PATH is locked down
+# enough that external utilities are unreachable, which matters for the
+# bats harness that scrubs PATH to exercise the absent-tool branches.
+script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
 
 venv_dir="$repo_root/.venv"
 
+# shellcheck source=ops/_ensure-apt-command.sh
+source "$script_dir/_ensure-apt-command.sh"
+
 # ---------------------------------------------------------------------------
-# 1. Python availability check. Fail loudly with the apt hint rather
-#    than a bare "python3: command not found" - the WSL Ubuntu default
-#    image historically did not ship python3 in every release.
+# 1. Python availability. python3 plus python3-venv are the foundation for
+#    everything below - if neither is present, the rest of the bootstrap
+#    has nothing to land on.
 # ---------------------------------------------------------------------------
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y python3 python3-venv" >&2
-    exit 1
-fi
+ensure_apt_command python3 python3 python3-venv
 
 # jq is required by the bash bridge (run-playbook.sh) for vault-payload
-# validation and inventory generation. Same fail-loud-with-the-fix-line
-# pattern as the python3 check above - the WSL Ubuntu default image
-# does not ship jq.
+# validation and inventory generation. The WSL Ubuntu default image does
+# not ship jq.
 if ! command -v jq >/dev/null 2>&1; then
     echo "jq not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y jq" >&2
     exit 1

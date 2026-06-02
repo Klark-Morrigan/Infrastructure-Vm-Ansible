@@ -32,6 +32,12 @@ inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in
 `requirements.yml`. Both stages are idempotent.
 
+When `python3` is absent the bash stage installs it (plus
+`python3-venv`) via `sudo apt-get`; the existing
+`sudo apt-get install -y python3 python3-venv` hint stays as the
+fallback path for when the install itself cannot proceed (no `sudo`,
+`apt-get` missing, offline, apt lock).
+
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and

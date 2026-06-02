@@ -5,10 +5,10 @@
 # in isolation (the install steps themselves are covered end-to-end by
 # the step-13 smoke test, not here).
 #
-# Strategy: run the real script with a curated PATH that contains
-# only per-test stubs plus a minimal-bin dir holding the few external
-# commands the script needs before its gates fire (just `dirname` at
-# present; cd / pwd / command / echo / exit are bash builtins).
+# Strategy: run the real script with a curated PATH that contains only
+# per-test stubs. The script anchors paths via bash parameter expansion
+# and uses only builtins (command, cd, pwd, source) before its presence
+# gates fire, so no external bin dir needs to be on the script's PATH.
 # Crucially, /usr/bin and /bin are NOT on that PATH, because on
 # ubuntu-latest CI runners /usr/bin/python3 and /usr/bin/jq exist and
 # would let the gates fall through. The test harness itself keeps its
@@ -34,22 +34,15 @@ setup() {
 
     TEST_TMP="$(mktemp -d -t bootstrapCtl.XXXXXX)"
     STUBS="${TEST_TMP}/stubs"
-    MINIMAL_BIN="${TEST_TMP}/minimal-bin"
-    mkdir -p "${STUBS}" "${MINIMAL_BIN}"
-
-    # Symlink the small set of external commands the script invokes
-    # before its presence gates fire. Anything not symlinked here is
-    # invisible to the script under test, which is what makes the
-    # absent-tool branches fire on CI runners that ship python3/jq
-    # pre-installed.
-    for cmd in dirname; do
-        src="$(command -v "${cmd}")"
-        [[ -n "${src}" ]] && ln -sf "${src}" "${MINIMAL_BIN}/${cmd}"
-    done
+    mkdir -p "${STUBS}"
 
     # SCRIPT_PATH is the PATH passed to the script's subprocess (via
-    # env on each `run`). Stubs first so seed_stub overrides win.
-    SCRIPT_PATH="${STUBS}:${MINIMAL_BIN}"
+    # env on each `run`). The script itself anchors paths via bash
+    # parameter expansion and uses only builtins (command, cd, pwd,
+    # source) before its presence gates fire, so no external bin dir
+    # needs to be on this PATH for the gates to be reached; stubs are
+    # the only thing here.
+    SCRIPT_PATH="${STUBS}"
 }
 
 teardown() {
@@ -69,6 +62,48 @@ STUB
     chmod +x "${STUBS}/${name}"
 }
 
+# seed_apt_install_stub <exit_code> - drops sudo + apt-get stubs that
+# simulate a `sudo apt-get install -y <pkgs...>` call. On the install
+# subcommand each named package is dropped as an executable stub into
+# STUBS, so the script's post-install presence re-check finds it on
+# PATH. The exit code argument controls whether the simulated install
+# itself succeeds, exercising the install-or-hint fallback shape.
+seed_apt_install_stub() {
+    local rc="$1"
+    # Stubs hard-code the absolute path to bash captured during setup
+    # so they do not depend on `env` or `bash` being on the scrubbed
+    # PATH the script under test runs with. On Windows git-bash the
+    # bash binary cannot be symlinked into a tmp dir (it would lose
+    # access to its msys2 shared libraries), so the only portable
+    # option is an absolute-path shebang.
+    cat >"${STUBS}/apt-get" <<APT
+#!${BASH_BIN}
+# subcommand is the first positional arg (sudo strips its own flags
+# before exec). 'update' is a no-op with the configured rc; 'install'
+# additionally materialises the requested package stubs so the script
+# under test's post-install presence re-check finds them on PATH.
+sub="\$1"
+shift
+if [[ "\$sub" == "install" ]]; then
+    while [[ "\$#" -gt 0 && "\$1" == -* ]]; do shift; done
+    for pkg in "\$@"; do
+        printf '#!%s\nexit 0\n' "${BASH_BIN}" >"${STUBS}/\$pkg"
+        chmod +x "${STUBS}/\$pkg"
+    done
+fi
+exit ${rc}
+APT
+    chmod +x "${STUBS}/apt-get"
+
+    cat >"${STUBS}/sudo" <<SUDO
+#!${BASH_BIN}
+# Pass-through: drop the sudo invocation and exec the rest so the
+# apt-get stub above is what actually runs.
+exec "\$@"
+SUDO
+    chmod +x "${STUBS}/sudo"
+}
+
 # run_script - invoke the script under test with the scrubbed PATH.
 # `env -i` would strip too much (PATH would survive only because we
 # re-pass it, but other vars like HOME, USER may matter to bash); use
@@ -78,16 +113,23 @@ run_script() {
     run env "PATH=${SCRIPT_PATH}" "${BASH_BIN}" "${SCRIPT}"
 }
 
-@test "exits 1 with the apt-get hint when python3 is missing" {
-    # No stubs seeded - python3 is the first gate, fires immediately.
+@test "passes python3 + python3-venv to ensure_apt_command and reaches the next gate" {
+    # The helper internals are covered by _ensure-apt-command.bats; this
+    # is a wiring check - simulate a successful python3 install and
+    # assert execution carries on to the jq gate. The python3 hint must
+    # NOT appear (it would mean the script swapped the helper out or
+    # passed wrong args).
+    seed_apt_install_stub 0
     run_script
     [ "${status}" -eq 1 ]
-    [[ "${output}" == *"python3 not found in WSL"* ]]
-    [[ "${output}" == *"sudo apt-get install -y python3 python3-venv"* ]]
+    [[ "${output}" == *"jq not found in WSL"* ]]
+    [[ "${output}" != *"python3 not found in WSL"* ]]
 }
 
 @test "exits 1 with the apt-get hint when jq is missing" {
-    # python3 present so execution reaches the jq gate.
+    # python3 present so execution reaches the jq gate (currently still
+    # a check-only gate; step 5 promotes it to install-or-hint and this
+    # test is updated then).
     seed_stub python3
     run_script
     [ "${status}" -eq 1 ]
