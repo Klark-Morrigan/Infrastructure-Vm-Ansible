@@ -42,16 +42,25 @@ function Invoke-BootstrapController {
         [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot)
     )
 
-    # Ensure PowerShell.Common is available before importing. Installed
-    # on demand so a fresh host needs only this script (no separate
-    # setup). Guarded with Get-Module to keep reruns fast.
+    # Ensure PowerShell.Common >= 6.2.0 is available before importing.
+    # Installed on demand so a fresh host needs only this script (no
+    # separate setup). Guarded with Get-Module to keep reruns fast.
+    #
+    # The 6.2.0 floor is the first version that ships Assert-WslHasBash,
+    # which the bash-gate block below calls; an older 6.x sitting in
+    # CurrentUser's module path would otherwise pass the "any version
+    # installed" check and the Assert-WslHasBash call would fail with
+    # `The term 'Assert-WslHasBash' is not recognized` halfway through
+    # bootstrap.
+    $requiredCommonVersion = [Version]'6.2.0'
     $commonModule = Get-Module -ListAvailable -Name PowerShell.Common |
         Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $commonModule) {
-        Install-Module PowerShell.Common -Scope CurrentUser -Force `
-            -AllowClobber -ErrorAction Stop
+    if (-not $commonModule -or $commonModule.Version -lt $requiredCommonVersion) {
+        Install-Module PowerShell.Common -MinimumVersion $requiredCommonVersion `
+            -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
     }
-    Import-Module PowerShell.Common -ErrorAction Stop
+    Import-Module PowerShell.Common -MinimumVersion $requiredCommonVersion `
+        -ErrorAction Stop
 
     # Infrastructure.Secrets is the wrapper the bash bridge's
     # _read-vault-config.sh imports inside its pwsh.exe call. The
@@ -78,6 +87,28 @@ function Invoke-BootstrapController {
                 $_.Exception.Message -replace '^Wsl2NotReady: ',''
             ) -ForegroundColor Yellow
             return 0
+        }
+        throw
+    }
+
+    # Bash-on-default-distro gate. Assert-Wsl2Ready only proves WSL is
+    # up and a distro is registered; it does not look inside the distro.
+    # Docker Desktop installs a minimal `docker-desktop` distro with no
+    # bash and silently sets it as the WSL default, so a bare `wsl --`
+    # call hitting `#!/usr/bin/env bash` would fail mid-bootstrap with
+    # `env: can't execute 'bash': No such file or directory`. Catching
+    # the WslMissingBash: prefix here surfaces a named remediation hint
+    # (install Ubuntu, set as default) rather than letting the bash
+    # bridge fail later with a less obvious error.
+    try {
+        Assert-WslHasBash
+    }
+    catch {
+        if ($_.Exception.Message -match '^WslMissingBash: ') {
+            Write-Host (
+                $_.Exception.Message -replace '^WslMissingBash: ',''
+            ) -ForegroundColor Yellow
+            return 1
         }
         throw
     }

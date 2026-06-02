@@ -26,7 +26,9 @@ holds the window open).
 The PowerShell stage installs `PowerShell.Common` and
 `Infrastructure.Secrets` from PSGallery (idempotent — `Invoke-ModuleInstall`
 no-ops when current), ensures WSL2 is installed (delegating to
-`Assert-Wsl2Ready` from `PowerShell.Common`), and then invokes
+`Assert-Wsl2Ready` from `PowerShell.Common`), verifies the default WSL
+distro actually has `bash` (delegating to `Assert-WslHasBash`), and
+then invokes
 [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
 inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in

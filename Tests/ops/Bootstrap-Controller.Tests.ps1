@@ -2,9 +2,10 @@ BeforeAll {
     # Stub PowerShell.Common surface used by the script under test so
     # the tests do not need the real module installed. The script
     # dot-source path goes through Get-Module / Install-Module / Import-
-    # Module / Invoke-ModuleInstall / Assert-Wsl2Ready - all of which
-    # are mocked per test.
+    # Module / Invoke-ModuleInstall / Assert-Wsl2Ready / Assert-WslHasBash
+    # - all of which are mocked per test.
     function Assert-Wsl2Ready { }
+    function Assert-WslHasBash { }
     function Invoke-ModuleInstall { param([string] $ModuleName) }
 
     # wsl stub - $args avoids parameter-binding conflicts with the
@@ -17,11 +18,14 @@ BeforeAll {
 Describe 'Invoke-BootstrapController' {
 
     BeforeEach {
-        # Pretend PowerShell.Common is already installed so the install
-        # branch never runs in tests. The script only installs when
-        # Get-Module -ListAvailable returns nothing.
+        # Pretend PowerShell.Common >= the required floor (6.2.0) is
+        # already installed so the install branch never runs in tests.
+        # The script only installs when Get-Module -ListAvailable returns
+        # nothing or a version below the floor; stubbing 6.2.0 puts the
+        # mock at the boundary so a future floor bump fails this test
+        # loudly rather than letting it silently pass.
         Mock Get-Module {
-            [PSCustomObject]@{ Name = 'PowerShell.Common'; Version = '6.0.0' }
+            [PSCustomObject]@{ Name = 'PowerShell.Common'; Version = '6.2.0' }
         } -ParameterFilter { $ListAvailable -and $Name -eq 'PowerShell.Common' }
 
         Mock Install-Module { }
@@ -33,6 +37,14 @@ Describe 'Invoke-BootstrapController' {
         # dedicated cases below override this mock to assert call args
         # and propagation of throws.
         Mock Invoke-ModuleInstall { }
+
+        # Default Assert-WslHasBash to a no-op so existing happy-path
+        # cases reach Assert-Wsl2Ready / wsl as before. Cases that
+        # exercise the bash gate specifically (`throws WslMissingBash`,
+        # `propagates unrelated errors`) override this mock; cases that
+        # don't care simply let the no-op through, mirroring the pattern
+        # used for Invoke-ModuleInstall above.
+        Mock Assert-WslHasBash { }
     }
 
     Context 'WSL2 is ready' {
@@ -121,6 +133,39 @@ Describe 'Invoke-BootstrapController' {
 
             { Invoke-BootstrapController -RepoRoot $TestDrive } |
                 Should -Throw -ExpectedMessage '*something else broke*'
+
+            Should -Invoke wsl -Times 0
+        }
+    }
+
+    Context 'Default WSL distro has no bash' {
+    # ----------------------------------------------------------------
+    # Assert-WslHasBash signals "the default distro is unusable - bash
+    # is not installed there" by throwing an error whose message starts
+    # with 'WslMissingBash: '. The bootstrap treats that as a named
+    # operator-fix-required failure (return 1 + yellow remediation)
+    # rather than a hard crash - the remediation lives in the README.
+
+        It 'returns 1 without invoking wsl when Assert-WslHasBash throws WslMissingBash' {
+            Mock Assert-WslHasBash {
+                throw 'WslMissingBash: install Ubuntu and set as default'
+            }
+            Mock wsl { $global:LASTEXITCODE = 0 }
+
+            $code = Invoke-BootstrapController -RepoRoot $TestDrive
+
+            $code | Should -Be 1
+            Should -Invoke wsl -Times 0
+        }
+
+        It 'rethrows non-WslMissingBash errors from Assert-WslHasBash' {
+            Mock Assert-WslHasBash {
+                throw 'wsl daemon is not responding'
+            }
+            Mock wsl { $global:LASTEXITCODE = 0 }
+
+            { Invoke-BootstrapController -RepoRoot $TestDrive } |
+                Should -Throw -ExpectedMessage '*wsl daemon is not responding*'
 
             Should -Invoke wsl -Times 0
         }
