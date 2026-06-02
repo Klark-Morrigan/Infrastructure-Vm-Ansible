@@ -66,7 +66,7 @@ boundary:
 | Script | Lang | Runs from | Purpose |
 |--------|------|-----------|---------|
 | `ops/bootstrap-controller.ps1` | PowerShell | Windows | Calls `Assert-Wsl2Ready` from `PowerShell.Common` to ensure WSL2 is installed and a distro is registered, then invokes the inside-WSL setup. WSL detection and install logic is **not** reimplemented here — `Assert-Wsl2Ready` already handles install-if-missing + reboot-required messaging + the `Wsl2NotReady:` catch contract used elsewhere in the org's repos. |
-| `ops/bootstrap-controller.sh` | bash | inside WSL | Creates the repo-local Python venv, installs Ansible, installs Galaxy collections. Operators can run this directly if WSL is already known to be present. |
+| `ops/_bootstrap-controller-wsl.sh` | bash | inside WSL | Creates the repo-local Python venv, installs Ansible, installs Galaxy collections. Operators can run this directly if WSL is already known to be present. |
 
 | Decision | Value |
 |----------|-------|
@@ -254,7 +254,7 @@ graph TD
 
     subgraph Substrate ["Infrastructure-VM-Ansible substrate (new, this feature)"]
         BOOTPS["ops/bootstrap-controller.ps1\n(Windows: install WSL if absent)"]
-        BOOT["ops/bootstrap-controller.sh\n(inside WSL: venv + ansible + galaxy)"]
+        BOOT["ops/_bootstrap-controller-wsl.sh\n(inside WSL: venv + ansible + galaxy)"]
         BR["scripts/run-playbook.sh\n(bash bridge, internal)"]
         INV["jq-generated hosts.yml\n(vmName -> SSH host)"]
     end

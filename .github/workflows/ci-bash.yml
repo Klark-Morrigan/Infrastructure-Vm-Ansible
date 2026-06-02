@@ -3,7 +3,7 @@
 # (scripts/), and git hooks; verifies the +x bit on every tracked
 # *.sh; and runs every *.bats suite under the repo. Empty surfaces
 # auto-skip with ::notice::, so this single wiring covers the repo
-# from today's scaffold (only scripts/bootstrap-controller.sh) through
+# from today's scaffold (only ops/_bootstrap-controller-wsl.sh) through
 # every later feature that adds bats coverage.
 name: ci-bash
 

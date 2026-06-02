@@ -110,8 +110,8 @@ runs from Windows; everything else runs inside WSL.
 
 **Files**
 
-- `ops/bootstrap-controller.ps1` (new). Imports `PowerShell.Common`, calls `Assert-Wsl2Ready` inside a try/catch with the `Wsl2NotReady:` message-prefix branch documented in that cmdlet, then invokes `wsl -- ./ops/bootstrap-controller.sh` from the repo root. Exits with the bash script's exit code.
-- `ops/bootstrap-controller.sh` (new). Idempotent. Verifies `python3` available, creates `.venv` if absent, runs `pip install -r requirements.txt`, runs `ansible-galaxy collection install -r requirements.yml`, runs `which pwsh.exe` and fails with a clear message if absent (the bridge depends on it).
+- `ops/bootstrap-controller.ps1` (new). Imports `PowerShell.Common`, calls `Assert-Wsl2Ready` inside a try/catch with the `Wsl2NotReady:` message-prefix branch documented in that cmdlet, then invokes `wsl -- ./ops/_bootstrap-controller-wsl.sh` from the repo root. Exits with the bash script's exit code.
+- `ops/_bootstrap-controller-wsl.sh` (new). Idempotent. Verifies `python3` available, creates `.venv` if absent, runs `pip install -r requirements.txt`, runs `ansible-galaxy collection install -r requirements.yml`, runs `which pwsh.exe` and fails with a clear message if absent (the bridge depends on it).
 - `ops/bootstrap-controller.bat` (new). Thin Explorer-double-click launcher; invokes `pwsh` against the `.ps1` with `-ExecutionPolicy Bypass` and holds the window open with `pause`. Mirrors the `Infrastructure-E2E/agent/setup-secrets.bat` pattern.
 - `Tests/ops/Bootstrap-Controller.Tests.ps1` (new, Pester) - unit tests for the PS side: mocked `Assert-Wsl2Ready`, asserts the try/catch shape and exit code propagation.
 
@@ -119,10 +119,10 @@ runs from Windows; everything else runs inside WSL.
 
 1. `Import-Module PowerShell.Common`.
 2. Try `Assert-Wsl2Ready`; catch `Wsl2NotReady:`-prefixed errors, print the reboot message in yellow, exit 0.
-3. Invoke `wsl -- ./ops/bootstrap-controller.sh`.
+3. Invoke `wsl -- ./ops/_bootstrap-controller-wsl.sh`.
 4. Exit with `$LASTEXITCODE`.
 
-**Behaviour (bootstrap-controller.sh)**
+**Behaviour (_bootstrap-controller-wsl.sh)**
 
 1. `set -euo pipefail`.
 2. If `.venv/` exists and `.venv/bin/python` reports the expected version (read from a top-of-file constant), skip venv creation; otherwise `python3 -m venv .venv`.
@@ -337,7 +337,7 @@ gates from check-only to install-or-hint.
 
 **Files**
 
-- `ops/bootstrap-controller.sh` (modified) - replace the "python3 not found - exit 1" branch with: attempt `sudo apt-get update && sudo apt-get install -y python3 python3-venv`; on success continue, on failure print the existing apt hint and exit 1.
+- `ops/_bootstrap-controller-wsl.sh` (modified) - replace the "python3 not found - exit 1" branch with: attempt `sudo apt-get update && sudo apt-get install -y python3 python3-venv`; on success continue, on failure print the existing apt hint and exit 1.
 - `Tests/ops/BootstrapController.Tests.bats` (modified) - cases for the install branch.
 
 **Behaviour**
@@ -356,7 +356,7 @@ gates from check-only to install-or-hint.
 
 ```mermaid
 flowchart TD
-    A[bootstrap-controller.sh starts] --> B{python3 on PATH?}
+    A[_bootstrap-controller-wsl.sh starts] --> B{python3 on PATH?}
     B -- yes --> Z[continue to next gate]
     B -- no --> C[sudo apt-get install -y python3 python3-venv]
     C --> D{exit 0?}
@@ -374,7 +374,7 @@ check-only to install-or-hint with the same fallback shape.
 
 **Files**
 
-- `ops/bootstrap-controller.sh` (modified) - replace the "jq not found - exit 1" branch with the same try-install-fall-back-to-hint shape used in step 4 for python3.
+- `ops/_bootstrap-controller-wsl.sh` (modified) - replace the "jq not found - exit 1" branch with the same try-install-fall-back-to-hint shape used in step 4 for python3.
 - `Tests/ops/BootstrapController.Tests.bats` (modified) - mirror cases for jq.
 
 **Behaviour**
@@ -502,7 +502,7 @@ flowchart TD
     A[bootstrap-controller.ps1 starts] --> B[Install + Import PowerShell.Common]
     B --> C[Invoke-ModuleInstall -ModuleName Infrastructure.Secrets]
     C --> D[Assert-Wsl2Ready]
-    D --> E[wsl -- ops/bootstrap-controller.sh]
+    D --> E[wsl -- ops/_bootstrap-controller-wsl.sh]
 ```
 
 ---

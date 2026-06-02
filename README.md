@@ -27,7 +27,7 @@ The PowerShell stage installs `PowerShell.Common` and
 `Infrastructure.Secrets` from PSGallery (idempotent — `Invoke-ModuleInstall`
 no-ops when current), ensures WSL2 is installed (delegating to
 `Assert-Wsl2Ready` from `PowerShell.Common`), and then invokes
-[`ops/bootstrap-controller.sh`](ops/bootstrap-controller.sh)
+[`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
 inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in
 `requirements.yml`. Both stages are idempotent.
@@ -77,7 +77,7 @@ extra-vars document has exactly two top-level keys
 group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
-extra-vars composition); [`ops/bootstrap-controller.sh`](ops/bootstrap-controller.sh)
+extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
 checks for it and prints the `sudo apt-get install -y jq` fix line
 when absent.
 

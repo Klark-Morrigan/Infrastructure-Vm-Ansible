@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for ops/bootstrap-controller.sh - the WSL-side controller
+# Tests for ops/_bootstrap-controller-wsl.sh - the WSL-side controller
 # bootstrap. The script is mostly a procedural install sequence; only
 # the fail-fast presence checks have branching logic worth unit-testing
 # in isolation (the install steps themselves are covered end-to-end by
@@ -21,10 +21,10 @@
 # any heavy work and are unit-testable here. The pwsh.exe gate sits
 # behind real venv/pip/galaxy operations that cannot be cheaply
 # stubbed - that path stays covered by step-13 smoke.
-# Run with: bats Tests/ops/bootstrap-controller.bats
+# Run with: bats Tests/ops/_bootstrap-controller-wsl.bats
 
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-SCRIPT="${REPO_ROOT}/ops/bootstrap-controller.sh"
+SCRIPT="${REPO_ROOT}/ops/_bootstrap-controller-wsl.sh"
 
 setup() {
     # Capture bash before scrubbing PATH - some bats images (Alpine)

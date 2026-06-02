@@ -83,7 +83,7 @@ function Invoke-BootstrapController {
     }
 
     # Second stage runs inside WSL against the repo root.
-    $bashScript = './ops/bootstrap-controller.sh'
+    $bashScript = './ops/_bootstrap-controller-wsl.sh'
     Push-Location $RepoRoot
     try {
         & wsl -- $bashScript

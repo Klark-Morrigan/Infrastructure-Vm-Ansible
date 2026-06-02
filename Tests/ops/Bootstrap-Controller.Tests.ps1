@@ -45,7 +45,7 @@ Describe 'Invoke-BootstrapController' {
 
             $code | Should -Be 0
             Should -Invoke wsl -Times 1 -ParameterFilter {
-                $args -contains './ops/bootstrap-controller.sh'
+                $args -contains './ops/_bootstrap-controller-wsl.sh'
             }
         }
 

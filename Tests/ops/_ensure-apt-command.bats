@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # Tests for ops/_ensure-apt-command.sh - the sourced presence-or-install
-# helper used by ops/bootstrap-controller.sh. Sourced directly here so
+# helper used by ops/_bootstrap-controller-wsl.sh. Sourced directly here so
 # the function can be exercised in isolation without standing up the
 # whole bootstrap; the script-level wiring (gate order, which cmd/pkgs
-# the script passes) is covered separately by bootstrap-controller.bats.
+# the script passes) is covered separately by _bootstrap-controller-wsl.bats.
 #
 # Strategy: each test runs `ensure_apt_command` in a subshell under a
 # scrubbed PATH that contains only per-test stubs, so the function's
@@ -19,7 +19,7 @@ setup() {
     # Bash absolute path baked into stub shebangs so they resolve under
     # the scrubbed PATH (git-bash on Windows cannot be symlinked into a
     # tmp dir without losing its shared libraries; see the matching
-    # comment in bootstrap-controller.bats).
+    # comment in _bootstrap-controller-wsl.bats).
     BASH_BIN="$(command -v bash)"
 
     TEST_TMP="$(mktemp -d -t ensureAptCmd.XXXXXX)"
