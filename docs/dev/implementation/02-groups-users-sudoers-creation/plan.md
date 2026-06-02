@@ -4,23 +4,35 @@ See [problem.md](problem.md) for context, schema, and rationale.
 
 ## Directory layout (revised)
 
-This plan distinguishes two top-level script directories:
+This plan uses three top-level buckets for executables:
 
-- **`ops/`** - operator-facing entry points. Hand-invoked by a human:
+- **`ops/<verb>-<noun>.{sh,ps1,bat}`** - operator-facing entry
+  points. Hand-invoked by a human VM operator:
   `bootstrap-controller`, `setup-secrets`, `create-users`. Each
   command typically ships as three sibling files - `*.ps1` (or `*.sh`)
   + `*.bat` Explorer launcher.
-- **`scripts/`** - dev/test runners and bridge internals. Not
-  operator-facing: `run-tests.{ps1,sh,bat}` (delegates to the canonical
-  runners in `PowerShell-Common` and `GitHub-Common`), `run-playbook.sh`
-  (the bash bridge), `_pwsh_bridge.sh` (sourced helper).
+- **`ops/_<verb>-<noun>.sh`** - bridge internals. Live alongside the
+  operator entries (so a `cd ops/` shows the whole orchestration
+  surface in one place) but the leading `_` marks them as "called by
+  the operator entries, not typed by a human." Examples:
+  `_run-playbook`, `_read-vault-config`, `_build-inventory`,
+  `_build-extra-vars`.
+- **`scripts/`** - dev/test runners only:
+  `run-tests.{ps1,sh,bat}` (delegates to the canonical runners in
+  `PowerShell-Common` and `GitHub-Common`) and
+  `fix-permissions.{sh,bat}`. Operator-facing for developers, not
+  for VM operators - hence the separate directory from `ops/`.
+
+Tests mirror this split: `Tests/ops/` covers both `ops/` public
+entries (`*.ps1` via Pester) and `ops/_*` internals (`*.bats`);
+`Tests/scripts/` would cover dev-runner tests if any existed (none
+do today).
 
 This split matches the GH-Common `ci-bash.yml` convention that labels
-`scripts/` as "runner bash" - production operator scripts shouldn't be
-lumped in there. Step 2 was originally implemented under `scripts/`;
-the revised step 2 below now lists the `ops/` paths, and the first act
-of resuming execution is to move the already-shipped files to those
-paths (a `git mv` plus internal-reference fixes - not a redo).
+`scripts/` as "runner bash" - production and bridge code do not live
+there. The underscore convention is the same one git uses for hooks
+named `_*.sh` and that `_find-bash.bat` in GH-Common follows: visible
+to siblings, not a target operators run directly.
 
 ## Index
 
@@ -30,14 +42,15 @@ paths (a `git mv` plus internal-reference fixes - not a redo).
 - [Step 4 - Bootstrap installs python3](#step-4---bootstrap-installs-python3)
 - [Step 5 - Bootstrap installs jq](#step-5---bootstrap-installs-jq)
 - [Step 6 - Bootstrap installs PowerShell 7 (pwsh.exe)](#step-6---bootstrap-installs-powershell-7-pwshexe)
-- [Step 7 - Vault setup script](#step-7---vault-setup-script)
-- [Step 8 - Role: groups](#step-8---role-groups)
-- [Step 9 - Role: users](#step-9---role-users)
-- [Step 10 - Role: sudoers](#step-10---role-sudoers)
-- [Step 11 - Playbook and operator entry point](#step-11---playbook-and-operator-entry-point)
-- [Step 12 - Smoke test against a real VM](#step-12---smoke-test-against-a-real-vm)
-- [Step 13 - README and per-step docs](#step-13---readme-and-per-step-docs)
-- [Step 14 - E2E test layer for the Ansible users path](#step-14---e2e-test-layer-for-the-ansible-users-path)
+- [Step 7 - Bootstrap installs Infrastructure.Secrets module](#step-7---bootstrap-installs-infrastructuresecrets-module)
+- [Step 8 - Vault setup script](#step-8---vault-setup-script)
+- [Step 9 - Role: groups](#step-9---role-groups)
+- [Step 10 - Role: users](#step-10---role-users)
+- [Step 11 - Role: sudoers](#step-11---role-sudoers)
+- [Step 12 - Playbook and operator entry point](#step-12---playbook-and-operator-entry-point)
+- [Step 13 - Smoke test against a real VM](#step-13---smoke-test-against-a-real-vm)
+- [Step 14 - README and per-step docs](#step-14---readme-and-per-step-docs)
+- [Step 15 - E2E test layer for the Ansible users path](#step-15---e2e-test-layer-for-the-ansible-users-path)
 
 ---
 
@@ -56,7 +69,7 @@ no feature lands without the lint coverage that will police it.
 - `requirements.yml` (new) - Galaxy collections: `ansible.posix`, `community.general` pinned to a current version. No third-party collections in v1.
 - `inventory/.gitkeep` (new) - placeholder so the dir exists.
 - `roles/.gitkeep`, `playbooks/.gitkeep`, `scripts/.gitkeep` (new).
-- `README.md` (new) - one-paragraph stub describing the repo's purpose and pointing at this feature folder. Filled out properly in step 13.
+- `README.md` (new) - one-paragraph stub describing the repo's purpose and pointing at this feature folder. Filled out properly in step 14.
 - `.github/workflows/ci-yaml.yml` (new) - single-job reusable-workflow caller of [GitHub-Common's `ci-yaml.yml`](../../../../GitHub-Common/.github/workflows/ci-yaml.yml). Four lint jobs run against this repo from day one: `actionlint`, `action-validator`, `yamllint`, `ansible-lint`. `actionlint` and `action-validator` exercise the new `ci.yml` itself; `yamllint` covers `requirements.yml`, `ansible.cfg`, and every YAML file added in later steps; `ansible-lint` auto-skips this commit (no `playbooks/` content yet) and starts gating from step 8 onward when the first role lands.
 
 **Behaviour**
@@ -71,7 +84,7 @@ File presence only. Two reproducibility checks tied to this step:
 The CI run itself is the test - any finding from `yamllint`,
 `actionlint`, or `action-validator` against the scaffolded files is
 fixed in-line during this step, not relaxed at the workflow layer.
-Smoke-level end-to-end coverage of the substrate stays in step 12.
+Smoke-level end-to-end coverage of the substrate stays in step 13.
 
 ---
 
@@ -127,7 +140,7 @@ runs from Windows; everything else runs inside WSL.
 **Tests (bash)**
 
 Skipped for v1 — the bash bootstrap is essentially a sequence of shell
-commands with no branching logic worth unit-testing in isolation. Step 12
+commands with no branching logic worth unit-testing in isolation. Step 13
 exercises it end-to-end. (Promote to bats if the script grows
 conditionals.)
 
@@ -150,6 +163,13 @@ Carried over from the original step 3 design:
 - The bridge reads `VmProvisionerConfig` and `VmUsersConfig` from inside
   WSL by invoking `pwsh.exe` on the Windows host. UTF-8 BOM is stripped
   centrally in the vault reader.
+- **Vault read goes through `Infrastructure.Secrets` cmdlets**
+  (`Get-InfrastructureSecret`); the bridge does not call `Get-Secret`
+  directly. Matches problem.md's locked decision ("Infrastructure.Secrets
+  cmdlets. The bridge does not parse SecretStore directly"). One wrapper,
+  one provider-swap point; symmetric with `setup-secrets.ps1` (step 8)
+  using `Set-InfrastructureSecret`. The bridge does not install
+  `Infrastructure.Secrets` itself - that pre-install is owned by step 7.
 - All per-invocation artefacts (vault payloads, inventory, extra-vars)
   live in a single `mktemp -d` directory under `$TMPDIR`. A
   `trap 'rm -rf "$tmpdir"' EXIT` removes the whole directory on any
@@ -173,20 +193,22 @@ New to this partitioning:
 
 **Files**
 
-- `scripts/read-vault-config.sh` (new) — vault reader. **Args:** `<vault-name> <secret-name>`. Shells out to `pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault '<vault>' -Name '<secret>' -AsPlainText | Out-String"`, strips CRLF and UTF-8 BOM, validates the payload parses as JSON via `jq empty`, emits the payload on stdout. Non-zero exit with `<vault>/<secret>` named in the message on any failure (pwsh non-zero, empty payload, malformed JSON). Stdout-only output keeps it composable with `$(...)` and redirects.
-- `scripts/build-inventory.sh` (new) — pure transform. **Args:** none. **Stdin:** `vm_provisioner_config` JSON (array). **Stdout:** Ansible JSON inventory with group `vm_provisioner_hosts`, host key `vmName`, per-host vars `ansible_host` / `ansible_user` / `ansible_become: true` / `ansible_become_method: sudo` / `ansible_become_pass`. Pure `jq` pipeline; no I/O to pwsh; deterministic output for a given input.
-- `scripts/build-extra-vars.sh` (new) — pure transform. **Args:** `--provisioner-config <path> --users-config <path>` (file paths, not values, so secrets stay off argv). **Stdout:** `{"vm_provisioner_config": <provisioner>, "vm_users_config": <users>}`. Pure `jq` composition.
-- `scripts/run-playbook.sh` (new, thin) — orchestrator. **Args:** `<playbook-path> [forwarded args...]`. Validates args, sets up the tmpdir + EXIT trap, activates the venv, drives the three helpers in order, then dispatches `ansible-playbook`. Forwarded args follow the playbook path so operators can pass `--tags`, `--limit`, `--check`, etc. unchanged.
-- `Tests/scripts/read-vault-config.bats` (new) — covers the vault reader in isolation with a stubbed `pwsh.exe` on PATH.
-- `Tests/scripts/build-inventory.bats` (new) — covers the inventory transform with table-driven fixtures (no stubs needed; pure stdin → stdout).
-- `Tests/scripts/build-extra-vars.bats` (new) — covers the extra-vars transform with file fixtures.
-- `Tests/scripts/run-playbook.bats` (new, slim) — covers orchestration only: arg validation, missing playbook, tmpdir lifecycle, dispatch contract. Pwsh, ansible-playbook, and the three sibling scripts are stubbed because their own bats files cover their internals.
-- `Tests/playbooks/_noop.yml` (new) — a single-host `debug: msg="bridge ok"` task used by `run-playbook.bats`. Lives under `Tests/` because it is a test fixture, not operator-facing content; the bats setup transplants it into a throwaway repo tree at the path the bridge expects. The step-12 real-VM smoke uses `create-users.yml`, not this fixture.
+All four bridge scripts live under `ops/` with a leading `_` per the directory-layout convention at the top of this plan — they are sibling helpers to the operator entries (`ops/setup-secrets`, future `ops/create-users`), not separate-directory internals.
+
+- `ops/_read-vault-config.sh` (new) — vault reader. **Args:** `<vault-name> <secret-name>`. Shells out to `pwsh.exe -NoProfile -NonInteractive -Command "Import-Module Infrastructure.Secrets; Use-MicrosoftPowerShellSecretStoreProvider; Get-InfrastructureSecret -VaultName '<vault>' -SecretName '<secret>' | Out-String"`, strips CRLF and UTF-8 BOM, validates the payload parses as JSON via `jq empty`, emits the payload on stdout. Non-zero exit with `<vault>/<secret>` named in the message on any failure (pwsh non-zero, empty payload, malformed JSON). Stdout-only output keeps it composable with `$(...)` and redirects. The bridge does not install `Infrastructure.Secrets` itself - step 7 ensures it is present.
+- `ops/_build-inventory.sh` (new) — pure transform. **Args:** none. **Stdin:** `vm_provisioner_config` JSON (array). **Stdout:** Ansible JSON inventory with group `vm_provisioner_hosts`, host key `vmName`, per-host vars `ansible_host` / `ansible_user` / `ansible_become: true` / `ansible_become_method: sudo` / `ansible_become_pass`. Pure `jq` pipeline; no I/O to pwsh; deterministic output for a given input.
+- `ops/_build-extra-vars.sh` (new) — pure transform. **Args:** `--provisioner-config <path> --users-config <path>` (file paths, not values, so secrets stay off argv). **Stdout:** `{"vm_provisioner_config": <provisioner>, "vm_users_config": <users>}`. Pure `jq` composition.
+- `ops/_run-playbook.sh` (new, thin) — orchestrator. **Args:** `<playbook-path> [forwarded args...]`. Validates args, sets up the tmpdir + EXIT trap, activates the venv, drives the three helpers in order, then dispatches `ansible-playbook`. Forwarded args follow the playbook path so operators can pass `--tags`, `--limit`, `--check`, etc. unchanged.
+- `Tests/ops/_read-vault-config.bats` (new) — covers the vault reader in isolation with a stubbed `pwsh.exe` on PATH.
+- `Tests/ops/_build-inventory.bats` (new) — covers the inventory transform with table-driven fixtures (no stubs needed; pure stdin → stdout).
+- `Tests/ops/_build-extra-vars.bats` (new) — covers the extra-vars transform with file fixtures.
+- `Tests/ops/_run-playbook.bats` (new, slim) — covers orchestration only: arg validation, missing playbook, tmpdir lifecycle, dispatch contract. Pwsh, ansible-playbook, and the three sibling scripts are stubbed because their own bats files cover their internals.
+- `Tests/playbooks/_noop.yml` (new) — a single-host `debug: msg="bridge ok"` task used by `run-playbook.bats`. Lives under `Tests/` because it is a test fixture, not operator-facing content; the bats setup transplants it into a throwaway repo tree at the path the bridge expects. The step-13 real-VM smoke uses `create-users.yml`, not this fixture.
 
 **Behaviour (read-vault-config.sh)**
 
 1. Argument count check; fail with usage on fewer than two args.
-2. `out=$(pwsh.exe -NoProfile -NonInteractive -Command "Get-Secret -Vault '$1' -Name '$2' -AsPlainText | Out-String")` — single subshell, capture stderr too.
+2. `out=$(pwsh.exe -NoProfile -NonInteractive -Command "Import-Module Infrastructure.Secrets; Use-MicrosoftPowerShellSecretStoreProvider; Get-InfrastructureSecret -VaultName '$1' -SecretName '$2' | Out-String")` — single subshell, capture stderr too. `Infrastructure.Secrets` declares `PowerShell.Common` as a `RequiredModules` dependency in its psd1, so PS auto-loads Common when Secrets is imported; no explicit `Import-Module PowerShell.Common` needed here.
 3. Strip CR (pwsh emits CRLF), strip leading UTF-8 BOM, trim trailing newlines.
 4. Empty payload → non-zero exit, message names vault/secret.
 5. `printf '%s' "$out" | jq empty` → invalid JSON → non-zero exit, message names vault/secret.
@@ -210,10 +232,10 @@ New to this partitioning:
 1. `set -euo pipefail`; one positional arg required (the playbook path); fail with usage otherwise; reject if the playbook file is missing.
 2. `tmpdir=$(mktemp -d -t vm-ansible.XXXXXX)`; `chmod 700 "$tmpdir"`; `trap 'rm -rf "$tmpdir"' EXIT`.
 3. `source .venv/bin/activate` (fail-fast with the bootstrap hint if absent).
-4. `scripts/read-vault-config.sh VmProvisioner VmProvisionerConfig > "$tmpdir/provisioner.json"`; `chmod 600`.
-5. `scripts/read-vault-config.sh VmUsers VmUsersConfig > "$tmpdir/users.json"`; `chmod 600`.
-6. `scripts/build-inventory.sh < "$tmpdir/provisioner.json" > "$tmpdir/hosts.json"`; `chmod 600`.
-7. `scripts/build-extra-vars.sh --provisioner-config "$tmpdir/provisioner.json" --users-config "$tmpdir/users.json" > "$tmpdir/extra-vars.json"`; `chmod 600`.
+4. `ops/_read-vault-config.sh VmProvisioner VmProvisionerConfig > "$tmpdir/provisioner.json"`; `chmod 600`.
+5. `ops/_read-vault-config.sh VmUsers VmUsersConfig > "$tmpdir/users.json"`; `chmod 600`.
+6. `ops/_build-inventory.sh < "$tmpdir/provisioner.json" > "$tmpdir/hosts.json"`; `chmod 600`.
+7. `ops/_build-extra-vars.sh --provisioner-config "$tmpdir/provisioner.json" --users-config "$tmpdir/users.json" > "$tmpdir/extra-vars.json"`; `chmod 600`.
 8. `cd` repo root; `ansible-playbook -i "$tmpdir/hosts.json" --extra-vars "@$tmpdir/extra-vars.json" "$playbook_path" "$@"`.
 9. Exit with the playbook's exit code (trap cleans up regardless).
 
@@ -264,16 +286,16 @@ keys) and inventory shape (group `vm_provisioner_hosts`, host key
 
 ```mermaid
 flowchart LR
-    subgraph orch ["run-playbook.sh (orchestrator)"]
+    subgraph orch ["ops/_run-playbook.sh (orchestrator)"]
         TD[mktemp tmpdir<br/>chmod 700<br/>trap EXIT]
         VENV[source .venv/bin/activate]
         AP[ansible-playbook -i hosts.json<br/>--extra-vars @extra-vars.json<br/>playbook ...]
     end
 
-    subgraph helpers ["scripts/ helpers (each independently testable)"]
-        RV[read-vault-config.sh<br/>vault, secret -> stdout JSON]
-        BI[build-inventory.sh<br/>stdin JSON -> stdout JSON]
-        BE[build-extra-vars.sh<br/>--provisioner --users -> stdout JSON]
+    subgraph helpers ["ops/ helpers (underscored, each independently testable)"]
+        RV[_read-vault-config.sh<br/>vault, secret -> stdout JSON]
+        BI[_build-inventory.sh<br/>stdin JSON -> stdout JSON]
+        BE[_build-extra-vars.sh<br/>--provisioner --users -> stdout JSON]
     end
 
     subgraph ext ["external boundaries"]
@@ -423,7 +445,69 @@ flowchart TD
 
 ---
 
-## Step 7 - Vault setup script
+## Step 7 - Bootstrap installs Infrastructure.Secrets module
+
+**Reason:** Windows-side counterpart to steps 4 and 5 for a PowerShell
+dependency rather than an apt one. The bash bridge's
+`ops/_read-vault-config.sh` (step 3) does `Import-Module
+Infrastructure.Secrets` inside its `pwsh.exe` invocation, but the
+bridge runs unattended once per playbook and embedding an
+install-if-missing dance per-call would be slow and chatty. Lifting the
+install into the bootstrap matches the convention of steps 4-6 (one
+install step per dep, slotted after the step that surfaced the need).
+
+**Decisions locked**
+
+- **Install via `Invoke-ModuleInstall`** (from `PowerShell.Common`,
+  already loaded earlier in the same bootstrap). The cmdlet is
+  idempotent and retry-wrapped for PSGallery blips; no extra branching
+  needed at the call site.
+- **`PowerShell.Common` is not separately installed by this step.**
+  `Infrastructure.Secrets`'s psd1 declares `PowerShell.Common` as a
+  `RequiredModules` dependency, so PowerShell auto-imports Common when
+  Secrets is imported. The bootstrap still installs Common explicitly
+  one block earlier (for its own use of `Assert-Wsl2Ready` /
+  `Invoke-ModuleInstall`); that install is the precondition for this
+  step's `Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'`.
+- **`Microsoft.PowerShell.SecretManagement` and
+  `Microsoft.PowerShell.SecretStore` are not separately installed.**
+  `Use-MicrosoftPowerShellSecretStoreProvider` (called by the bridge
+  at every invocation) uses `Invoke-ModuleInstall` internally to pull
+  them in on first use, so they bootstrap themselves at runtime.
+
+**Files**
+
+- `ops/bootstrap-controller.ps1` (modified) - after the existing `Import-Module PowerShell.Common` block, call `Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'`.
+- `Tests/ops/Bootstrap-Controller.Tests.ps1` (modified) - cases for the new install call.
+
+**Behaviour**
+
+1. After the existing `Import-Module PowerShell.Common` line, before `Assert-Wsl2Ready`:
+   `Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'`
+2. No further branching. The cmdlet handles present-check, install,
+   import, version pinning, and retry on PSGallery transients.
+3. Any thrown exception propagates - bootstrap fails loudly rather
+   than silently leaving the bridge to discover Secrets is missing at
+   first playbook run.
+
+**Tests (Pester, mocked)**
+
+- `Invoke-ModuleInstall` is mocked; bootstrap reaches it and calls it once with `ModuleName = 'Infrastructure.Secrets'`. The mock returns success; bootstrap continues to `Assert-Wsl2Ready`.
+- `Invoke-ModuleInstall` mock throws → bootstrap propagates the exception; `Assert-Wsl2Ready` is not called.
+
+**Diagram**
+
+```mermaid
+flowchart TD
+    A[bootstrap-controller.ps1 starts] --> B[Install + Import PowerShell.Common]
+    B --> C[Invoke-ModuleInstall -ModuleName Infrastructure.Secrets]
+    C --> D[Assert-Wsl2Ready]
+    D --> E[wsl -- ops/bootstrap-controller.sh]
+```
+
+---
+
+## Step 8 - Vault setup script
 
 **Reason:** Operators need a way to register the `VmUsers` vault and
 store `VmUsersConfig` without manually invoking `Set-Secret` calls. The
@@ -486,7 +570,7 @@ For the orchestration:
 
 ---
 
-## Step 8 - Role: groups
+## Step 9 - Role: groups
 
 **Reason:** Smallest of the three roles; gets the role conventions
 (layout, var names, fact-gathering, idempotence reporting) in place.
@@ -520,11 +604,11 @@ Later roles copy this shape.
 Once this role works, document the var contract in
 `roles/groups/README.md` (just the `vm_users_config[*].groups` shape and
 what the role does). Per-role READMEs are the source of truth; the
-top-level README in step 13 links to them.
+top-level README in step 14 links to them.
 
 ---
 
-## Step 9 - Role: users
+## Step 10 - Role: users
 
 **Reason:** The substantive role. Encapsulates the password-hash strategy
 and the no-move-home invariant.
@@ -570,7 +654,7 @@ For each entry in `vm_users_config[inventory_hostname].users | default([])`:
 
 ---
 
-## Step 10 - Role: sudoers
+## Step 11 - Role: sudoers
 
 **Reason:** The third role, with the visudo-validated atomic write.
 Verbatim string contract per problem.md; no parsing.
@@ -602,7 +686,7 @@ For each `user` in `vm_users_config[inventory_hostname].users | default([])`:
 
 ---
 
-## Step 11 - Playbook and operator entry point
+## Step 12 - Playbook and operator entry point
 
 **Reason:** Glue. After this step the create flow is end-to-end runnable
 by an operator.
@@ -610,7 +694,7 @@ by an operator.
 **Files**
 
 - `playbooks/create-users.yml` (new) - one play targeting `vm_provisioner_hosts`, importing `roles/groups`, `roles/users`, `roles/sudoers` in order; tags `groups`, `users`, `sudoers` on each.
-- `ops/create-users.sh` (new) - one-line operator wrapper invoking `./scripts/run-playbook.sh playbooks/create-users.yml "$@"` (run-playbook.sh stays under `scripts/` because it's a bridge internal). The `"$@"` lets operators pass `--tags`, `--limit`, `--check`, etc., without modifying the wrapper.
+- `ops/create-users.sh` (new) - one-line operator wrapper invoking `./ops/_run-playbook.sh playbooks/create-users.yml "$@"` (the orchestrator lives alongside as an underscored sibling per the layout convention). The `"$@"` lets operators pass `--tags`, `--limit`, `--check`, etc., without modifying the wrapper.
 - `ops/create-users.bat` (new) - Explorer launcher; resolves Git Bash via `GitHub-Common/scripts/_find-bash.bat`, then `exec`s `ops/create-users.sh`. Mirrors `scripts/run-tests.bat`'s sibling-find pattern.
 
 **Behaviour (playbook)**
@@ -631,12 +715,12 @@ per host per run.
 
 **Tests**
 
-Covered by step 12 (smoke test) — the playbook itself has no logic
+Covered by step 13 (smoke test) — the playbook itself has no logic
 beyond role ordering.
 
 ---
 
-## Step 12 - Smoke test against a real VM
+## Step 13 - Smoke test against a real VM
 
 **Reason:** Validates the full chain (PS → WSL → bridge → vault →
 ansible-playbook → roles → SSH → VM) against an actual VM provisioned
@@ -646,7 +730,7 @@ by `Infrastructure-Vm-Provisioner`. No mock can prove this works.
 
 - Smoke test is **manual** for v1. It is not in CI. It runs once on the
   operator's host against a real VM and the run is captured in
-  step-13's README as a recorded transcript. Automating it requires
+  step-14's README as a recorded transcript. Automating it requires
   either a CI-accessible Hyper-V host or a mocked Ansible target, both
   of which are larger projects than this feature.
 - The smoke test runs against a VM that already exists from
@@ -675,7 +759,7 @@ by `Infrastructure-Vm-Provisioner`. No mock can prove this works.
 
 ---
 
-## Step 13 - README and per-step docs
+## Step 14 - README and per-step docs
 
 **Reason:** Operator-facing documentation. Until this exists, only the
 problem.md and plan.md describe the repo, and neither is the right place
@@ -714,7 +798,7 @@ Each `roles/<name>/README.md` has:
 
 ---
 
-## Step 14 - E2E test layer for the Ansible users path
+## Step 15 - E2E test layer for the Ansible users path
 
 **Reason:** Closes the loop against real infrastructure. The existing
 `Infrastructure-E2E/agent/e2e/vm-users/` layer validates the
