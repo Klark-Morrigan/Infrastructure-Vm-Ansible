@@ -606,7 +606,7 @@ Later roles copy this shape.
 - `roles/groups/tasks/main.yml` (new) - one `ansible.builtin.group` task in a loop over `vm_users_config[inventory_hostname].groups | default([])`.
 - `roles/groups/meta/main.yml` (new) - empty `dependencies: []` plus role metadata.
 - `roles/groups/README.md` (new) - one-paragraph description and the var contract.
-- `Tests/roles/groups/molecule/default/` (new) - Molecule scenario with a single-container Docker driver (Ubuntu 24.04). Test cases below.
+- `Tests/molecule/groups/default/` (new) - Molecule scenario with a single-container Docker driver (Ubuntu 24.04). Test cases below. (Scenarios live outside `Tests/roles/` so ansible-lint's `var-naming[no-role-prefix]` rule does not auto-detect verify.yml as role content — molecule's verify is a test play, not role internals.)
 
 **Behaviour**
 
@@ -649,7 +649,7 @@ and the no-move-home invariant.
 - `roles/users/tasks/main.yml` (new).
 - `roles/users/meta/main.yml` (new) - declares dependency on `roles/groups`.
 - `roles/users/README.md` (new).
-- `Tests/roles/users/molecule/default/` (new).
+- `Tests/molecule/users/default/` (new). Mirrors the groups scenario layout (see step 9 for why scenarios live outside `Tests/roles/`).
 
 **Behaviour**
 
@@ -690,7 +690,7 @@ Verbatim string contract per problem.md; no parsing.
 - `roles/sudoers/templates/sudoers.j2` (new) - one-line-per-rule template.
 - `roles/sudoers/meta/main.yml` (new) - declares dependency on `roles/users`.
 - `roles/sudoers/README.md` (new).
-- `Tests/roles/sudoers/molecule/default/` (new).
+- `Tests/molecule/sudoers/default/` (new). Mirrors the groups scenario layout (see step 9 for why scenarios live outside `Tests/roles/`).
 
 **Behaviour**
 

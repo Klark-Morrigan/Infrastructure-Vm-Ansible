@@ -54,7 +54,7 @@ passed through when present.
 ## Tests
 
 Molecule scenario under
-[`Tests/roles/groups/molecule/default/`](../../Tests/roles/groups/molecule/default/)
+[`Tests/molecule/groups/default/`](../../Tests/molecule/groups/default/)
 runs the role against an Ubuntu 24.04 Docker container and covers:
 
 - Empty groups list - no changes, no errors.

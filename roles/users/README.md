@@ -100,7 +100,7 @@ hiding genuine drift.
 ## Tests
 
 Molecule scenario under
-[`Tests/roles/users/molecule/default/`](../../Tests/roles/users/molecule/default/)
+[`Tests/molecule/users/default/`](../../Tests/molecule/users/default/)
 runs the role against an Ubuntu 24.04 Docker container and covers:
 
 - User with `nologin` shell - created; cannot log in interactively.

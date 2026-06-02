@@ -76,7 +76,7 @@ Mode `0440 root:root` is the only ownership/mode `sudo` honours under
 ## Tests
 
 Molecule scenario under
-[`Tests/roles/sudoers/molecule/default/`](../../Tests/roles/sudoers/molecule/default/)
+[`Tests/molecule/sudoers/default/`](../../Tests/molecule/sudoers/default/)
 runs the role against an Ubuntu 24.04 Docker container and covers:
 
 - User with one rule - file exists with mode `0440` and contains the

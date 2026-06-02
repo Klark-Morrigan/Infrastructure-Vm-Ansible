@@ -12,7 +12,7 @@
 dependency:
   name: galaxy
   options:
-    requirements-file: ../../../../../requirements.yml
+    requirements-file: ../../../../requirements.yml
 
 driver:
   name: docker
@@ -30,11 +30,11 @@ provisioner:
   name: ansible
   config_options:
     defaults:
-      # Roles live two levels above the molecule scenario; point Ansible
-      # at the repo's roles/ directory so include_role: name=sudoers
-      # resolves the role (and its meta dependency chain users -> groups)
-      # without copying files into the scenario.
-      roles_path: ../../../../../roles
+      # Roles live three levels above the molecule scenario; point
+      # Ansible at the repo's roles/ directory so include_role:
+      # name=sudoers resolves the role (and its meta dependency chain
+      # users -> groups) without copying files into the scenario.
+      roles_path: ../../../../roles
       stdout_callback: yaml
       callbacks_enabled: profile_tasks
   inventory:
