@@ -534,66 +534,65 @@ flowchart TD
 
 ---
 
-## Step 8 - Vault setup script
+## Step 8 - Vault setup script (thin wrapper, deferred fork)
 
-**Reason:** Operators need a way to register the `VmUsers` vault and
-store `VmUsersConfig` without manually invoking `Set-Secret` calls. The
-script lives in this repo (not Vm-Users) per the problem.md decision.
+**Reason:** Operators need an `ops/setup-secrets` entry in this repo for
+discoverability (the rest of the operator surface lives here), but the
+real work — schema validation and vault write — already exists in
+[`Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1`](../../../../Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1).
+Until the `VmUsers` vault contract actually diverges between the two
+repos, forking the script and its validator would just duplicate logic
+that has to stay in lock-step. The original plan forked it preemptively
+on the assumption Vm-Users would be archived under feature 03; the
+preferred path is to call into Vm-Users while it is alive and defer the
+fork decision until a real divergence forces it.
 
 **Decisions locked**
 
-- Schema validation lives in a `Private/Assert-VmUsersConfig.ps1`
-  function inside the script (no module yet — v1 is small enough that a
-  flat script + dot-sourced validator is right).
-- The vault name and secret name are hardcoded: vault `VmUsers`, secret
-  `VmUsersConfig`. Matches the existing convention; not parameterised
-  to avoid drift.
-- Re-running with the same config is a no-op; re-running with a changed
-  config overwrites (`Set-Secret` semantics).
+- This repo ships an `ops/setup-secrets` entry that **delegates** to the
+  Vm-Users setup script. No duplicated validator, no duplicated
+  `Initialize-MicrosoftPowerShellSecretStoreVault` call site.
+- Vault and secret names remain `VmUsers` / `VmUsersConfig`; the bash
+  bridge in this repo reads from that same pair (see step 3) — so the
+  Vm-Users-owned write side and this repo's read side already meet at
+  the same address.
+- Vm-Users repo is not modified — the existing path under
+  [`hyper-v/ubuntu/setup-secrets.ps1`](../../../../Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1)
+  is the single source of truth. Honours
+  `feedback_dont_mutate_repos_being_archived`.
+- The wrapper assumes `Infrastructure-Vm-Users` is a sibling checkout
+  under the same parent directory as this repo. Same convention used by
+  `scripts/Run-Tests.ps1` and other shims.
+- **Fork timing is not pre-committed.** When the vault contract
+  genuinely diverges (or Vm-Users is archived), a follow-up feature
+  introduces the real setup-secrets here. Until then this wrapper is
+  the contract.
 
 **Files**
 
-- `ops/setup-secrets.ps1` (new). Takes `-ConfigFile <path>`. Reads JSON, validates, registers the vault if absent, stores the secret.
-- `ops/setup-secrets.bat` (new). Thin Explorer-launcher; same pattern as `ops/bootstrap-controller.bat` - invokes `pwsh` against the `.ps1`, forwards `%~1` as `-ConfigFile`, holds the window with `pause`.
-- `ops/Private/Assert-VmUsersConfig.ps1` (new) - dot-sourced validator co-located with its single consumer. Throws on malformed input; returns the parsed object on success.
-- `Tests/ops/SetupSecrets.Tests.ps1` (new, Pester) - unit tests for the validator and the orchestration shape (mocked `Set-Secret`/`Get-SecretVault`).
+- `ops/setup-secrets.ps1` (new). Thin wrapper. Takes `-ConfigFile <path>`, locates the Vm-Users sibling checkout, invokes its `setup-secrets.ps1` with the same parameter. Fails fast with a clear message if the sibling is missing.
+- `ops/setup-secrets.bat` (new). Explorer launcher; forwards `%~1` as `-ConfigFile`, holds the window with `pause`.
 
 **Behaviour (setup-secrets.ps1)**
 
-1. Read and parse `$ConfigFile` as JSON. Fail with a path-named error if the file is missing or unparseable.
-2. Call `Assert-VmUsersConfig` on the parsed object. Fail loudly with the schema path of the first violation.
-3. Install `Microsoft.PowerShell.SecretManagement` and `Microsoft.PowerShell.SecretStore` from PSGallery if absent.
-4. Register the `VmUsers` vault if not already registered (`Get-SecretVault -Name VmUsers -ErrorAction SilentlyContinue`).
-5. `Set-Secret -Vault VmUsers -Name VmUsersConfig -Secret <serialized JSON>`.
-6. Print confirmation.
+1. Validate `-ConfigFile` is provided and the file exists. Fail with a path-named error otherwise.
+2. Resolve the sibling Vm-Users repo path (`..\Infrastructure-Vm-Users` from this repo's root).
+3. Fail with a clear message if `Infrastructure-Vm-Users\hyper-v\ubuntu\setup-secrets.ps1` is not found — directs the operator to clone the sibling repo.
+4. Invoke the Vm-Users setup script with `-ConfigFile $ConfigFile`. Propagate its exit code / re-throw its errors verbatim.
 
-**Behaviour (Assert-VmUsersConfig)**
+**Tests**
 
-Validate the schema documented in problem.md:
+No new Pester suite. The wrapper has one branch (sibling missing →
+error) and one happy-path passthrough; both are exercised end-to-end
+by step 13's smoke test and by the existing Vm-Users test suite. A
+Pester test that mocks `& <script>` would only test the mock.
 
-- Top-level: array of VM objects.
-- Each VM object: required `vmName` (string), optional `groups` (array of group objects), required `users` (array of user objects).
-- Each group object: required `groupName` (string), optional `gid` (positive int).
-- Each user object: required `username` (string), `shell` (absolute path), `homeDir` (absolute path), `groups` (array of strings, may be empty), `sudoersRules` (array of strings, may be empty); optional `password` (non-empty string).
-- Strict-unknown: any unrecognised field at any level throws naming the field (catches typos like `versoin`/`groupsName`).
-- Empty `users` array is rejected — a VM entry with no users is meaningless and a likely typo.
+**Future fork (deferred)**
 
-**Tests (unit, mocked)**
-
-For the validator:
-
-- Empty array, single-VM, multi-VM valid inputs pass.
-- Missing required field at each level throws naming the field.
-- Unknown sub-field throws naming the field.
-- `gid` non-positive / non-integer throws.
-- Empty `users` array throws.
-
-For the orchestration:
-
-- Mocked `Get-SecretVault` returns null → `Register-SecretVault` is called.
-- Mocked `Get-SecretVault` returns existing vault → `Register-SecretVault` is not called.
-- `Set-Secret` is called once with the expected vault/secret/serialised value.
-- Invalid JSON file → fails before any vault calls.
+When the vault contract diverges or Vm-Users is archived, a separate
+feature replaces this wrapper with a first-class implementation in
+this repo (own validator, own `Initialize-MicrosoftPowerShellSecretStoreVault`
+call). Timing intentionally not scheduled here.
 
 ---
 
