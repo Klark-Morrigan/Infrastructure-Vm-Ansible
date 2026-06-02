@@ -35,6 +35,14 @@ setup() {
     # do not have bash under /bin or /usr/bin, so the absolute path
     # is the only portable way to invoke the script later.
     BASH_BIN="$(command -v bash)"
+    # Capture chmod the same way: the apt-get stub runs with the
+    # script's scrubbed PATH (only STUBS), so it cannot resolve
+    # `chmod` from the harness PATH. Without the absolute path the
+    # post-install package stubs would end up non-executable - and
+    # on Linux that turns the expected exit 127 into a 126
+    # (Permission denied), which broke this test in CI when only
+    # Windows git-bash had been used locally.
+    CHMOD_BIN="$(command -v chmod)"
 
     TEST_TMP="$(mktemp -d -t bootstrapCtl.XXXXXX)"
     STUBS="${TEST_TMP}/stubs"
@@ -92,7 +100,7 @@ if [[ "\$sub" == "install" ]]; then
     while [[ "\$#" -gt 0 && "\$1" == -* ]]; do shift; done
     for pkg in "\$@"; do
         printf '#!%s\nexit 0\n' "${BASH_BIN}" >"${STUBS}/\$pkg"
-        chmod +x "${STUBS}/\$pkg"
+        "${CHMOD_BIN}" +x "${STUBS}/\$pkg"
     done
 fi
 exit ${rc}
