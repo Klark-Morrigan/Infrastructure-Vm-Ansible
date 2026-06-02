@@ -32,11 +32,11 @@ inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in
 `requirements.yml`. Both stages are idempotent.
 
-When `python3` is absent the bash stage installs it (plus
-`python3-venv`) via `sudo apt-get`; the existing
-`sudo apt-get install -y python3 python3-venv` hint stays as the
-fallback path for when the install itself cannot proceed (no `sudo`,
-`apt-get` missing, offline, apt lock).
+When `python3` (plus `python3-venv`) or `jq` is absent the bash
+stage installs the missing package via `sudo apt-get`; the existing
+`sudo apt-get install -y <pkg>` hint stays as the fallback path for
+when the install itself cannot proceed (no `sudo`, `apt-get` missing,
+offline, apt lock).
 
 ## Bridge contract
 
@@ -78,8 +78,9 @@ group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
-checks for it and prints the `sudo apt-get install -y jq` fix line
-when absent.
+installs it via `sudo apt-get` when absent and falls back to the
+`sudo apt-get install -y jq` hint if the install itself cannot
+proceed.
 
 Each helper has its own bats suite under
 [`Tests/ops/`](Tests/ops/) covering its boundary in isolation;

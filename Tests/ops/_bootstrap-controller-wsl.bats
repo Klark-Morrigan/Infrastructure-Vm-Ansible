@@ -23,6 +23,10 @@
 # stubbed - that path stays covered by step-13 smoke.
 # Run with: bats Tests/ops/_bootstrap-controller-wsl.bats
 
+# `run -<status>` flags require bats >= 1.5; declaring the floor here
+# converts the BW02 warning into a hard requirement check at load time.
+bats_require_minimum_version 1.5.0
+
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 SCRIPT="${REPO_ROOT}/ops/_bootstrap-controller-wsl.sh"
 
@@ -116,20 +120,37 @@ run_script() {
 @test "passes python3 + python3-venv to ensure_apt_command and reaches the next gate" {
     # The helper internals are covered by _ensure-apt-command.bats; this
     # is a wiring check - simulate a successful python3 install and
-    # assert execution carries on to the jq gate. The python3 hint must
-    # NOT appear (it would mean the script swapped the helper out or
-    # passed wrong args).
+    # assert execution carries on past the python3 gate. With jq also on
+    # the install-or-hint path, a single seed_apt_install_stub 0 carries
+    # both python3 and jq past their gates, so the next failure point is
+    # whatever lies past the jq gate (venv work; not asserted here). The
+    # python3 hint must NOT appear (it would mean the script swapped the
+    # helper out or passed wrong args).
     seed_apt_install_stub 0
-    run_script
-    [ "${status}" -eq 1 ]
-    [[ "${output}" == *"jq not found in WSL"* ]]
+    run -127 env "PATH=${SCRIPT_PATH}" "${BASH_BIN}" "${SCRIPT}"
+    # Status 127 is the expected downstream failure once both gates pass:
+    # the apt stub drops a `python3` shim that exits 0, so venv "creation"
+    # produces no .venv, and the script then tries to run a non-existent
+    # `$venv_dir/bin/pip`. That is past the gates this test cares about.
     [[ "${output}" != *"python3 not found in WSL"* ]]
+    [[ "${output}" != *"jq not found in WSL"* ]]
 }
 
-@test "exits 1 with the apt-get hint when jq is missing" {
-    # python3 present so execution reaches the jq gate (currently still
-    # a check-only gate; step 5 promotes it to install-or-hint and this
-    # test is updated then).
+@test "passes jq to ensure_apt_command and the jq install branch succeeds" {
+    # Wiring check for the jq gate: python3 is pre-seeded so execution
+    # reaches jq, then the apt stub materialises jq on PATH. Neither the
+    # python3 nor the jq hint should appear. See the python3-gate test
+    # above for why status 127 is the expected post-gate failure mode.
+    seed_stub python3
+    seed_apt_install_stub 0
+    run -127 env "PATH=${SCRIPT_PATH}" "${BASH_BIN}" "${SCRIPT}"
+    [[ "${output}" != *"jq not found in WSL"* ]]
+}
+
+@test "exits 1 with the apt-get hint when jq is missing and apt install fails" {
+    # python3 pre-seeded so the python3 gate passes; sudo + apt-get are
+    # absent from PATH, so the jq install branch cannot run and the
+    # helper falls through to the fix-it hint.
     seed_stub python3
     run_script
     [ "${status}" -eq 1 ]

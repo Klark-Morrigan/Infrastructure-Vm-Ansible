@@ -40,11 +40,8 @@ ensure_apt_command python3 python3 python3-venv
 
 # jq is required by the bash bridge (run-playbook.sh) for vault-payload
 # validation and inventory generation. The WSL Ubuntu default image does
-# not ship jq.
-if ! command -v jq >/dev/null 2>&1; then
-    echo "jq not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y jq" >&2
-    exit 1
-fi
+# not ship jq, so install-or-hint via the same helper used for python3.
+ensure_apt_command jq jq
 
 # ---------------------------------------------------------------------------
 # 2. Venv create-or-reuse. The existence check pairs with a version
