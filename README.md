@@ -166,6 +166,11 @@ each role lands; the create-users playbook orders them
 
 - [`roles/groups`](roles/groups/README.md) - reconcile declared OS
   groups from `vm_users_config[*].groups`; first role applied.
+- [`roles/users`](roles/users/README.md) - reconcile declared OS
+  users from `vm_users_config[*].users`; runs after `groups`.
+  Passwords are hashed controller-side with a deterministic
+  per-user salt so re-runs are truly idempotent; `homeDir` updates
+  never relocate on-disk data (`move_home: false`).
 
 ## Index
 

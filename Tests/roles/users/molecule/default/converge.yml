@@ -1,0 +1,48 @@
+---
+# Converge: apply the users role with the positive-path fixtures.
+#
+# Three users cover the create-side cases the role's plan entry calls
+# out:
+#   - ans-nologin: shell=/usr/sbin/nologin, no password (proves the
+#     no-password branch of the task split).
+#   - ans-bash: shell=/bin/bash, password set, member of ans-extra
+#     (proves the hashing branch and supplementary-group assignment).
+#   - ans-home: bash + password, homeDir under /opt (used by the
+#     verify play's homeDir-change case).
+#
+# ans-extra is declared under `groups` so the users role's meta
+# dependency on roles/groups creates it as part of this play. A
+# second VM entry with a different vmName proves the
+# selectattr(vmName == inventory_hostname) lookup filters correctly.
+
+- name: Converge - apply users role
+  hosts: all
+  gather_facts: true
+  vars:
+    vm_users_config:
+      - vmName: instance
+        groups:
+          - groupName: ans-extra
+        users:
+          - username: ans-nologin
+            shell: /usr/sbin/nologin
+            homeDir: /home/ans-nologin
+          - username: ans-bash
+            shell: /bin/bash
+            homeDir: /home/ans-bash
+            groups:
+              - ans-extra
+            password: "initial-pw"
+          - username: ans-home
+            shell: /bin/bash
+            homeDir: /home/ans-home
+            password: "home-pw"
+      - vmName: other-host
+        users:
+          - username: should-not-appear
+            shell: /bin/bash
+            homeDir: /home/should-not-appear
+  tasks:
+    - name: Include the role under test
+      ansible.builtin.include_role:
+        name: users
