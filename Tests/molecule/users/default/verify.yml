@@ -78,10 +78,8 @@
       register: hash_before
       changed_when: false
 
-    - name: Re-apply role with rotated password for ans-bash
-      ansible.builtin.include_role:
-        name: users
-      vars:
+    - name: Stage fixture - ans-bash with rotated password
+      ansible.builtin.set_fact:
         vm_users_config:
           - vmName: instance
             users:
@@ -91,6 +89,10 @@
                 groups:
                   - ans-extra
                 password: "rotated-pw"
+
+    - name: Re-apply role with rotated password for ans-bash
+      ansible.builtin.include_role:
+        name: users
 
     - name: Capture ans-bash hash after password rotation
       ansible.builtin.command: getent shadow ans-bash
@@ -108,10 +110,8 @@
     # Case: supplementary group removed from config - because the
     # role uses append=false, dropping ans-extra from ans-bash's
     # groups must remove the membership.
-    - name: Re-apply role with ans-extra dropped from ans-bash
-      ansible.builtin.include_role:
-        name: users
-      vars:
+    - name: Stage fixture - ans-bash with ans-extra dropped
+      ansible.builtin.set_fact:
         vm_users_config:
           - vmName: instance
             users:
@@ -120,6 +120,10 @@
                 homeDir: /home/ans-bash
                 groups: []
                 password: "rotated-pw"
+
+    - name: Re-apply role with ans-extra dropped from ans-bash
+      ansible.builtin.include_role:
+        name: users
 
     - name: Re-read ans-extra group membership
       ansible.builtin.getent:
@@ -154,10 +158,8 @@
           Expected /home/ans-home to exist after the converge play but
           stat reports {{ ans_home_original_before.stat }}.
 
-    - name: Re-apply role with new homeDir for ans-home
-      ansible.builtin.include_role:
-        name: users
-      vars:
+    - name: Stage fixture - ans-home with new homeDir
+      ansible.builtin.set_fact:
         vm_users_config:
           - vmName: instance
             users:
@@ -165,6 +167,10 @@
                 shell: /bin/bash
                 homeDir: /opt/ans-home-new
                 password: "home-pw"
+
+    - name: Re-apply role with new homeDir for ans-home
+      ansible.builtin.include_role:
+        name: users
 
     - name: Read ans-home /etc/passwd entry after homeDir change
       ansible.builtin.getent:

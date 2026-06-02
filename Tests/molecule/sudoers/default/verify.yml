@@ -119,10 +119,8 @@
     # Re-apply the role with ans-single's rules cleared and assert the
     # file is gone. This is the "remove drop-in if previously present"
     # branch that the converge fixture cannot express on its own.
-    - name: Re-apply role with ans-single sudoersRules emptied
-      ansible.builtin.include_role:
-        name: sudoers
-      vars:
+    - name: Stage fixture - ans-single rules emptied
+      ansible.builtin.set_fact:
         vm_users_config:
           - vmName: instance
             users:
@@ -130,6 +128,10 @@
                 shell: /bin/bash
                 homeDir: /home/ans-single
                 sudoersRules: []
+
+    - name: Re-apply role with ans-single sudoersRules emptied
+      ansible.builtin.include_role:
+        name: sudoers
 
     - name: Stat ans-single drop-in after rules cleared
       ansible.builtin.stat:
@@ -156,10 +158,8 @@
 
     - name: Attempt to apply an invalid sudoers rule
       block:
-        - name: Re-apply role with a malformed rule for ans-multi
-          ansible.builtin.include_role:
-            name: sudoers
-          vars:
+        - name: Stage fixture - ans-multi with malformed rule
+          ansible.builtin.set_fact:
             vm_users_config:
               - vmName: instance
                 users:
@@ -168,6 +168,10 @@
                     homeDir: /home/ans-multi
                     sudoersRules:
                       - "this is not a valid sudoers line at all"
+
+        - name: Re-apply role with a malformed rule for ans-multi
+          ansible.builtin.include_role:
+            name: sudoers
         - name: Fail if the invalid rule did not error out
           ansible.builtin.fail:
             msg: visudo validation should have rejected the malformed rule
