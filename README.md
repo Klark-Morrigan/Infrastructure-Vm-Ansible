@@ -168,6 +168,17 @@ CI is wired to two reusable workflows; nothing is copied per-repo:
 - [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml)
   -> `GitHub-Common/.github/workflows/ci-yaml.yml@master` (yamllint,
   actionlint, action-validator, ansible-lint).
+- [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
+  -> `Infrastructure-E2E/.github/workflows/e2e.yml@master`. Required PR
+  check: the workstation polling agent picks up the deployment created
+  by the shared workflow, runs the full runner-lifecycle test against a
+  real Hyper-V VM with the agent's default `UsersFlow=ansible`, and
+  reports back. An Ansible role / playbook / bridge change cannot merge
+  to `master` until the new code has been proven to reconcile users and
+  bring an online runner up via this repo's `ops/create-users.sh`.
+  Requires the GitHub App from Infrastructure-E2E's setup to be
+  installed on this repo and the `GH_APP_ID` / `GH_APP_PRIVATE_KEY`
+  Actions secrets to be present.
 
 The same checks run locally via thin shims that delegate to the
 canonical runners in the sibling repos (so a fix to the CI logic
