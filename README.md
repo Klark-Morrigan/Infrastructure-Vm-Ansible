@@ -32,6 +32,56 @@ inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in
 `requirements.yml`. Both stages are idempotent.
 
+## Bridge contract
+
+The bash bridge between operator scripts under `ops/` and
+`ansible-playbook` is split across four single-purpose helpers
+under `ops/` with a leading `_` (the "called by operator entries,
+not typed by a human" convention). Each is unit-testable against
+just its own external boundary:
+
+- [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh) - vault
+  reader. Shells out to `pwsh.exe` to fetch a named secret via the
+  `Infrastructure.Secrets` wrapper (`Get-InfrastructureSecret`, never
+  bare `Get-Secret` — single provider-swap point per problem.md),
+  strips CRLF + UTF-8 BOM, validates JSON, prints the payload on
+  stdout. Only helper that talks to the Windows side.
+- [`ops/_build-inventory.sh`](ops/_build-inventory.sh) - pure
+  transform. Reads `vm_provisioner_config` on stdin and writes
+  Ansible JSON inventory (group `vm_provisioner_hosts`, host key
+  `vmName`) on stdout.
+- [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - pure
+  transform. Takes `--provisioner-config <file>` and
+  `--users-config <file>` and emits the canonical extra-vars JSON
+  with the two top-level keys (`vm_provisioner_config`,
+  `vm_users_config`) on stdout. File paths (not values) so secrets
+  stay out of argv.
+- [`ops/_run-playbook.sh`](ops/_run-playbook.sh) - thin
+  orchestrator. Validates args, sets up a per-invocation
+  `mktemp -d` tree (`chmod 700`, files `chmod 600`, cleaned up by
+  `EXIT` trap), activates `.venv`, drives the three helpers in
+  order, and dispatches `ansible-playbook` against the requested
+  playbook path. Any args after the playbook path are forwarded
+  verbatim to `ansible-playbook` (so `--tags`, `--limit`,
+  `--check`, `-v`, etc. all work without changes to the bridge).
+
+External contract (consumed by later feature playbooks): the
+extra-vars document has exactly two top-level keys
+(`vm_provisioner_config`, `vm_users_config`); the inventory has one
+group `vm_provisioner_hosts` keyed by `vmName`.
+
+`jq` is a hard runtime dependency (JSON validation, inventory and
+extra-vars composition); [`ops/bootstrap-controller.sh`](ops/bootstrap-controller.sh)
+checks for it and prints the `sudo apt-get install -y jq` fix line
+when absent.
+
+Each helper has its own bats suite under
+[`Tests/ops/`](Tests/ops/) covering its boundary in isolation;
+`_run-playbook.bats` stubs all four boundaries (`pwsh.exe`,
+`ansible-playbook`, plus the three sibling helpers) and asserts
+orchestration only. The end-to-end smoke against a real VM is
+captured in step 12 of the feature plan.
+
 ## Tests and lint
 
 CI is wired to two reusable workflows; nothing is copied per-repo:
