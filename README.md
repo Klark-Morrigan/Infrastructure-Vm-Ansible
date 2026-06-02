@@ -164,6 +164,11 @@ live in each role's own README. The top-level entry below grows as
 each role lands; the create-users playbook orders them
 `groups -> users -> sudoers`.
 
+- [`roles/vm_users_entry`](roles/vm_users_entry/README.md) -
+  repo-internal helper. Resolves the per-host `VmUsersConfig` entry
+  into the shared `vm_users_entry` fact; pulled in via meta dependency
+  by the three roles below so the selectattr+first lookup lives in
+  one file instead of three.
 - [`roles/groups`](roles/groups/README.md) - reconcile declared OS
   groups from `vm_users_config[*].groups`; first role applied.
 - [`roles/users`](roles/users/README.md) - reconcile declared OS
@@ -171,6 +176,13 @@ each role lands; the create-users playbook orders them
   Passwords are hashed controller-side with a deterministic
   per-user salt so re-runs are truly idempotent; `homeDir` updates
   never relocate on-disk data (`move_home: false`).
+- [`roles/sudoers`](roles/sudoers/README.md) - reconcile per-user
+  `/etc/sudoers.d/<username>` drop-ins from
+  `vm_users_config[*].users[*].sudoersRules`; runs after `users`.
+  Rules are written verbatim and gated by `visudo -cf` on the staged
+  temp file before the atomic swap, so a malformed rule fails the
+  task without touching the live file. An empty / absent
+  `sudoersRules` array removes the drop-in.
 
 ## Index
 

@@ -1,0 +1,21 @@
+---
+# Prepare the container before converge: install the `sudo` package
+# (provides /usr/sbin/visudo). The ubuntu:24.04 image is minimal and
+# omits sudo by default; the role's `validate: visudo -cf %s` would
+# otherwise fail with "visudo: command not found" before any rule was
+# even checked. Real VMs always have sudo present, so this is a
+# test-environment-only concern - hence prepare, not converge.
+
+- name: Prepare - install sudo so visudo is available
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install sudo
+      ansible.builtin.apt:
+        name: sudo
+        state: present

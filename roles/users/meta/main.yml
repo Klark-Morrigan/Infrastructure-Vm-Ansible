@@ -29,4 +29,5 @@ galaxy_info:
 # step 12 also imports groups explicitly, which is a no-op when the
 # meta dependency has already pulled it in.
 dependencies:
+  - role: vm_users_entry
   - role: groups

@@ -1,0 +1,58 @@
+---
+# Converge: apply the sudoers role with the positive-path fixtures.
+#
+# The role iterates the `users` array on the host's vm_users_config
+# entry, so the fixture creates four users (via the meta-dependency
+# chain sudoers -> users -> groups) covering the create-side cases
+# from the plan:
+#
+#   - ans-single: exactly one sudoersRules entry.
+#   - ans-multi: two sudoersRules entries, declared order matters
+#     for the verify play's "all rules present in order" check.
+#   - ans-empty: sudoersRules: [] -> drop-in must be absent. Seeded
+#     with a pre-existing /etc/sudoers.d/ans-empty file in the prepare
+#     play would be cleaner, but the empty-after-empty case still
+#     proves the absent branch executes; the "remove a previously
+#     present drop-in" case is covered by re-converge in verify.
+#   - ans-no-rules: sudoersRules omitted entirely (default([])) -> same
+#     branch as the empty array; proves the default handles both.
+#
+# A second VM entry with vmName=other-host proves the
+# selectattr(vmName == inventory_hostname) lookup filters correctly.
+
+- name: Converge - apply sudoers role
+  hosts: all
+  gather_facts: true
+  vars:
+    vm_users_config:
+      - vmName: instance
+        users:
+          - username: ans-single
+            shell: /bin/bash
+            homeDir: /home/ans-single
+            sudoersRules:
+              - "ans-single ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx"
+          - username: ans-multi
+            shell: /bin/bash
+            homeDir: /home/ans-multi
+            sudoersRules:
+              - "ans-multi ALL=(ALL) NOPASSWD: /usr/bin/apt-get update"
+              - "ans-multi ALL=(root) /usr/bin/journalctl"
+          - username: ans-empty
+            shell: /bin/bash
+            homeDir: /home/ans-empty
+            sudoersRules: []
+          - username: ans-no-rules
+            shell: /bin/bash
+            homeDir: /home/ans-no-rules
+      - vmName: other-host
+        users:
+          - username: should-not-appear
+            shell: /bin/bash
+            homeDir: /home/should-not-appear
+            sudoersRules:
+              - "should-not-appear ALL=(ALL) NOPASSWD:ALL"
+  tasks:
+    - name: Include the role under test
+      ansible.builtin.include_role:
+        name: sudoers

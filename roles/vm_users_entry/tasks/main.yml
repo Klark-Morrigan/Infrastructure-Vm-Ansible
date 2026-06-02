@@ -1,0 +1,24 @@
+---
+# Resolve the VmUsersConfig entry for the current host into a single
+# shared fact. Consumed by roles/groups, roles/users, and roles/sudoers
+# via meta dependency - prior to this helper each of those roles
+# carried its own selectattr-then-first set_fact (one per role, same
+# expression, three different fact names). The duplication added no
+# safety - Ansible facts are play-scoped, so a single shared name is
+# fine - and made changing the selector (e.g. switching `vmName` to a
+# different key) a three-place edit.
+#
+# Kept as a role rather than a play-level pre_task so each consuming
+# role still resolves correctly when invoked standalone (e.g.
+# `--tags users` or include_role from another play that does not know
+# about this lookup).
+
+- name: Resolve declared VM-users entry for this host
+  ansible.builtin.set_fact:
+    vm_users_entry: >-
+      {{
+        vm_users_config
+        | selectattr('vmName', 'equalto', inventory_hostname)
+        | first
+        | default({})
+      }}

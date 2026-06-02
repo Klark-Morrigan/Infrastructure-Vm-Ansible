@@ -1,0 +1,33 @@
+---
+# Role metadata. Same shape as the sibling roles' meta files: the
+# galaxy_info block is here to satisfy ansible-lint, not to publish.
+
+galaxy_info:
+  role_name: sudoers
+  author: Infrastructure-VM-Ansible
+  description: >-
+    Reconcile /etc/sudoers.d/<username> drop-ins on a target VM from
+    each user's sudoersRules array in the VmUsersConfig vault entry.
+    Third role in the create-users play; runs after roles/users so the
+    account each drop-in references already exists.
+  license: MIT
+  min_ansible_version: "2.18"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - system
+    - users
+    - sudoers
+
+# Hard dependency on roles/users: a sudoers drop-in for a user the OS
+# does not know about is dead config (sudo never consults it for an
+# unknown account). Declaring the dependency here also means
+# `--tags sudoers` still produces a correct state when run in isolation
+# - users will be reconciled first. The create-users playbook in
+# step 12 imports users explicitly too, which is a no-op when this
+# meta dependency has already pulled it in.
+dependencies:
+  - role: vm_users_entry
+  - role: users

@@ -8,20 +8,11 @@
 # declared gid conflicts with an existing group - matching the
 # "GIDs never silently change" guarantee from problem.md.
 
-# vm_users_config arrives as the verbatim VmUsersConfig JSON array (see
-# the bash bridge's _build-extra-vars.sh contract). Looking up the slice
-# for the current host once keeps the loop below readable and avoids
-# repeating the selectattr filter on every task.
-- name: Resolve declared VM-users entry for this host
-  ansible.builtin.set_fact:
-    _groups_vm_entry: >-
-      {{
-        vm_users_config
-        | selectattr('vmName', 'equalto', inventory_hostname)
-        | first
-        | default({})
-      }}
-
+# vm_users_entry is the per-host slice of vm_users_config, resolved
+# once by roles/vm_users_entry (pulled in via meta dependency). See
+# that role for the selectattr+first lookup; consumer roles just
+# read the resulting object.
+#
 # gid is optional in the schema; omit it when absent so the kernel
 # assigns one (matches the "missing optional gid" decision in
 # problem.md). When present, a mismatch with an existing group fails
@@ -31,6 +22,6 @@
     name: "{{ item.groupName }}"
     gid: "{{ item.gid | default(omit) }}"
     state: present
-  loop: "{{ _groups_vm_entry.groups | default([]) }}"
+  loop: "{{ vm_users_entry.groups | default([]) }}"
   loop_control:
     label: "{{ item.groupName }}"

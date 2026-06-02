@@ -23,8 +23,13 @@ galaxy_info:
     - users
     - groups
 
-# No role dependencies. The create-users playbook (step 12) orders
-# groups -> users -> sudoers explicitly; declaring `users` as a meta
-# dependency here would invert the relationship and prevent calling
-# this role on its own (e.g. with --tags groups).
-dependencies: []
+# Only dependency: the vm_users_entry helper, which sets the shared
+# `vm_users_entry` fact this role's loop reads. Declaring it here (not
+# just in the playbook) means running this role on its own
+# (e.g. --tags groups, or include_role from another play) still
+# resolves the host slice correctly. The create-users playbook
+# (step 12) orders groups -> users -> sudoers explicitly; users / sudoers
+# are intentionally NOT meta-deps here - declaring them would invert
+# the relationship and make standalone use of groups impossible.
+dependencies:
+  - role: vm_users_entry
