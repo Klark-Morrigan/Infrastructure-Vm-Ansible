@@ -75,7 +75,7 @@ boundary:
 | Python | A repo-local `.venv/` (gitignored) with pinned `ansible-core` and deps from `requirements.txt`. No system-wide Ansible install. |
 | Galaxy collections | Installed from `requirements.yml` (`ansible.posix`, `community.general` as needed). Pinned by version. |
 | Idempotence | Both scripts are re-run safe. `Assert-Wsl2Ready` short-circuits on already-ready WSL; the bash setup detects existing venv + collections and skips. |
-| `pwsh.exe` reachability from WSL | Verified during bootstrap (PATH check inside WSL). Missing pwsh is a fatal error with a clear message — the bridge depends on it. |
+| `pwsh.exe` as a prerequisite | PowerShell 7+ on the Windows host is a hard operator prerequisite, documented in the README alongside WSL2. The bootstrap does **not** detect or install it — `Import-Module PowerShell.Common` and `Infrastructure.Secrets` both require PS7, so any host that can launch `bootstrap-controller.ps1` already has it. The bash bridge's `pwsh.exe` invocation relies on the same prerequisite. |
 
 #### Bash bridge: vault to extra-vars to ansible-playbook
 

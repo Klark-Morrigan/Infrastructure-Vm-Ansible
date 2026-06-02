@@ -41,7 +41,7 @@ to siblings, not a target operators run directly.
 - [Step 3 - Bash bridge: vault read, extra-vars, inventory, dispatch](#step-3---bash-bridge-vault-read-extra-vars-inventory-dispatch)
 - [Step 4 - Bootstrap installs python3](#step-4---bootstrap-installs-python3)
 - [Step 5 - Bootstrap installs jq](#step-5---bootstrap-installs-jq)
-- [Step 6 - Bootstrap installs PowerShell 7 (pwsh.exe)](#step-6---bootstrap-installs-powershell-7-pwshexe)
+- [Step 6 - Document pwsh 7+ as an operator prerequisite](#step-6---document-pwsh-7-as-an-operator-prerequisite)
 - [Step 7 - Bootstrap installs Infrastructure.Secrets module](#step-7---bootstrap-installs-infrastructuresecrets-module)
 - [Step 8 - Vault setup script](#step-8---vault-setup-script)
 - [Step 9 - Role: groups](#step-9---role-groups)
@@ -399,48 +399,75 @@ flowchart TD
 
 ---
 
-## Step 6 - Bootstrap installs PowerShell 7 (pwsh.exe)
+## Step 6 - Document pwsh 7+ as an operator prerequisite
 
-**Reason:** Windows-side counterpart to steps 4 and 5. pwsh.exe lives
-on the Windows host (not in WSL), so the install belongs in the
-PowerShell stage (`ops/bootstrap-controller.ps1`), not the bash stage.
-Lifts the pwsh.exe check from check-only to install-or-hint using
-winget.
+**Reason:** The `pwsh.exe` install branch this step originally called
+for is unreachable. `bootstrap-controller.ps1` does
+`Import-Module PowerShell.Common` (step 2) and
+`Invoke-ModuleInstall -ModuleName Infrastructure.Secrets` (step 7);
+both modules pin `PowerShellVersion = '7.0'` and
+`CompatiblePSEditions = @('Core')` in their psd1, so any host that
+can run the script already has pwsh 7+. The two entry points
+(`ops/bootstrap-controller.bat` and the README's
+`pwsh ./ops/bootstrap-controller.ps1` quick-start) both launch via
+`pwsh.exe`, so neither can ever reach a "pwsh missing" branch.
+Codifying the prerequisite in the README is the only honest version
+of this step. The asymmetry with steps 4-5 (which do install
+python3 / jq inside WSL) is real: those tools are not preconditions
+of running the bash script itself, they are deps the script
+declares. pwsh is a precondition of the PS script existing at all.
 
 **Decisions locked**
 
-- Install command: `winget install --id Microsoft.PowerShell --silent --accept-source-agreements --accept-package-agreements`. Pinned id matches the Microsoft Store / winget canonical package; `--silent` + `--accept-*` are required to keep the bootstrap unattended (winget prompts otherwise).
-- If `winget` itself is absent (older Windows, no App Installer), fall back to the existing operator-action message. No bootstrapping winget — that is out of scope.
+- pwsh 7+ is an operator prerequisite, not a bootstrapped dependency.
+- The bash bridge's `pwsh.exe` invocation relies on the same
+  prerequisite (operators reach the bridge through the PS bootstrap,
+  which has already proven pwsh is present).
+- README gains a top-level **Prerequisites** section listing pwsh 7+,
+  WSL2-capable Windows, and pointing at install URLs. Placed above
+  the Controller bootstrap section so operators see it before the
+  quick-start commands.
+- The bash-side `command -v pwsh.exe` gate in
+  `_bootstrap-controller-wsl.sh` is deleted: the PS stage runs first
+  and would already have crashed at `Import-Module` if pwsh were
+  absent. The `pwsh.exe: reachable` line in the summary block stays
+  - it is a positive affirmation, useful in transcripts.
 
 **Files**
 
-- `ops/bootstrap-controller.ps1` (modified) - between the `Assert-Wsl2Ready` block and the `wsl --` invocation, check `Get-Command pwsh -ErrorAction SilentlyContinue`. If absent and `winget` is present, run the pinned install; otherwise (or if the install fails) print the existing "Install PowerShell 7+" message in yellow and exit 1.
-- `Tests/ops/Bootstrap-Controller.Tests.ps1` (modified) - cases for the new branch.
+- `README.md` (modified) - add a new **Prerequisites** section
+  immediately above **Controller bootstrap**. One line per item;
+  pwsh 7+ links to https://aka.ms/powershell-release, WSL2 references
+  Microsoft's docs.
+- `ops/_bootstrap-controller-wsl.sh` (modified) - delete the
+  `command -v pwsh.exe` check and its error branch. Keep the summary
+  line.
+- `Tests/ops/_bootstrap-controller-wsl.bats` (modified) - delete the
+  "pwsh.exe absent → exit 1" case and any pwsh-absent fixtures it
+  uses. Other gates (python3 / jq install-or-hint) stay.
 
 **Behaviour**
 
-1. After `Assert-Wsl2Ready` succeeds and before invoking `wsl --`, check for pwsh on PATH.
-2. If present → continue.
-3. If absent and `winget` is present → run the pinned winget install. On success, re-check; proceed.
-4. If absent and `winget` is absent, OR the winget install fails → print the existing operator-action message and exit 1.
+No runtime behaviour change. The contract moves from "bootstrap
+detects pwsh and fails late" to "operator is told upfront in the
+README and entry points refuse to launch without pwsh".
 
-**Tests (Pester, mocked)**
+**Tests**
 
-- pwsh already present → winget is never called; script proceeds to invoke `wsl`.
-- pwsh absent, mocked `winget` returns 0 → winget is invoked with the pinned args; script proceeds.
-- pwsh absent, mocked `winget` returns non-zero → script exits 1 with the install-message branch.
-- pwsh absent, mocked `Get-Command winget` returns null → script exits 1 with the install-message branch; winget is never invoked.
+The deleted bats case is the only test impact. No new tests; the
+python3 / jq install-or-hint cases from steps 4-5 keep covering the
+install-branch shape for apt deps.
+
+**Diagram**
 
 ```mermaid
-flowchart TD
-    A[Assert-Wsl2Ready ok] --> B{pwsh on PATH?}
-    B -- yes --> Z[invoke wsl -- bootstrap.sh]
-    B -- no --> C{winget present?}
-    C -- no --> E[print install message, exit 1]
-    C -- yes --> D[winget install Microsoft.PowerShell]
-    D --> F{exit 0?}
-    F -- yes --> Z
-    F -- no --> E
+flowchart LR
+    Op[Operator] -->|reads| RM[README Prerequisites]
+    RM -->|installs once| PWSH[pwsh 7+ on Windows]
+    PWSH -->|launches| BAT[ops/bootstrap-controller.bat]
+    BAT -->|invokes| PS[ops/bootstrap-controller.ps1]
+    PS -->|Import-Module| Common[PowerShell.Common requires PS7]
+    PS -->|Invoke-ModuleInstall| Sec[Infrastructure.Secrets requires PS7]
 ```
 
 ---
