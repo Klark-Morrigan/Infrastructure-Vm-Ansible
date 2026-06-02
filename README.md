@@ -12,6 +12,7 @@ was extended by the feature step that earned it.
 ## Index
 
 - [Controller bootstrap](#controller-bootstrap)
+  - [Troubleshooting: WSL default distro has no bash](#troubleshooting-wsl-default-distro-has-no-bash)
 - [Vault setup](#vault-setup)
 - [Create users](#create-users)
 - [Bridge contract](#bridge-contract)
@@ -48,6 +49,40 @@ stage installs the missing package via `sudo apt-get`; the existing
 `sudo apt-get install -y <pkg>` hint stays as the fallback path for
 when the install itself cannot proceed (no `sudo`, `apt-get` missing,
 offline, apt lock).
+
+### Troubleshooting: WSL default distro has no bash
+
+If bootstrap fails with a yellow `bash was not found on PATH inside
+the default WSL distro ...` message, the workstation's default WSL
+distro does not ship bash. The usual root cause is **Docker Desktop**:
+its installer ships a minimal `docker-desktop` engine distro (busybox
+userland, no bash) and silently makes it the WSL default, so a bare
+`wsl --` call lands there and every `#!/usr/bin/env bash` script in
+the bridge fails with `env: can't execute 'bash': No such file or
+directory`.
+
+Diagnose:
+
+```
+wsl --list --verbose
+```
+
+If the `*` (default) is on `docker-desktop`, that is the trap.
+Remediate by installing a real distro and pinning it as default:
+
+```
+wsl --install -d Ubuntu-24.04
+wsl --set-default Ubuntu-24.04
+```
+
+Re-run `ops/bootstrap-controller.ps1`; the second WSL gate now
+passes and the bash bridge runs against the new default.
+
+E2E callers (`Infrastructure-E2E/agent/Start-E2EAgent.ps1`) avoid the
+trap entirely by passing `-WslDistro <name>` and storing the same
+value in the `E2EConfig` vault, so they target the bash-having distro
+explicitly via `wsl -d <name> --` regardless of what the workstation's
+default happens to be at the time.
 
 ## Vault setup
 
