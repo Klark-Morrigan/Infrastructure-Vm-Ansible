@@ -23,8 +23,10 @@ or double-click
 from Explorer (thin launcher: invokes `pwsh` against the `.ps1` and
 holds the window open).
 
-The PowerShell stage ensures WSL2 is installed (delegating to
-`Assert-Wsl2Ready` from `PowerShell.Common`) and then invokes
+The PowerShell stage installs `PowerShell.Common` and
+`Infrastructure.Secrets` from PSGallery (idempotent — `Invoke-ModuleInstall`
+no-ops when current), ensures WSL2 is installed (delegating to
+`Assert-Wsl2Ready` from `PowerShell.Common`), and then invokes
 [`ops/bootstrap-controller.sh`](ops/bootstrap-controller.sh)
 inside WSL to create the Python venv, install Ansible from
 `requirements.txt`, and pull the Galaxy collections pinned in

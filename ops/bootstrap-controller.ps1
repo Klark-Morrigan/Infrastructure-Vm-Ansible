@@ -53,6 +53,18 @@ function Invoke-BootstrapController {
     }
     Import-Module PowerShell.Common -ErrorAction Stop
 
+    # Infrastructure.Secrets is the wrapper the bash bridge's
+    # _read-vault-config.sh imports inside its pwsh.exe call. The
+    # bridge runs unattended once per playbook, so adding an
+    # install-if-missing dance per-invocation would be slow and chatty;
+    # lift the install into the bootstrap instead. Invoke-ModuleInstall
+    # is itself idempotent and retry-wrapped for PSGallery blips, so no
+    # extra branching is needed at this call site. PowerShell.Common is
+    # auto-loaded as Infrastructure.Secrets's RequiredModules dep;
+    # SecretManagement and SecretStore bootstrap themselves on first
+    # call to Use-MicrosoftPowerShellSecretStoreProvider.
+    Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'
+
     # WSL2 gate. The Wsl2NotReady: prefix is the contract documented
     # in Assert-Wsl2Ready's help; treat it as a clean exit with a
     # reboot hint rather than a hard failure - the user has to reboot
