@@ -48,9 +48,7 @@ to siblings, not a target operators run directly.
 - [Step 10 - Role: users](#step-10---role-users)
 - [Step 11 - Role: sudoers](#step-11---role-sudoers)
 - [Step 12 - Playbook and operator entry point](#step-12---playbook-and-operator-entry-point)
-- [Step 13 - Smoke test against a real VM](#step-13---smoke-test-against-a-real-vm)
-- [Step 14 - README and per-step docs](#step-14---readme-and-per-step-docs)
-- [Step 15 - E2E test layer for the Ansible users path](#step-15---e2e-test-layer-for-the-ansible-users-path)
+- [Step 13 - E2E test layer for the Ansible users path](#step-13---e2e-test-layer-for-the-ansible-users-path)
 
 ---
 
@@ -69,7 +67,7 @@ no feature lands without the lint coverage that will police it.
 - `requirements.yml` (new) - Galaxy collections: `ansible.posix`, `community.general` pinned to a current version. No third-party collections in v1.
 - `inventory/.gitkeep` (new) - placeholder so the dir exists.
 - `roles/.gitkeep`, `playbooks/.gitkeep`, `scripts/.gitkeep` (new).
-- `README.md` (new) - one-paragraph stub describing the repo's purpose and pointing at this feature folder. Filled out properly in step 14.
+- `README.md` (new) - one-paragraph stub describing the repo's purpose and pointing at this feature folder. Each subsequent step extends the section it earns; there is no terminal docs pass.
 - `.github/workflows/ci-yaml.yml` (new) - single-job reusable-workflow caller of [GitHub-Common's `ci-yaml.yml`](../../../../GitHub-Common/.github/workflows/ci-yaml.yml). Four lint jobs run against this repo from day one: `actionlint`, `action-validator`, `yamllint`, `ansible-lint`. `actionlint` and `action-validator` exercise the new `ci.yml` itself; `yamllint` covers `requirements.yml`, `ansible.cfg`, and every YAML file added in later steps; `ansible-lint` auto-skips this commit (no `playbooks/` content yet) and starts gating from step 8 onward when the first role lands.
 
 **Behaviour**
@@ -84,7 +82,8 @@ File presence only. Two reproducibility checks tied to this step:
 The CI run itself is the test - any finding from `yamllint`,
 `actionlint`, or `action-validator` against the scaffolded files is
 fixed in-line during this step, not relaxed at the workflow layer.
-Smoke-level end-to-end coverage of the substrate stays in step 13.
+End-to-end coverage of the substrate stays in step 13 (the
+Infrastructure-E2E fork).
 
 ---
 
@@ -140,9 +139,9 @@ runs from Windows; everything else runs inside WSL.
 **Tests (bash)**
 
 Skipped for v1 — the bash bootstrap is essentially a sequence of shell
-commands with no branching logic worth unit-testing in isolation. Step 13
-exercises it end-to-end. (Promote to bats if the script grows
-conditionals.)
+commands with no branching logic worth unit-testing in isolation.
+Step 13 (E2E fork) exercises it end-to-end. (Promote to bats if the
+script grows conditionals.)
 
 ---
 
@@ -584,7 +583,7 @@ fork decision until a real divergence forces it.
 
 No new Pester suite. The wrapper has one branch (sibling missing →
 error) and one happy-path passthrough; both are exercised end-to-end
-by step 13's smoke test and by the existing Vm-Users test suite. A
+by step 13's E2E fork and by the existing Vm-Users test suite. A
 Pester test that mocks `& <script>` would only test the mock.
 
 **Future fork (deferred)**
@@ -630,7 +629,7 @@ Later roles copy this shape.
 Once this role works, document the var contract in
 `roles/groups/README.md` (just the `vm_users_config[*].groups` shape and
 what the role does). Per-role READMEs are the source of truth; the
-top-level README in step 14 links to them.
+top-level README's Roles section links to each per-role README.
 
 ---
 
@@ -741,90 +740,14 @@ per host per run.
 
 **Tests**
 
-Covered by step 13 (smoke test) — the playbook itself has no logic
-beyond role ordering.
+Covered by step 13 (the Infrastructure-E2E fork) — the playbook itself
+has no logic beyond role ordering, and that step exercises the full
+chain (PS → WSL → bridge → vault → ansible-playbook → roles → SSH → VM)
+against a real VM.
 
 ---
 
-## Step 13 - Smoke test against a real VM
-
-**Reason:** Validates the full chain (PS → WSL → bridge → vault →
-ansible-playbook → roles → SSH → VM) against an actual VM provisioned
-by `Infrastructure-Vm-Provisioner`. No mock can prove this works.
-
-**Decisions locked**
-
-- Smoke test is **manual** for v1. It is not in CI. It runs once on the
-  operator's host against a real VM and the run is captured in
-  step-14's README as a recorded transcript. Automating it requires
-  either a CI-accessible Hyper-V host or a mocked Ansible target, both
-  of which are larger projects than this feature.
-- The smoke test runs against a VM that already exists from
-  Vm-Provisioner; this feature does not provision its own.
-
-**Files**
-
-- `docs/dev/implementation/02-groups-users-sudoers-creation/smoke-test.md` (new) - the step-by-step procedure and the expected output, captured during the actual run.
-
-**Procedure**
-
-1. Provision one VM via Vm-Provisioner (standard config, no Ansible-managed users yet beyond the cloud-init admin).
-2. Author a minimal `VmUsersConfig` for that VM (one group, two users, one user with sudoersRules).
-3. Run `pwsh ./ops/setup-secrets.ps1 -ConfigFile <path>`.
-4. Run `pwsh ./ops/bootstrap-controller.ps1` (on a fresh host) or skip (on a host where WSL is already set up).
-5. Run `wsl ./ops/create-users.sh -v` (verbose for the recorded transcript).
-6. SSH to the VM and verify: `getent group`, `getent passwd`, `id`, `cat /etc/sudoers.d/<user>`, `visudo -c`.
-7. Re-run step 5; expect `changed: 0` across the board.
-8. Edit one field in the config (e.g. add a supplementary group); re-run; expect `changed: 1` on the user and `changed: 0` elsewhere.
-
-**Acceptance criteria**
-
-- Steps 5, 7, and 8 exit 0 with no failed hosts.
-- Step 7 reports zero `changed` tasks (true idempotence; proves the salt strategy).
-- Step 8 reports exactly the expected change and no collateral.
-
----
-
-## Step 14 - README and per-step docs
-
-**Reason:** Operator-facing documentation. Until this exists, only the
-problem.md and plan.md describe the repo, and neither is the right place
-for "how do I use this."
-
-**Files**
-
-- `README.md` (overwrite the stub from step 1).
-- Per-role `README.md`s (already created in steps 8-10, finalised here).
-
-**README contents (top-level)**
-
-- One-paragraph purpose.
-- Index of feature folders under `docs/dev/implementation/` for design history.
-- **Quick start** subsection — the actual operator commands:
-  ```
-  pwsh ./ops/bootstrap-controller.ps1
-  pwsh ./ops/setup-secrets.ps1 -ConfigFile C:\private\vm-users-config.json
-  wsl ./ops/create-users.sh
-  ```
-  Each command also has a sibling `.bat` Explorer launcher under
-  `ops/` for double-click use.
-- **Config reference** — table of `VmUsersConfig` fields with types and notes.
-- **Bridge contract** — the extra-vars shape (`vm_provisioner_config`, `vm_users_config`) so future feature plans (runners, toolchains) know what they consume.
-- **Repo structure** tree, mirroring Vm-Provisioner's README style.
-- **CI** subsection — documents the `ci-yaml.yml` wired in step 1: it calls [GitHub-Common's `ci-yaml.yml`](../../../../GitHub-Common/.github/workflows/ci-yaml.yml) reusable workflow, which runs `actionlint`, `action-validator`, `yamllint`, and `ansible-lint`. `ansible-lint` auto-detects Ansible content; the other three lint their respective surfaces unconditionally. No repo-local lint configuration files unless a real finding forces one - the shared bar is the bar.
-
-**README contents (per-role)**
-
-Each `roles/<name>/README.md` has:
-
-- Purpose.
-- Var contract (the slice of `vm_users_config[*]` the role reads).
-- Idempotence guarantees and known non-idempotent edges (e.g. `move_home: no` for users).
-- Link back to problem.md sections for rationale.
-
----
-
-## Step 15 - E2E test layer for the Ansible users path
+## Step 13 - E2E test layer for the Ansible users path
 
 **Reason:** Closes the loop against real infrastructure. The existing
 `Infrastructure-E2E/agent/e2e/vm-users/` layer validates the
@@ -988,7 +911,7 @@ For the agent's pass-through:
 - No flag (default) reaches the dispatcher with `UsersFlow=ansible` and the default `AnsiblePath`. Different from today's behaviour — the default flow has flipped — and that change is captured in the test cases here so a regression that re-flips the default fails the test.
 - `UsersFlow=ansible` runs through `Invoke-VmUsersTest` end-to-end: Set-VmUsersForTest dispatches to WSL, assertions pass, teardown calls `remove-users.ps1`, removal assertions pass.
 
-**Real-VM acceptance (manual, captured in smoke-test.md)**
+**Real-VM acceptance (manual)**
 
 Two recorded runs of `.\agent\e2e\vm-users\Start-VmUsersTest.ps1`:
 
