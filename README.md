@@ -71,6 +71,39 @@ by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
 first-class implementation when the vault contract diverges (or
 Vm-Users is archived).
 
+## Create users
+
+Once the controller is bootstrapped and the vault entry is in place,
+the create-users flow reconciles every host in the `VmProvisionerConfig`
+inventory with one command:
+
+```
+wsl ./ops/create-users.sh
+```
+
+or double-click [`ops/create-users.bat`](ops/create-users.bat) from
+Explorer (Git Bash launcher; mirrors the
+[`scripts/run-tests.bat`](scripts/run-tests.bat) sibling-find pattern
+and reuses [`GitHub-Common/scripts/_find-bash.bat`](../GitHub-Common/scripts/_find-bash.bat)).
+
+[`ops/create-users.sh`](ops/create-users.sh) is a one-line wrapper
+that dispatches [`playbooks/create-users.yml`](playbooks/create-users.yml)
+through the [bridge](#bridge-contract); every flag after the entry
+point is forwarded to `ansible-playbook` verbatim, so the usual
+operator knobs work unchanged:
+
+```
+wsl ./ops/create-users.sh --check               # dry-run
+wsl ./ops/create-users.sh --tags users          # scope to one role
+wsl ./ops/create-users.sh --limit vm-1,vm-2     # scope to specific VMs
+wsl ./ops/create-users.sh -v                    # verbose play recap
+```
+
+The playbook composes the three roles in `groups -> users -> sudoers`
+order against the `vm_provisioner_hosts` inventory group; each role
+is tagged with its own name. `any_errors_fatal: false` keeps a
+transiently offline VM from stranding the rest of the fleet.
+
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and
