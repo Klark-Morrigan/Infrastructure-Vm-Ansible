@@ -5,10 +5,19 @@ provisioned VMs. Invoked from Windows via a PowerShell -> WSL bridge that
 reads configuration from PowerShell SecretManagement vaults and dispatches
 to `ansible-playbook` inside a Linux venv.
 
-This stub is filled out properly in
-[step 10](docs/dev/implementation/02-groups-users-sudoers-creation/plan.md#step-10---readme-and-per-step-docs)
-of the current feature. Design history and rationale live under
-[docs/dev/implementation/](docs/dev/implementation/).
+Design history and rationale live under
+[docs/dev/implementation/](docs/dev/implementation/); each section below
+was extended by the feature step that earned it.
+
+## Index
+
+- [Controller bootstrap](#controller-bootstrap)
+- [Vault setup](#vault-setup)
+- [Create users](#create-users)
+- [Bridge contract](#bridge-contract)
+- [Tests and lint](#tests-and-lint)
+- [Roles](#roles)
+- [Feature folders](#feature-folders)
 
 ## Controller bootstrap
 
@@ -230,7 +239,7 @@ each role lands; the create-users playbook orders them
   task without touching the live file. An empty / absent
   `sudoersRules` array removes the drop-in.
 
-## Index
+## Feature folders
 
 - [Current feature: 02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)
   - [Problem](docs/dev/implementation/02-groups-users-sudoers-creation/problem.md)
