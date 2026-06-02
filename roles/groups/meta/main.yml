@@ -1,0 +1,30 @@
+---
+# Role metadata. Kept minimal: this role is consumed only by the
+# repo-local create-users playbook, not published to Galaxy, so the
+# galaxy_info block exists to satisfy ansible-lint's role-name /
+# meta-no-info rules without committing to a public contract.
+
+galaxy_info:
+  role_name: groups
+  author: Infrastructure-VM-Ansible
+  description: >-
+    Reconcile declared OS groups on a target VM from the VmUsersConfig
+    vault entry for the host. First role in the create-users play; runs
+    before users so primary and supplementary groups exist when
+    ansible.builtin.user is invoked.
+  license: MIT
+  min_ansible_version: "2.18"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - system
+    - users
+    - groups
+
+# No role dependencies. The create-users playbook (step 12) orders
+# groups -> users -> sudoers explicitly; declaring `users` as a meta
+# dependency here would invert the relationship and prevent calling
+# this role on its own (e.g. with --tags groups).
+dependencies: []

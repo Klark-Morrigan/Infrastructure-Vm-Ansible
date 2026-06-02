@@ -157,6 +157,16 @@ lands in one place):
 Both shims assume `PowerShell-Common` and `GitHub-Common` are sibling
 checkouts under the same parent directory.
 
+## Roles
+
+Per-role contracts (var schema, idempotence guarantees, test scope)
+live in each role's own README. The top-level entry below grows as
+each role lands; the create-users playbook orders them
+`groups -> users -> sudoers`.
+
+- [`roles/groups`](roles/groups/README.md) - reconcile declared OS
+  groups from `vm_users_config[*].groups`; first role applied.
+
 ## Index
 
 - [Current feature: 02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)

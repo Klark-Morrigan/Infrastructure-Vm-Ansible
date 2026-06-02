@@ -1,0 +1,36 @@
+---
+# Reconcile declared OS groups for the current host.
+#
+# Why this role exists at all: it is the first role applied by the
+# create-users play, so users with a declared primary or supplementary
+# group find it ready before ansible.builtin.user runs. GID handling is
+# delegated to ansible.builtin.group, which already errors when a
+# declared gid conflicts with an existing group - matching the
+# "GIDs never silently change" guarantee from problem.md.
+
+# vm_users_config arrives as the verbatim VmUsersConfig JSON array (see
+# the bash bridge's _build-extra-vars.sh contract). Looking up the slice
+# for the current host once keeps the loop below readable and avoids
+# repeating the selectattr filter on every task.
+- name: Resolve declared VM-users entry for this host
+  ansible.builtin.set_fact:
+    _groups_vm_entry: >-
+      {{
+        vm_users_config
+        | selectattr('vmName', 'equalto', inventory_hostname)
+        | first
+        | default({})
+      }}
+
+# gid is optional in the schema; omit it when absent so the kernel
+# assigns one (matches the "missing optional gid" decision in
+# problem.md). When present, a mismatch with an existing group fails
+# the play - exactly the behaviour we want.
+- name: Reconcile declared groups
+  ansible.builtin.group:
+    name: "{{ item.groupName }}"
+    gid: "{{ item.gid | default(omit) }}"
+    state: present
+  loop: "{{ _groups_vm_entry.groups | default([]) }}"
+  loop_control:
+    label: "{{ item.groupName }}"
