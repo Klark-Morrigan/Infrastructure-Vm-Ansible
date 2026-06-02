@@ -38,6 +38,39 @@ stage installs the missing package via `sudo apt-get`; the existing
 when the install itself cannot proceed (no `sudo`, `apt-get` missing,
 offline, apt lock).
 
+## Vault setup
+
+Operators write the `VmUsersConfig` payload to the local SecretStore
+vault `VmUsers` (secret name `VmUsersConfig`) by running:
+
+```
+pwsh ./ops/setup-secrets.ps1 -ConfigFile C:\private\vm-users-config.json
+```
+
+or by dropping the JSON file onto
+[`ops/setup-secrets.bat`](ops/setup-secrets.bat) (Explorer launcher;
+forwards the dropped path as `-ConfigFile`).
+
+[`ops/setup-secrets.ps1`](ops/setup-secrets.ps1) is a **thin wrapper**
+that delegates to
+[`Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1`](../Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1).
+The Vm-Users script owns the schema validator, the
+SecretStore/SecretManagement install, the vault registration, and
+the `Set-Secret` write. Both repos target the same `VmUsers` vault
+and `VmUsersConfig` secret name - which is exactly what this repo's
+bash bridge in [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh)
+reads from. Forking the writer before the vault contract actually
+diverges would just create a second place to keep in lock-step;
+the wrapper buys discoverability (the entry sits next to the rest
+of `ops/`) without that cost.
+
+The wrapper expects `Infrastructure-Vm-Users` as a sibling checkout
+under the same parent directory as this repo - same convention used
+by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
+`PowerShell-Common`. A follow-up feature replaces the wrapper with a
+first-class implementation when the vault contract diverges (or
+Vm-Users is archived).
+
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and
