@@ -13,7 +13,13 @@
 # `--tags users` or include_role from another play that does not know
 # about this lookup).
 
-- name: Resolve declared VM-users entry for this host
+# The fact name intentionally matches the role name. ansible-lint's
+# no-role-prefix rule wants `vm_users_entry_<suffix>`, but the role is
+# a one-output helper whose entire job is to expose this single fact -
+# the role name *is* the suffix. Renaming to e.g. vm_users_entry_data
+# would propagate across three consumer roles (groups, users, sudoers)
+# for no semantic gain. Hence the inline noqa on the task name below.
+- name: Resolve declared VM-users entry for this host  # noqa: var-naming[no-role-prefix]
   ansible.builtin.set_fact:
     vm_users_entry: >-
       {{
