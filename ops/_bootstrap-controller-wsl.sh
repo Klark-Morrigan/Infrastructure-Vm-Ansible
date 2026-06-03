@@ -35,11 +35,41 @@ source "$script_dir/_ansible-env.sh"
 source "$script_dir/_ensure-apt-command.sh"
 
 # ---------------------------------------------------------------------------
-# 1. Python availability. python3 plus python3-venv are the foundation for
-#    everything below - if neither is present, the rest of the bootstrap
-#    has nothing to land on.
+# 1. Python availability. python3 plus the ensurepip module are the
+#    foundation for everything below - if either is absent, the rest of
+#    the bootstrap has nothing to land on.
+#
+# Two presence checks, not one. Ubuntu 24.04 ships python3 in the base
+# image but ships ensurepip *only* via the version-specific
+# python3.12-venv package (pulled in by the python3-venv metapackage).
+# A single `command -v python3` check returns 0 immediately and never
+# installs the venv package; `python3 -m venv --help` also returns 0
+# (the venv module itself is in stdlib) - so the only honest probe is
+# `python3 -c 'import ensurepip'`, which fails iff python3.X-venv is
+# absent.
 # ---------------------------------------------------------------------------
 ensure_apt_command python3 python3 python3-venv
+
+if ! python3 -c 'import ensurepip' 2>/dev/null; then
+    # python3 binary is present but ensurepip is missing. Direct sudo
+    # apt-get rather than via ensure_apt_command: the helper probes
+    # `command -v <name>`, which only matches PATH-resolvable binaries,
+    # not Python modules. python3-venv is a metapackage on Ubuntu and
+    # resolves to the right python3.X-venv (e.g. python3.12-venv on
+    # Noble); we install both names to cover the case where the
+    # metapackage is absent on a minimal image.
+    echo "Installing python3-venv (binary alone is not enough; ensurepip missing) ..."
+    if ! (command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1); then
+        echo "ensurepip missing and sudo/apt-get unavailable. Install it with: sudo apt-get update && sudo apt-get install -y python3-venv" >&2
+        exit 1
+    fi
+    sudo apt-get update
+    sudo apt-get install -y python3-venv
+    if ! python3 -c 'import ensurepip' 2>/dev/null; then
+        echo "python3-venv install completed but ensurepip still missing - inspect apt output above." >&2
+        exit 1
+    fi
+fi
 
 # jq is required by the bash bridge (run-playbook.sh) for vault-payload
 # validation and inventory generation. The WSL Ubuntu default image does
