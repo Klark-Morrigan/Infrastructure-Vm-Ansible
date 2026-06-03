@@ -28,6 +28,17 @@ cd "$repo_root"
 
 venv_dir="$repo_root/.venv"
 
+# Explicit ANSIBLE_CONFIG so the ansible-galaxy and ansible calls
+# below do not emit the "world writable directory ... ignoring it as
+# an ansible.cfg source" warning. The repo lives on a /mnt/c drvfs
+# mount whose Windows ACL surfaces as mode 0777 in WSL, which trips
+# Ansible's config-injection safety check; pointing ANSIBLE_CONFIG at
+# the exact file says "I trust this specific path" and bypasses the
+# discovery-time check. Same export the bridge sets in _run-playbook.sh
+# - duplicated rather than sourced so each script's runtime contract
+# stays self-contained.
+export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
+
 # shellcheck source=ops/_ensure-apt-command.sh
 source "$script_dir/_ensure-apt-command.sh"
 

@@ -71,6 +71,19 @@ fi
 # shellcheck disable=SC1090  # path is computed at runtime
 source "${venv_activate}"
 
+# Explicitly point Ansible at the repo's ansible.cfg. The repo lives on
+# a /mnt/c drvfs mount whose Windows ACL surfaces as mode 0777 in WSL,
+# which triggers Ansible's "world-writable directory" safety check and
+# causes it to *silently ignore* ansible.cfg (along with the
+# host_key_checking=False and interpreter_python settings the playbooks
+# depend on). The check is a config-injection guard; ANSIBLE_CONFIG
+# being an explicit file path bypasses it because the operator is
+# stating "I trust this exact file" rather than letting Ansible discover
+# a cfg in the cwd. Without this every playbook run silently falls
+# back to defaults and the first SSH connection to a fresh VM hangs
+# on a host-key prompt that has nowhere to read input from.
+export ANSIBLE_CONFIG="${repo_root}/ansible.cfg"
+
 # ---------------------------------------------------------------------------
 # 4. Vault reads. Each call validates its payload via jq empty before
 #    returning, so a malformed secret fails here with the vault name
