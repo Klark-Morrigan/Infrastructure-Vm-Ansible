@@ -50,6 +50,34 @@ stage installs the missing package via `sudo apt-get`; the existing
 when the install itself cannot proceed (no `sudo`, `apt-get` missing,
 offline, apt lock).
 
+The `sudo` call **prompts for the WSL user's password once per fresh
+bootstrap** (the very first user you set when WSL provisioned the
+distro). Three ways to deal with it depending on how often a fresh
+bootstrap will happen:
+
+- **Type the password** at the prompt. Once per workstation in
+  practice (the install is idempotent; re-bootstrapping a healthy
+  workstation skips the `sudo apt-get` branch entirely).
+- **Pre-install the three packages once**, then bootstrap is
+  fully unattended:
+
+  ```
+  wsl -d Ubuntu-24.04 -- sudo apt-get update
+  wsl -d Ubuntu-24.04 -- sudo apt-get install -y python3 python3-venv jq
+  ```
+
+- **Add a scoped passwordless-sudo rule** inside the distro
+  (`sudo visudo -f /etc/sudoers.d/passwordless-apt`,
+  contents `<your-user> ALL=(ALL) NOPASSWD: /usr/bin/apt-get`).
+  Bootstrap then runs unattended forever, at the cost of standing
+  apt-get sudo for that user.
+
+Once bootstrap finishes you should see `Ansible <version>` in its
+summary block and a populated `.venv/` in the repo root. Until both
+are true the bridge fails with `_run-playbook.sh: .venv missing -
+run ops/bootstrap-controller.{ps1,sh} first` (this is the bridge
+refusing to run before bootstrap, not a separate bug).
+
 ### Troubleshooting: WSL default distro has no bash
 
 If bootstrap fails with a yellow `bash was not found on PATH inside
