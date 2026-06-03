@@ -83,6 +83,11 @@ STUB
     export ANSIBLE_PLAYBOOK_STUB_LOG="${TEST_TMP}/ansible-playbook.argv"
     export ANSIBLE_PLAYBOOK_STUB_EXIT=0
     export PATH="${TEST_TMP}/stubs:${PATH}"
+
+    # The orchestrator requires SECRET_SUFFIX up-front to select the
+    # vault entry per lifecycle; the stubbed vault read ignores it, but
+    # the gate runs before arg validation so every test must set it.
+    export SECRET_SUFFIX=Test
 }
 
 teardown() {
