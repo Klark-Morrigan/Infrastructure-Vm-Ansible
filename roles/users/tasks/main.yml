@@ -32,46 +32,45 @@
 # no_log: true applies to every iteration; the loop_control.label keeps
 # per-user traceability so we still see which account each iteration
 # is reconciling.
+# block/rescue lets us catch the user-module failure and surface
+# its msg without flipping no_log on the original task (so the
+# password hash stays censored). On the success path the rescue
+# block is skipped entirely; on failure, the rescue's fail task
+# re-aborts the play with the same status but a useful message.
 - name: Reconcile declared users
-  ansible.builtin.user:
-    name: "{{ item.username }}"
-    shell: "{{ item.shell }}"
-    home: "{{ item.homeDir }}"
-    groups: "{{ item.groups | default([]) }}"
-    append: false
-    move_home: false
-    state: present
-    password: >-
-      {{ (item.password
-          | password_hash('sha512', salt=(item.username | hash('md5'))[:16]))
-         if item.password is defined else omit }}
-    update_password: always
-  loop: "{{ vm_users_entry.users | default([]) }}"
-  loop_control:
-    label: "{{ item.username }}"
-  no_log: true
-  # failed_when:false + register lets the diagnostic task below
-  # surface the error message (without the password hash that
-  # no_log:true above keeps censored). Without this split, a failure
-  # in ansible.builtin.user reports as the opaque
-  # `{"censored": "..."}` blob and operators must hand-flip no_log to
-  # debug. The diagnostic task fails the play with the same status,
-  # so end-to-end behaviour is unchanged for successful runs.
-  failed_when: false
-  register: users_result
-
-# Per-iteration failure surfacer. `msg` from ansible.builtin.user
-# contains the underlying error (groupadd / usermod / useradd
-# stderr) but never the password hash - the hash only appears in
-# `invocation.module_args`, which we never reference here. Username
-# is taken from item.item (the original loop item) so the operator
-# can act on it; everything else stays redacted.
-- name: Surface user-reconcile failure reasons (msg only)
-  ansible.builtin.fail:
-    msg: >-
-      User '{{ item.item.username | default('?') }}':
-      {{ item.msg | default('(no msg field in result)') }}
-  loop: "{{ users_result.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.username | default('?') }}"
-  when: item.failed | default(false)
+  block:
+    - name: Reconcile declared users
+      ansible.builtin.user:
+        name: "{{ item.username }}"
+        shell: "{{ item.shell }}"
+        home: "{{ item.homeDir }}"
+        groups: "{{ item.groups | default([]) }}"
+        append: false
+        move_home: false
+        state: present
+        password: >-
+          {{ (item.password
+              | password_hash('sha512', salt=(item.username | hash('md5'))[:16]))
+             if item.password is defined else omit }}
+        update_password: always
+      loop: "{{ vm_users_entry.users | default([]) }}"
+      loop_control:
+        label: "{{ item.username }}"
+      no_log: true
+      register: users_result
+  rescue:
+    # `msg` from ansible.builtin.user contains the underlying error
+    # (groupadd / usermod / useradd stderr); the password hash only
+    # appears in `invocation.module_args`, which we never reference
+    # here. Username is taken from item.item (the original loop
+    # item). no_log stays false on this task because the field set
+    # we surface is intentionally minimal and hash-free.
+    - name: Surface user-reconcile failure reasons (msg only)
+      ansible.builtin.fail:
+        msg: >-
+          User '{{ item.item.username | default('?') }}':
+          {{ item.msg | default('(no msg field in result)') }}
+      loop: "{{ users_result.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.username | default('?') }}"
+      when: item.failed | default(false)
