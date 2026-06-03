@@ -19,9 +19,20 @@ set -euo pipefail
 # rather than a silent runtime failure.
 # ---------------------------------------------------------------------------
 readonly VM_PROVISIONER_VAULT="VmProvisioner"
-readonly VM_PROVISIONER_SECRET="VmProvisionerConfig"
 readonly VM_USERS_VAULT="VmUsers"
-readonly VM_USERS_SECRET="VmUsersConfig"
+
+# Required: SECRET_SUFFIX selects the lifecycle/environment whose
+# secrets this run will read. Operator invocations pass `Production`;
+# ephemeral fixtures (test harnesses, parallel workflows, multi-tenant
+# deployments) pass their own label. Mandatory so a caller cannot
+# silently fall through to a default name and collide with another
+# lifecycle's data.
+if [[ -z "${SECRET_SUFFIX:-}" ]]; then
+    echo "_run-playbook.sh: SECRET_SUFFIX must be set (e.g. Production or the caller's lifecycle label)" >&2
+    exit 2
+fi
+readonly VM_PROVISIONER_SECRET="VmProvisionerConfig-${SECRET_SUFFIX}"
+readonly VM_USERS_SECRET="VmUsersConfig-${SECRET_SUFFIX}"
 
 # Anchor every relative path to the repo root so the script works
 # regardless of the caller's working directory.

@@ -32,7 +32,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [string] $ConfigFile
+    [string] $ConfigFile,
+
+    # Required. Forwarded to the Vm-Users setup-secrets writer; the
+    # secret is written as `VmUsersConfig-<Suffix>`. Operator runs pass
+    # `Production`; ephemeral fixtures pass their own label.
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $SecretSuffix
 )
 
 Set-StrictMode -Version Latest
@@ -68,4 +75,4 @@ if (-not (Test-Path -LiteralPath $vmUsersPs1 -PathType Leaf)) {
 # install, vault registration, and Set-Secret; any errors propagate
 # through unchanged because $ErrorActionPreference = 'Stop' is in
 # effect.
-& $vmUsersPs1 -ConfigFile $ConfigFile
+& $vmUsersPs1 -ConfigFile $ConfigFile -SecretSuffix $SecretSuffix
