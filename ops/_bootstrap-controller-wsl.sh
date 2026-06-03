@@ -91,7 +91,23 @@ fi
 
 if [[ "$needs_create" -eq 1 ]]; then
     echo "Creating Python venv at $venv_dir ..."
-    python3 -m venv "$venv_dir"
+    # --upgrade-deps (Python 3.9+) forces pip + setuptools into the
+    # venv on creation, instead of relying on ensurepip's default
+    # behaviour - which on some Ubuntu / Debian configurations leaves
+    # bin/python in place but skips bin/pip entirely. Without this the
+    # next step (`$venv_dir/bin/pip install ...`) dies with
+    # `No such file or directory` and the bootstrap reports a confusing
+    # half-built state.
+    python3 -m venv --upgrade-deps "$venv_dir"
+fi
+
+# Belt-and-braces: even when --upgrade-deps was passed, re-validate
+# that pip actually landed. A pre-existing venv from a buggy earlier
+# bootstrap may have skipped pip seeding entirely; in that case run
+# ensurepip into the venv so the next pip install line works.
+if [[ ! -x "$venv_dir/bin/pip" ]]; then
+    echo "Repairing venv: bin/pip missing despite venv create - running ensurepip ..."
+    "$venv_dir/bin/python" -m ensurepip --upgrade
 fi
 
 # ---------------------------------------------------------------------------
