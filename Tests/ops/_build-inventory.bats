@@ -28,7 +28,7 @@ json_eq() {
     json_eq '{"all":{"children":{"vm_provisioner_hosts":{"hosts":{}}}}}' "${output}"
 }
 
-@test "single VM produces the expected inventory shape with all five host vars" {
+@test "single VM produces the expected inventory shape with all six host vars" {
     input='[{"vmName":"vm-01","ipAddress":"10.0.0.1","username":"u","password":"p"}]'
     expected='{
         "all": {
@@ -38,6 +38,7 @@ json_eq() {
                         "vm-01": {
                             "ansible_host":          "10.0.0.1",
                             "ansible_user":          "u",
+                            "ansible_password":      "p",
                             "ansible_become":        true,
                             "ansible_become_method": "sudo",
                             "ansible_become_pass":   "p"

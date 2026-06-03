@@ -14,6 +14,7 @@
 #             "<vmName>": {
 #               "ansible_host":         "<ipAddress>",
 #               "ansible_user":         "<username>",
+#               "ansible_password":     "<password>",
 #               "ansible_become":       true,
 #               "ansible_become_method":"sudo",
 #               "ansible_become_pass":  "<password>"
@@ -23,6 +24,15 @@
 #       }
 #     }
 #   }
+#
+# ansible_password and ansible_become_pass are sourced from the SAME
+# vault field: the cloud-init admin user this controller logs in as
+# also `sudo`s on the VM, and the provisioner writes one password
+# for that account. Splitting them would require a second secret with
+# no operator benefit. The custom-powershell flow
+# (Infrastructure-Vm-Users/.../create-users.ps1) uses the same field
+# for both via SSH.NET's PasswordAuthenticationMethod, so the two
+# flows stay credential-symmetric.
 #
 # Ansible accepts JSON inventory natively, so emitting JSON avoids
 # pulling in yq as a hard dep and keeps the file directly diff-able
@@ -91,6 +101,7 @@ printf '%s' "${input}" | jq '
                             (.vmName): {
                                 ansible_host:          .ipAddress,
                                 ansible_user:          .username,
+                                ansible_password:      .password,
                                 ansible_become:        true,
                                 ansible_become_method: "sudo",
                                 ansible_become_pass:   .password
