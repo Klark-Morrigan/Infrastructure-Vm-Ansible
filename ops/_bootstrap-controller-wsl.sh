@@ -76,6 +76,18 @@ fi
 # not ship jq, so install-or-hint via the same helper used for python3.
 ensure_apt_command jq jq
 
+# sshpass is required by Ansible's default `ssh` connection plugin for
+# password-based auth (ansible_password). Without it, login attempts
+# fail with the opaque "to use the 'ssh' connection type with
+# passwords or pkcs11_provider, you must install the sshpass program"
+# - or, worse on some Ansible versions, fall through to publickey-only
+# and surface as "Permission denied (publickey,password)" with no
+# explanation. We log in as the cloud-init admin user (whose password
+# comes from the VmProvisioner vault, mirroring the custom-powershell
+# flow's SSH.NET PasswordAuthenticationMethod), so this is a hard
+# dependency, not a nice-to-have.
+ensure_apt_command sshpass sshpass
+
 # ---------------------------------------------------------------------------
 # 2. Venv create-or-reuse. The existence check pairs with a version
 #    probe so a stale venv (wrong Python major.minor) is recreated
