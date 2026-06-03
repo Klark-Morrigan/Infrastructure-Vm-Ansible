@@ -65,10 +65,20 @@ teardown() {
 # so the named command appears present to the script under test.
 # Used per-test to advance execution past earlier gates and isolate
 # the gate the test actually targets.
+#
+# Shebang uses the absolute path captured by setup (not `#!/usr/bin/env
+# bash`) so the stub remains executable under the test's scrubbed PATH.
+# A `#!/usr/bin/env bash` shebang would require `env` to find `bash` on
+# PATH at exec time, and the test deliberately strips /usr/bin and
+# /bin to keep system binaries from satisfying the script's presence
+# gates. With the absolute shebang the stub is runnable, which matters
+# the moment a gate moves from `command -v` (existence-only) to actually
+# executing the named command - e.g. the ensurepip probe in the python3
+# gate, which calls `python3 -c 'import ensurepip'`.
 seed_stub() {
     local name="$1"
-    cat >"${STUBS}/${name}" <<'STUB'
-#!/usr/bin/env bash
+    cat >"${STUBS}/${name}" <<STUB
+#!${BASH_BIN}
 exit 0
 STUB
     chmod +x "${STUBS}/${name}"

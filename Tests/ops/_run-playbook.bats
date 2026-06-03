@@ -28,8 +28,13 @@ setup() {
     # Real orchestrator lives in TEST_REPO/ops/ so its repo_root
     # anchor (script_dir/..) points at TEST_REPO. Stub siblings live
     # next to it so the orchestrator's `${script_dir}/_<sibling>.sh`
-    # lookup finds them.
+    # lookup finds them. _ansible-env.sh is a real (non-stubbed)
+    # helper that the orchestrator sources for ANSIBLE_CONFIG export -
+    # copying the genuine file rather than stubbing because its only
+    # side effect is `export ANSIBLE_CONFIG=...`, which is harmless
+    # in this test context (no ansible-playbook actually reads it).
     cp "${REPO_ROOT}/ops/_run-playbook.sh"      "${TEST_REPO}/ops/"
+    cp "${REPO_ROOT}/ops/_ansible-env.sh"       "${TEST_REPO}/ops/"
     cp "${REPO_ROOT}/Tests/playbooks/_noop.yml" "${TEST_REPO}/playbooks/"
     chmod +x "${TEST_REPO}/ops/_run-playbook.sh"
 
