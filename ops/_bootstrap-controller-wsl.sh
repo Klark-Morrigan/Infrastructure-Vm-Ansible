@@ -1,4 +1,4 @@
-B#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Second-stage Ansible controller bootstrap. Runs inside WSL.
 #
 # Idempotent by design: reruns detect an existing venv at the expected
