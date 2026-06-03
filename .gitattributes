@@ -1,0 +1,14 @@
+# Pin line endings regardless of the operator's core.autocrlf setting.
+# Every executable surface in this repo (shebang scripts under ops/,
+# Ansible playbooks, Jinja2 templates, ansible.cfg, bats tests) runs
+# on Linux; a stray CR on a shebang line produces
+#   env: 'bash\r': No such file or directory
+# exit 127 - silently introduced by `git checkout` on a Windows
+# workstation with autocrlf=true. text=auto + eol=lf makes git
+# normalise text files to LF in the working tree no matter what the
+# operator's global git config says.
+* text=auto eol=lf
+
+# Batch files are the only Windows-side executables in the repo;
+# cmd.exe requires CRLF, so pin them explicitly.
+*.bat text eol=crlf
