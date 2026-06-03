@@ -13,6 +13,7 @@ was extended by the feature step that earned it.
 
 - [Controller bootstrap](#controller-bootstrap)
   - [Troubleshooting: WSL default distro has no bash](#troubleshooting-wsl-default-distro-has-no-bash)
+  - [Troubleshooting: capturing logs and re-running an interrupted bootstrap](#troubleshooting-capturing-logs-and-re-running-an-interrupted-bootstrap)
 - [Vault setup](#vault-setup)
 - [Create users](#create-users)
 - [Bridge contract](#bridge-contract)
@@ -111,6 +112,46 @@ trap entirely by passing `-WslDistro <name>` and storing the same
 value in the `E2EConfig` vault, so they target the bash-having distro
 explicitly via `wsl -d <name> --` regardless of what the workstation's
 default happens to be at the time.
+
+### Troubleshooting: capturing logs and re-running an interrupted bootstrap
+
+When invoking the WSL stage directly (rather than via
+`ops/bootstrap-controller.ps1` or the menu) it is tempting to pipe
+through `tee` to capture a log:
+
+```powershell
+wsl -d Ubuntu-24.04 -- bash -lc './ops/_bootstrap-controller-wsl.sh' 2>&1 | tee bootstrap.log
+```
+
+That works **only if no sudo prompt will fire**. The pipeline
+detaches stdin from the terminal; sudo cannot find a TTY to read a
+password and dies with `sudo: a password is required` (or, worse,
+silently no-ops the install branch and the bootstrap reports success
+without actually installing anything). Two safe workarounds:
+
+- Pre-install the apt prerequisites once (`wsl -d Ubuntu-24.04 -u root
+  -- apt-get install -y python3 python3-venv jq`); subsequent
+  bootstrap runs never enter the sudo branch and can be tee'd freely.
+- Run bootstrap *without* `tee`, type the password at the prompt, and
+  re-run with `tee` afterwards for the log (the second run skips the
+  sudo branch because the packages are now present).
+
+Note that `tee bootstrap.log` writes to the calling shell's current
+directory, not the repo - so the file lands at the location PowerShell
+reports in its prompt (typically `C:\Users\<you>\`), not at
+`C:\a_Code\Infrastructure-VM-Ansible\`. Look there if the log seems
+to have vanished.
+
+If a bootstrap run is interrupted (Ctrl+C, network blip during
+`ansible-galaxy collection install`, sudo prompt dismissed), **just
+re-run it**. Every stage is idempotent: an existing healthy `.venv`
+is reused, pip pins are no-ops when current, `ansible-galaxy
+--force-with-deps` re-installs cleanly over a partial extraction.
+The only state worth manually clearing is a half-built `.venv` that
+has `bin/python` but no `bin/pip` (left behind by the pre-fix
+`python3 -m venv` bug); in that case
+`rm -rf /mnt/c/a_Code/Infrastructure-VM-Ansible/.venv` then re-run
+bootstrap to recreate it cleanly.
 
 ## Vault setup
 
