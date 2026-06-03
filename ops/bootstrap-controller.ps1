@@ -114,10 +114,22 @@ function Invoke-BootstrapController {
     }
 
     # Second stage runs inside WSL against the repo root.
+    #
+    # `| Out-Host`, not bare `& wsl -- ...`: the outer script ends with
+    # `exit (Invoke-BootstrapController)`, which wraps the function call
+    # in a subexpression. Subexpressions collect the function's entire
+    # pipeline output before passing it to `exit`. Bare `& wsl -- ...`
+    # sends every stdout line of the bash script into that pipeline -
+    # the integer return value is the last element, exit consumes that,
+    # and every line of pip / ansible-galaxy / summary output is silently
+    # discarded. Piping to Out-Host writes the wsl stream directly to
+    # the host's display, bypassing the pipeline; only the return value
+    # flows up to `exit`. $LASTEXITCODE is set by the native command and
+    # is unaffected by the Out-Host cmdlet downstream.
     $bashScript = './ops/_bootstrap-controller-wsl.sh'
     Push-Location $RepoRoot
     try {
-        & wsl -- $bashScript
+        & wsl -- $bashScript | Out-Host
         return $LASTEXITCODE
     }
     finally {
