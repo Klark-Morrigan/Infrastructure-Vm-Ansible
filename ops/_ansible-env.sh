@@ -77,3 +77,15 @@ export ANSIBLE_PYTHON_INTERPRETER=auto_silent
 # the repo root. The .gitignore already excludes them, but disabling
 # generation entirely is cleaner than relying on the ignore.
 export ANSIBLE_RETRY_FILES_ENABLED=False
+
+# Mirrors `ssh_args` from ../ansible.cfg [ssh_connection]. E2E
+# provisions fresh VMs at recycled IPs; without
+# UserKnownHostsFile=/dev/null, a key recorded on one run breaks
+# every subsequent connection at the same IP with "REMOTE HOST
+# IDENTIFICATION HAS CHANGED", because StrictHostKeyChecking=no
+# silently accepts unknown hosts but still rejects changed ones.
+# Pointing the known_hosts file at /dev/null makes every connection
+# look like first-contact. -C, ControlMaster, and ControlPersist
+# preserve Ansible's upstream defaults (connection multiplexing) so
+# we extend rather than replace.
+export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
