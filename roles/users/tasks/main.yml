@@ -49,19 +49,15 @@
   loop: "{{ vm_users_entry.users | default([]) }}"
   loop_control:
     label: "{{ item.username }}"
-  # no_log evaluated per iteration: censor only the iterations that
-  # actually carry a password (where the hashed value would otherwise
-  # land in stdout). Passwordless service accounts surface their
-  # failures normally - no secret to protect there, and visibility
-  # outweighs over-censoring.
-  #
-  # Unconditional no_log: true (the previous shape) censored the
-  # registered loop result so completely that rescue / debug tasks
-  # could not even read `.failed` or `.msg` off it - every failure
-  # surfaced as the opaque "{"censored": ...}" blob with no path to
-  # diagnose without hand-flipping no_log.
-  #
-  # | bool guards against Ansible's "any non-empty string is truthy"
-  # interpretation of templated no_log values; without the cast,
-  # `"False"` (the string) would still censor.
-  no_log: "{{ (item.password is defined) | bool }}"
+  # No task-level no_log. The ansible.builtin.user module marks its
+  # `password` parameter no_log in its own argspec, so the resolved
+  # hash is scrubbed to "VALUE_SPECIFIED_IN_NO_LOG_PARAMETER" in
+  # every code path that prints module args - failure messages,
+  # registered results, -v / -vv output. loop_control.label limits
+  # the per-iteration label to the username so the raw item dict
+  # (which would contain the plaintext) does not appear at default
+  # verbosity. Stacking task-level no_log on top only blinds the
+  # operator to error messages that contain no secret. At -vvv+
+  # Ansible may dump the templated `item` itself, which would
+  # expose the plaintext password - operators running at that
+  # verbosity are assumed to know they have lifted the safety.
