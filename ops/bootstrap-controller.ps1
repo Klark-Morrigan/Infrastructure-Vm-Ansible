@@ -27,6 +27,12 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Set-WslAutomountMetadata lives in its own file so its logic and its
+# Pester suite can be edited without churning this entry point. Kept
+# in-repo (not promoted to PowerShell.Common) because the bootstrap is
+# its only known consumer; promote when a second one appears.
+. "$PSScriptRoot\_set-wsl-automount-metadata.ps1"
+
 function Invoke-BootstrapController {
     <#
     .SYNOPSIS
@@ -112,6 +118,14 @@ function Invoke-BootstrapController {
         }
         throw
     }
+
+    # /mnt/c perm gate. Runs after the WSL/bash gates (so we know the
+    # default distro is sane) and before the second-stage bash
+    # bootstrap (so the bash bootstrap and subsequent ansible-playbook
+    # runs see the corrected 0755 dirs instead of 0777). Idempotent;
+    # a second bootstrap run after the first finds 'metadata' already
+    # in the config and no-ops without sudo.
+    Set-WslAutomountMetadata
 
     # Second stage runs inside WSL against the repo root.
     #
