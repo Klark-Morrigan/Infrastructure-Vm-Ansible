@@ -1,0 +1,52 @@
+---
+# Molecule scenario for the users role's REMOVE direction
+# (tasks_from: remove). Mirrors the sudoers/remove scenario shape:
+# single Ubuntu 24.04 container, Docker driver, ansible verifier.
+#
+# The container runs as `command: /bin/sleep infinity` with no real
+# init. That is enough for ansible.builtin.user (touches /etc/passwd,
+# /etc/shadow, /etc/group, /home) and for the pkill probe; it is not
+# enough for systemd-run, which is why the "user has a running
+# process" test fixture spawns sleep via setsid -f and not via
+# systemd-run.
+#
+# The users role's meta dep chain still pulls in groups/main (create
+# direction) when included; that is harmless here - the converge sets
+# an empty `groups` list in vm_users_config so the create-side groups
+# task is a no-op.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live four levels above the scenario; point Ansible at
+      # the repo's roles/ directory so include_role: name=users
+      # resolves the role (and its meta dependency chain) without
+      # copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

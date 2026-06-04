@@ -1,0 +1,109 @@
+---
+# Prepare the container before converge: seed accounts the remove
+# direction is expected to act on, plus two accounts that prove the
+# scope guarantees:
+#
+#   - ans-remove-bash   declared on this host, has home, no processes
+#                       -> must be removed, /home/ans-remove-bash gone
+#   - ans-remove-nohome declared on this host, no home directory
+#                       (useradd -M / create_home: false in the role)
+#                       -> must still be removed cleanly even though
+#                          userdel -r has nothing to delete on disk
+#   - ans-remove-busy   declared on this host, owns a long-running
+#                       sleep process spawned via setsid -f. Pre-kill
+#                       must signal it (rc=0, changed=true) so that
+#                       the subsequent userdel -f succeeds rather than
+#                       erroring with "user busy".
+#   - ans-undeclared    NOT in vm_users_config for this host
+#                       -> must survive the play (drift removal is out
+#                          of scope, mirrors the sudoers/remove guard)
+#   - should-not-touch  declared on a DIFFERENT vmName
+#                       -> must survive the play (selectattr filter
+#                          applies to the remove direction too)
+#
+# We use ansible.builtin.user directly (not the role's create
+# direction) so this prepare stays decoupled from the role under
+# test - the same reason sudoers/remove seeds its files via copy
+# rather than running tasks/main.yml.
+
+- name: Prepare - install baseline tools and seed accounts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    # procps brings pkill/pgrep; useradd is shipped in the base
+    # ubuntu:24.04 image but procps usually is not. The remove
+    # direction shells out to pkill on every iteration, so the
+    # container needs it.
+    - name: Install procps (pkill) and sudo
+      ansible.builtin.apt:
+        name:
+          - procps
+          - sudo
+        state: present
+
+    - name: Seed ans-remove-bash (has home, idle)
+      ansible.builtin.user:
+        name: ans-remove-bash
+        shell: /bin/bash
+        home: /home/ans-remove-bash
+        create_home: true
+        state: present
+
+    - name: Seed ans-remove-nohome (no home directory on disk)
+      ansible.builtin.user:
+        name: ans-remove-nohome
+        shell: /bin/bash
+        home: /home/ans-remove-nohome
+        create_home: false
+        state: present
+
+    - name: Seed ans-remove-busy (will own a long-running process)
+      ansible.builtin.user:
+        name: ans-remove-busy
+        shell: /bin/bash
+        home: /home/ans-remove-busy
+        create_home: true
+        state: present
+
+    # setsid -f detaches into a fresh session and forks so Ansible
+    # does not block waiting for the process to exit. sleep 3600 is
+    # long enough that the converge runs before the process exits
+    # on its own, short enough that a stuck verify won't leak the
+    # container for the rest of the day.
+    - name: Spawn a long-running process owned by ans-remove-busy
+      ansible.builtin.shell: |
+        setsid -f sudo -u ans-remove-busy \
+          sleep 3600 </dev/null >/dev/null 2>&1
+      changed_when: true
+      args:
+        executable: /bin/bash
+
+    - name: Confirm ans-remove-busy actually has a process
+      ansible.builtin.command: pgrep -u ans-remove-busy
+      register: busy_check
+      changed_when: false
+      # pgrep rc=1 means "no process matched" - that would break the
+      # premise of this fixture, so we want the prepare to fail
+      # loudly rather than silently degrade the test.
+      failed_when: busy_check.rc != 0
+
+    - name: Seed ans-undeclared (out-of-config drift, must survive)
+      ansible.builtin.user:
+        name: ans-undeclared
+        shell: /bin/bash
+        home: /home/ans-undeclared
+        create_home: true
+        state: present
+
+    - name: Seed should-not-touch (declared on other-host, must survive)
+      ansible.builtin.user:
+        name: should-not-touch
+        shell: /bin/bash
+        home: /home/should-not-touch
+        create_home: true
+        state: present

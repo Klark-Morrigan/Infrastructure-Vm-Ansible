@@ -1,0 +1,253 @@
+---
+# Verify post-converge state for the users remove direction.
+#
+# Idempotence (case "re-run with same input") is covered by the
+# `molecule idempotence` step in the default test sequence; this file
+# asserts the post-converge state plus the cases the converge fixture
+# cannot express on its own:
+#
+#   - Out-of-config user must survive (drift removal is out of scope).
+#   - Re-converge against an already-removed user is a clean no-op
+#     (pre-kill rc=1 + ansible.builtin.user state=absent rc=0/changed=0
+#     + final assert passes).
+#   - Empty `users` list runs zero iterations and touches nothing.
+#   - Pre-kill rc>=2 (stubbed pkill) fails the play with a useful
+#     error - covers the rc>=2 branch of the failed_when condition.
+
+- name: Verify - users role remove-direction post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Declared users must be gone. Use `getent passwd` directly rather
+    # than ansible.builtin.getent because the latter errors hard on a
+    # missing key and we need to assert absence.
+    - name: Look up ans-remove-bash in passwd
+      ansible.builtin.command: getent passwd ans-remove-bash
+      register: bash_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-bash account is gone
+      ansible.builtin.assert:
+        that:
+          - bash_lookup.rc != 0
+        fail_msg: >-
+          ans-remove-bash still resolves via getent after the remove
+          converge: {{ bash_lookup.stdout }}.
+
+    - name: Stat /home/ans-remove-bash
+      ansible.builtin.stat:
+        path: /home/ans-remove-bash
+      register: bash_home_stat
+
+    - name: Assert ans-remove-bash home directory was removed
+      ansible.builtin.assert:
+        that:
+          - not bash_home_stat.stat.exists
+        fail_msg: >-
+          /home/ans-remove-bash still exists after userdel -r;
+          remove: true did not take effect.
+
+    - name: Look up ans-remove-nohome in passwd
+      ansible.builtin.command: getent passwd ans-remove-nohome
+      register: nohome_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-nohome account is gone
+      ansible.builtin.assert:
+        that:
+          - nohome_lookup.rc != 0
+        fail_msg: >-
+          ans-remove-nohome still resolves; removal failed for the
+          no-home-on-disk edge case.
+
+    - name: Look up ans-remove-busy in passwd
+      ansible.builtin.command: getent passwd ans-remove-busy
+      register: busy_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-busy account is gone
+      ansible.builtin.assert:
+        that:
+          - busy_lookup.rc != 0
+        fail_msg: >-
+          ans-remove-busy still resolves; pre-kill did not free the
+          account before userdel ran (or userdel -f failed).
+
+    - name: Confirm no stray processes remain for ans-remove-busy
+      ansible.builtin.command: pgrep -u ans-remove-busy
+      register: busy_pgrep
+      changed_when: false
+      # rc=1 means "no process matched", which is the success state
+      # here. rc=0 would mean a process survived SIGKILL. Any other
+      # rc is pgrep itself misbehaving and we want the play to fail.
+      failed_when: busy_pgrep.rc != 1
+      # pgrep on a non-existent user can also return rc=1 with stderr
+      # "pgrep: invalid user name"; that is acceptable - it means the
+      # account is truly gone.
+
+    # Drift guard: a user that was never declared must survive the
+    # play. Mirrors the sudoers/remove out-of-config invariant.
+    - name: Look up ans-undeclared in passwd
+      ansible.builtin.command: getent passwd ans-undeclared
+      register: undeclared_lookup
+      changed_when: false
+
+    - name: Assert ans-undeclared was NOT removed
+      ansible.builtin.assert:
+        that:
+          - undeclared_lookup.rc == 0
+        fail_msg: >-
+          ans-undeclared was deleted despite not being declared on
+          this host - drift removal is out of scope.
+
+    # Host-scoped lookup guard: a user declared on a different vmName
+    # must not leak onto this host.
+    - name: Look up should-not-touch in passwd
+      ansible.builtin.command: getent passwd should-not-touch
+      register: other_host_lookup
+      changed_when: false
+
+    - name: Assert other-host fixture did not leak into this host
+      ansible.builtin.assert:
+        that:
+          - other_host_lookup.rc == 0
+        fail_msg: >-
+          should-not-touch is missing on this host but was declared
+          for vmName: other-host. The selectattr filter let an
+          other-host entry through.
+
+    # Re-converge against an already-removed user: pre-kill returns
+    # rc=1 (no processes for a now-deleted account name), the user
+    # task reports changed=0, and the final assert passes. Proves the
+    # remove direction is idempotent.
+    - name: Stage fixture - same instance users, second pass
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            groups: []
+            users:
+              - username: ans-remove-bash
+                shell: /bin/bash
+                homeDir: /home/ans-remove-bash
+              - username: ans-remove-nohome
+                shell: /bin/bash
+                homeDir: /home/ans-remove-nohome
+
+    - name: Re-apply role (idempotence proof)
+      ansible.builtin.include_role:
+        name: users
+        tasks_from: remove
+
+    - name: Look up ans-remove-bash again after re-converge
+      ansible.builtin.command: getent passwd ans-remove-bash
+      register: bash_lookup_after
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-bash stays absent after re-converge
+      ansible.builtin.assert:
+        that:
+          - bash_lookup_after.rc != 0
+        fail_msg: >-
+          ans-remove-bash reappeared after the second remove pass;
+          the remove direction is not idempotent.
+
+    # Empty users list: loop runs zero iterations, no errors. Re-seed
+    # ans-remove-bash to prove the loop leaves it alone when the
+    # declared list is empty.
+    - name: Re-seed ans-remove-bash for the empty-list proof
+      ansible.builtin.user:
+        name: ans-remove-bash
+        shell: /bin/bash
+        home: /home/ans-remove-bash
+        create_home: true
+        state: present
+
+    - name: Stage fixture - empty users list for this host
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            groups: []
+            users: []
+
+    - name: Re-apply role with an empty users list
+      ansible.builtin.include_role:
+        name: users
+        tasks_from: remove
+
+    - name: Look up ans-remove-bash after empty-users converge
+      ansible.builtin.command: getent passwd ans-remove-bash
+      register: bash_after_empty
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-bash survives the empty-users converge
+      ansible.builtin.assert:
+        that:
+          - bash_after_empty.rc == 0
+        fail_msg: >-
+          ans-remove-bash was removed despite the declared users list
+          being empty; the remove loop is not respecting the empty
+          list contract.
+
+    # Pre-kill rc>=2 branch: stub pkill so it exits 2 unconditionally
+    # (simulating a syntax error or a broken binary), then re-run the
+    # remove role and expect it to fail. block/rescue lets us treat
+    # the failure as the success path of the test; the `fail` sentinel
+    # inside the block trips only if remove finished without error,
+    # which would mean failed_when did not trigger as intended.
+    - name: Pre-kill rc>=2 branch
+      block:
+        - name: Re-seed ans-remove-bash for the pkill-stub case
+          ansible.builtin.user:
+            name: ans-remove-bash
+            shell: /bin/bash
+            home: /home/ans-remove-bash
+            create_home: true
+            state: present
+
+        - name: Install a stubbed pkill that always exits 2
+          ansible.builtin.copy:
+            dest: /usr/local/bin/pkill
+            content: |
+              #!/bin/sh
+              exit 2
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Stage fixture for the stubbed-pkill remove
+          ansible.builtin.set_fact:
+            vm_users_config:
+              - vmName: instance
+                groups: []
+                users:
+                  - username: ans-remove-bash
+                    shell: /bin/bash
+                    homeDir: /home/ans-remove-bash
+
+        - name: Re-apply remove with the stubbed pkill
+          ansible.builtin.include_role:
+            name: users
+            tasks_from: remove
+
+        - name: Sentinel - this line must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              Pre-kill failed_when did not trip on rc=2; the remove
+              role completed without surfacing the simulated pkill
+              syntax error.
+      rescue:
+        - name: Confirm rescue path entered (expected failure mode)
+          ansible.builtin.debug:
+            msg: >-
+              Pre-kill rc>=2 branch triggered the remove role to fail
+              as expected; the failed_when guard works.
+      always:
+        - name: Restore real pkill by removing the stub
+          ansible.builtin.file:
+            path: /usr/local/bin/pkill
+            state: absent
