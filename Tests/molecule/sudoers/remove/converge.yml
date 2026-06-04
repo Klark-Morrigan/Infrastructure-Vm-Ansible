@@ -1,0 +1,30 @@
+---
+# Converge: invoke the sudoers role's remove direction via
+# tasks_from: remove. The fixture declares two users on the current
+# host - prepare seeded their drop-ins - plus one user on a different
+# vmName (filtered out by vm_users_entry's selectattr) to prove the
+# host-scoped lookup also applies to the remove direction.
+
+- name: Converge - apply sudoers role (remove direction)
+  hosts: all
+  gather_facts: true
+  vars:
+    vm_users_config:
+      - vmName: instance
+        users:
+          - username: ans-remove-one
+            shell: /bin/bash
+            homeDir: /home/ans-remove-one
+          - username: ans-remove-two
+            shell: /bin/bash
+            homeDir: /home/ans-remove-two
+      - vmName: other-host
+        users:
+          - username: should-not-be-touched
+            shell: /bin/bash
+            homeDir: /home/should-not-be-touched
+  tasks:
+    - name: Include the role under test, remove direction
+      ansible.builtin.include_role:
+        name: sudoers
+        tasks_from: remove

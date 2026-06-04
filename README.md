@@ -16,6 +16,7 @@ was extended by the feature step that earned it.
   - [Troubleshooting: capturing logs and re-running an interrupted bootstrap](#troubleshooting-capturing-logs-and-re-running-an-interrupted-bootstrap)
 - [Vault setup](#vault-setup)
 - [Create users](#create-users)
+- [Remove users](#remove-users)
 - [Bridge contract](#bridge-contract)
 - [Tests and lint](#tests-and-lint)
 - [Roles](#roles)
@@ -219,6 +220,59 @@ order against the `vm_provisioner_hosts` inventory group; each role
 is tagged with its own name. `any_errors_fatal: false` keeps a
 transiently offline VM from stranding the rest of the fleet.
 
+## Remove users
+
+The reverse flow tears down what `create-users` reconciled. One
+command tells every host in the `VmProvisionerConfig` inventory to
+drop the declared sudoers drop-ins, accounts, and (empty) groups:
+
+```
+wsl ./ops/remove-users.sh
+```
+
+or double-click [`ops/remove-users.bat`](ops/remove-users.bat) from
+Explorer (same Git Bash launcher pattern as the create side).
+
+[`ops/remove-users.sh`](ops/remove-users.sh) is a one-line wrapper
+that dispatches [`playbooks/remove-users.yml`](playbooks/remove-users.yml)
+through the [bridge](#bridge-contract); the same operator knobs as
+the create side work unchanged:
+
+```
+wsl ./ops/remove-users.sh --check               # dry-run
+wsl ./ops/remove-users.sh --tags users          # scope to one role
+wsl ./ops/remove-users.sh --limit vm-1,vm-2     # scope to specific VMs
+wsl ./ops/remove-users.sh -v                    # verbose play recap
+```
+
+The playbook invokes each role with `tasks_from: remove` in the
+reverse order `sudoers -> users -> groups` (drop-ins first so they
+no longer reference live accounts, accounts next so userdel clears
+implicit primary groups, groups last so the empty-group check finds
+them empty). `any_errors_fatal: false` matches the create posture —
+one offline VM does not strand the rest.
+
+There is no confirmation prompt. The destructive intent is in the
+script name and the operator's choice to invoke it (decision in
+`docs/dev/implementation/03-.../problem.md`). The remove direction
+is also bounded by **declaration**, not drift: only usernames and
+group names listed in `VmUsersConfig` for the host are touched;
+out-of-config accounts, groups, and sudoers drop-ins are left alone.
+
+Two contracts worth highlighting before invoking the flow:
+
+- **Non-empty declared groups are kept, not forced.** If a declared
+  group still has members after the users pass, the groups role
+  emits a debug warning naming the remaining members and skips the
+  removal; the play exits 0. Operators who want the group gone after
+  that need to deal with the out-of-config members manually.
+- **Running processes do not block removal.** Before `userdel`, the
+  users role issues `pkill -KILL -u <username>` (rc=1 means no
+  processes and is ignored). `userdel -f -r` then deletes the
+  account and its home directory; a final assert surfaces the rare
+  case where even `-f` could not free the account (D-state task,
+  kernel-thread parent).
+
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and
@@ -345,6 +399,9 @@ each role lands; the create-users playbook orders them
 
 ## Feature folders
 
-- [Current feature: 02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)
+- [Current feature: 03 - groups, users, sudoers removal](docs/dev/implementation/03-groups-users-sudoers-removal/)
+  - [Problem](docs/dev/implementation/03-groups-users-sudoers-removal/problem.md)
+  - [Plan](docs/dev/implementation/03-groups-users-sudoers-removal/plan.md)
+- [02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)
   - [Problem](docs/dev/implementation/02-groups-users-sudoers-creation/problem.md)
   - [Plan](docs/dev/implementation/02-groups-users-sudoers-creation/plan.md)

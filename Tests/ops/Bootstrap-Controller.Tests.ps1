@@ -28,6 +28,13 @@ Describe 'Invoke-BootstrapController' {
             [PSCustomObject]@{ Name = 'PowerShell.Common'; Version = '6.2.0' }
         } -ParameterFilter { $ListAvailable -and $Name -eq 'PowerShell.Common' }
 
+        # Set-WslAutomountMetadata is the in-repo helper dot-sourced by
+        # the script under test. The bootstrap suite asserts wiring
+        # only - the helper has its own dedicated Pester file. Mock
+        # the call to keep these tests isolated from its read/write
+        # logic; the dedicated suite covers branches.
+        Mock Set-WslAutomountMetadata { }
+
         Mock Install-Module { }
         Mock Import-Module { }
 

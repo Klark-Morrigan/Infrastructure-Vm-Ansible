@@ -10,6 +10,7 @@ exists.
 
 - [Var contract](#var-contract)
 - [Behaviour](#behaviour)
+- [Remove direction](#remove-direction)
 - [Idempotence guarantees](#idempotence-guarantees)
 - [Tests](#tests)
 - [Rationale](#rationale)
@@ -55,6 +56,38 @@ Two tasks, gated by whether `sudoersRules` is non-empty:
 Mode `0440 root:root` is the only ownership/mode `sudo` honours under
 `/etc/sudoers.d/`; anything else and the file is silently ignored.
 
+## Remove direction
+
+[`tasks/remove.yml`](tasks/remove.yml) is the symmetric entry point
+for the teardown play
+([`playbooks/remove-users.yml`](../../playbooks/remove-users.yml)).
+Invoke via:
+
+```yaml
+- ansible.builtin.import_role:
+    name: sudoers
+    tasks_from: remove
+```
+
+Shape is a single `ansible.builtin.file` task with `state: absent`,
+looping over `vm_users_entry.users | default([])` and targeting
+`/etc/sudoers.d/{{ item.username }}`. Contract:
+
+- Only **declared** usernames are touched. A drop-in for a user not
+  present in this host's `VmUsersConfig` entry is left in place;
+  drift removal is out of scope (see problem.md).
+- Absence of a declared drop-in is not an error - stock behaviour of
+  `ansible.builtin.file` with `state: absent`.
+- `visudo` is not invoked. Removing a drop-in cannot produce a broken
+  sudoers config, only a smaller one.
+- The `sudoersRules` field is irrelevant here - "no rule = no file"
+  already holds on the create side, so the remove direction does not
+  need to branch on it.
+
+The remove direction runs **first** in the teardown play (sudoers ->
+users -> groups), so an interrupted run never leaves a drop-in
+pointing at a user that has already been deleted.
+
 ## Idempotence guarantees
 
 - Re-running with the same config reports `changed: 0` across both
@@ -75,9 +108,10 @@ Mode `0440 root:root` is the only ownership/mode `sudo` honours under
 
 ## Tests
 
-Molecule scenario under
+Two Molecule scenarios, both against an Ubuntu 24.04 Docker container.
+
 [`Tests/molecule/sudoers/default/`](../../Tests/molecule/sudoers/default/)
-runs the role against an Ubuntu 24.04 Docker container and covers:
+exercises the create direction (`tasks/main.yml`):
 
 - User with one rule - file exists with mode `0440` and contains the
   rule verbatim.
@@ -90,8 +124,27 @@ runs the role against an Ubuntu 24.04 Docker container and covers:
 - Rule with invalid syntax - play fails with a `visudo` error and the
   live file on the VM is unchanged from the previous successful run.
 
+[`Tests/molecule/sudoers/remove/`](../../Tests/molecule/sudoers/remove/)
+exercises the remove direction (`tasks/remove.yml`). `prepare` seeds
+`/etc/sudoers.d/<username>` files for declared users plus one
+out-of-config drop-in; `converge` invokes the role with
+`tasks_from: remove`; `verify` covers:
+
+- Seeded drop-ins for declared users are absent after converge.
+- A seeded drop-in for an undeclared user is still present (drift
+  removal is out of scope).
+- A drop-in declared for a different `vmName` does not leak onto this
+  host (selectattr filter applies to the remove direction too).
+- Re-converge against an already-removed drop-in reports no error and
+  no resurrection.
+- An empty `users` list runs zero iterations and touches no files.
+
 ## Rationale
 
 See [problem.md - Role: sudoers](../../docs/dev/implementation/02-groups-users-sudoers-creation/problem.md#role-sudoers)
-for the verbatim-string contract, `visudo` validation, and empty-list
-removal decisions captured during design.
+for the create-side decisions (verbatim-string contract, `visudo`
+validation, empty-list removal).
+
+The remove direction's contract (declared-only, no `visudo`,
+absence-is-not-an-error) is captured in
+[`docs/dev/implementation/03-groups-users-sudoers-removal/problem.md`](../../docs/dev/implementation/03-groups-users-sudoers-removal/problem.md#role-sudoers-remove).

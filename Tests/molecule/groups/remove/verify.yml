@@ -1,0 +1,188 @@
+---
+# Verify post-converge state for the groups remove direction.
+#
+# Idempotence (case "re-run with same input") is covered by the
+# `molecule idempotence` step in the default test sequence; this file
+# asserts the post-converge state plus the cases the converge fixture
+# cannot express on its own:
+#
+#   - Declared absent group: probe rc!=0 must not abort the role.
+#     Implicit in the converge succeeding without errors.
+#   - Out-of-config group must survive (drift removal is out of scope).
+#   - Re-converge against an already-removed group is a clean no-op.
+#   - Re-converge against the still non-empty group stays idempotent
+#     at the changed-task-count level (the probe is `changed_when:
+#     false` and the debug task carries no state).
+#   - Empty `groups` list runs zero iterations and touches nothing.
+
+- name: Verify - groups role remove-direction post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Declared empty group must be gone. Use `getent group` directly
+    # rather than ansible.builtin.getent because the latter errors hard
+    # on a missing key and we need to assert absence.
+    - name: Look up ans-remove-empty in /etc/group
+      ansible.builtin.command: getent group ans-remove-empty
+      register: empty_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-empty was removed
+      ansible.builtin.assert:
+        that:
+          - empty_lookup.rc != 0
+        fail_msg: >-
+          ans-remove-empty still resolves via getent after the remove
+          converge: {{ empty_lookup.stdout }}.
+
+    # Declared non-empty group must survive (an out-of-config member
+    # still owns it; ripping the group out would silently drop the
+    # supplementary membership). Also confirm the member is still
+    # listed - that is what the warning task names.
+    - name: Look up ans-remove-busy in /etc/group
+      ansible.builtin.command: getent group ans-remove-busy
+      register: busy_lookup
+      changed_when: false
+
+    - name: Assert ans-remove-busy was KEPT (non-empty skip)
+      ansible.builtin.assert:
+        that:
+          - busy_lookup.rc == 0
+          - "'ans-stranger' in (busy_lookup.stdout | split(':'))[3]"
+        fail_msg: >-
+          ans-remove-busy should still exist with ans-stranger as a
+          member, but getent reports: {{ busy_lookup.stdout | default('<absent>') }}.
+
+    # ans-remove-missing was declared but never created on disk.
+    # `getent` returns rc=2 for that case and the role must skip
+    # silently. The converge succeeding without errors already proves
+    # this; re-assert here for explicitness.
+    - name: Look up ans-remove-missing in /etc/group
+      ansible.builtin.command: getent group ans-remove-missing
+      register: missing_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-missing is (still) absent
+      ansible.builtin.assert:
+        that:
+          - missing_lookup.rc != 0
+        fail_msg: >-
+          ans-remove-missing somehow exists on the host; prepare
+          should not have created it and the role must not create
+          groups in the remove direction.
+
+    # Drift guard: a group that was never declared must survive.
+    - name: Look up ans-undeclared in /etc/group
+      ansible.builtin.command: getent group ans-undeclared
+      register: undeclared_lookup
+      changed_when: false
+
+    - name: Assert ans-undeclared was NOT removed
+      ansible.builtin.assert:
+        that:
+          - undeclared_lookup.rc == 0
+        fail_msg: >-
+          ans-undeclared was removed despite not being declared on
+          this host - drift removal is out of scope.
+
+    # Host-scoped lookup guard: a group declared on a different vmName
+    # must not be touched on this host.
+    - name: Look up should-not-touch in /etc/group
+      ansible.builtin.command: getent group should-not-touch
+      register: other_host_lookup
+      changed_when: false
+
+    - name: Assert other-host fixture did not leak into this host
+      ansible.builtin.assert:
+        that:
+          - other_host_lookup.rc == 0
+        fail_msg: >-
+          should-not-touch was removed on this host but was declared
+          for vmName: other-host. The selectattr filter let an
+          other-host entry through.
+
+    # Re-converge: removing an already-absent group via the gated
+    # ansible.builtin.group task is a no-op; the still non-empty group
+    # still trips the warning task but the probe is changed_when:false
+    # and debug carries no state, so the role is idempotent at the
+    # task-count level. Empty users list is set for fixture parity
+    # with the converge - the groups role carries no users meta dep
+    # so it is tidiness, not protection.
+    - name: Stage fixture - same groups, second pass
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users: []
+            groups:
+              - groupName: ans-remove-empty
+              - groupName: ans-remove-busy
+              - groupName: ans-remove-missing
+
+    - name: Re-apply role (idempotence proof)
+      ansible.builtin.include_role:
+        name: groups
+        tasks_from: remove
+
+    - name: Look up ans-remove-empty again after re-converge
+      ansible.builtin.command: getent group ans-remove-empty
+      register: empty_lookup_after
+      changed_when: false
+      failed_when: false
+
+    - name: Assert ans-remove-empty stays absent after re-converge
+      ansible.builtin.assert:
+        that:
+          - empty_lookup_after.rc != 0
+        fail_msg: >-
+          ans-remove-empty reappeared after the second remove pass;
+          the remove direction is not idempotent.
+
+    - name: Look up ans-remove-busy again after re-converge
+      ansible.builtin.command: getent group ans-remove-busy
+      register: busy_lookup_after
+      changed_when: false
+
+    - name: Assert ans-remove-busy is still kept after re-converge
+      ansible.builtin.assert:
+        that:
+          - busy_lookup_after.rc == 0
+          - "'ans-stranger' in (busy_lookup_after.stdout | split(':'))[3]"
+        fail_msg: >-
+          ans-remove-busy state changed across re-converge; the
+          non-empty skip must remain a no-op on second pass.
+
+    # Empty groups list: loop runs zero iterations, no errors. Re-seed
+    # ans-remove-empty to prove the role leaves it alone when the
+    # declared list is empty.
+    - name: Re-seed ans-remove-empty for the empty-list proof
+      ansible.builtin.group:
+        name: ans-remove-empty
+        state: present
+
+    - name: Stage fixture - empty groups list for this host
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users: []
+            groups: []
+
+    - name: Re-apply role with an empty groups list
+      ansible.builtin.include_role:
+        name: groups
+        tasks_from: remove
+
+    - name: Look up ans-remove-empty after empty-groups converge
+      ansible.builtin.command: getent group ans-remove-empty
+      register: empty_after_empty
+      changed_when: false
+
+    - name: Assert ans-remove-empty survives the empty-groups converge
+      ansible.builtin.assert:
+        that:
+          - empty_after_empty.rc == 0
+        fail_msg: >-
+          ans-remove-empty was removed despite the declared groups
+          list being empty; the remove loop is not respecting the
+          empty-list contract.

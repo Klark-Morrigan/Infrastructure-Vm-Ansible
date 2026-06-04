@@ -2,9 +2,15 @@
 # Converge: apply the sudoers role with the positive-path fixtures.
 #
 # The role iterates the `users` array on the host's vm_users_config
-# entry, so the fixture creates four users (via the meta-dependency
-# chain sudoers -> users -> groups) covering the create-side cases
-# from the plan:
+# entry, so the fixture needs four real OS users on the box before
+# sudoers runs. The sudoers role intentionally carries no meta dep
+# on roles/users (see roles/sudoers/meta/main.yml for the reason),
+# so this converge invokes the `users` role explicitly before the
+# role under test. `groups` is not needed here because no fixture
+# user declares supplementary group membership; if a future test
+# case adds one, include groups first by the same pattern.
+#
+# Fixtures cover the create-side cases from the plan:
 #
 #   - ans-single: exactly one sudoersRules entry.
 #   - ans-multi: two sudoersRules entries, declared order matters
@@ -53,6 +59,12 @@
             sudoersRules:
               - "should-not-appear ALL=(ALL) NOPASSWD:ALL"
   tasks:
+    # Seed the four fixture accounts before the role under test runs.
+    # Replaces the implicit create chain the dropped meta dep provided.
+    - name: Seed fixture users (replaces dropped meta dep)
+      ansible.builtin.include_role:
+        name: users
+
     - name: Include the role under test
       ansible.builtin.include_role:
         name: sudoers

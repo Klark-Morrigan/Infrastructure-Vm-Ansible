@@ -1,0 +1,34 @@
+---
+# Converge: invoke the groups role's remove direction via
+# tasks_from: remove.
+#
+# The fixture declares three groups on the current host (one empty,
+# one non-empty, one absent on disk) plus one group on a different
+# vmName (filtered out by vm_users_entry's selectattr) to prove the
+# host-scoped lookup applies to the remove direction too.
+#
+# `users: []` is set explicitly to keep the fixture minimal. The
+# groups role does not read .users, and the role meta files carry
+# no inter-role deps that could pull in a sibling role's reader, so
+# this empty list is purely tidiness.
+
+- name: Converge - apply groups role (remove direction)
+  hosts: all
+  gather_facts: true
+  vars:
+    vm_users_config:
+      - vmName: instance
+        users: []
+        groups:
+          - groupName: ans-remove-empty
+          - groupName: ans-remove-busy
+          - groupName: ans-remove-missing
+      - vmName: other-host
+        users: []
+        groups:
+          - groupName: should-not-touch
+  tasks:
+    - name: Include the role under test, remove direction
+      ansible.builtin.include_role:
+        name: groups
+        tasks_from: remove

@@ -1,0 +1,79 @@
+---
+# Remove direction for the groups role. Counterpart to tasks/main.yml:
+# the create flow reconciles declared groups via ansible.builtin.group
+# state=present, this flow removes them - but only when safe to do so.
+# Lives in a sibling file (not behind a `state` switch in main.yml) so
+# each direction's task list stays small and greppable - see plan.md
+# Shape.
+#
+# vm_users_entry is set by roles/vm_users_entry via the meta dep chain
+# and resolves to the VmUsersConfig record for inventory_hostname. The
+# loop iterates `groups` from that entry and removes each declared
+# group, gated on whether the group is empty on the VM. Drift removal
+# is out of scope: a group that is on the VM but not in this host's
+# vm_users_config is left alone.
+#
+# Non-empty-group skip is the substantive piece of glue this direction
+# adds. ansible.builtin.group with state=absent will happily delete a
+# non-empty group, which would silently strip the supplementary group
+# from every still-resident member account - a surprising outcome for
+# an operator who declared the group purely for the users that the
+# preceding role just deleted. The probe-then-skip pattern keeps the
+# decision visible at the play level: the debug task surfaces the
+# remaining members by name so the operator can act on them, instead
+# of guessing why a declared group is still around.
+#
+# Absent groups (getent rc!=0) are skipped silently - matches the
+# legacy "absent -> skip" contract from problem.md and mirrors the
+# sudoers/remove "absence is not an error" stance.
+
+- name: Check declared groups on the host
+  ansible.builtin.command: "getent group {{ item.groupName }}"
+  loop: "{{ vm_users_entry.groups | default([]) }}"
+  loop_control:
+    label: "{{ item.groupName }}"
+  register: groups_lookups
+  # getent exits 2 when the key is not in the database; for the remove
+  # direction that just means the group is already gone, which is the
+  # success state. Any non-zero rc here is treated as "skip", not as a
+  # failure - the live state already matches the desired outcome.
+  failed_when: false
+  # Pure probe of /etc/group via NSS; nothing on disk changes, so the
+  # task must report changed=false to keep `molecule idempotence` and
+  # any --check runs honest.
+  changed_when: false
+
+- name: Remove declared groups that are empty
+  ansible.builtin.group:
+    name: "{{ item.item.groupName }}"
+    state: absent
+  loop: "{{ groups_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.groupName }}"
+  # Two-condition gate: only act when the group actually exists on the
+  # host (rc==0) AND its members field (field 4 of the colon-separated
+  # getent record) is empty. The members field is what userdel clears
+  # when it removes an account's supplementary group membership, so
+  # "empty members after step 2" is the natural cue that nothing on
+  # the VM still depends on this group.
+  when:
+    - item.rc == 0
+    - (item.stdout | default('') | split(':'))[3] == ''
+
+- name: Warn about non-empty declared groups (kept, not removed)
+  ansible.builtin.debug:
+    msg: >-
+      Group '{{ item.item.groupName }}' kept: still has members
+      ({{ (item.stdout | split(':'))[3] }}).
+  loop: "{{ groups_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.groupName }}"
+  # Mirrors the previous task's gate but inverted on the members field:
+  # a group that exists and still has members is intentionally left in
+  # place. Listing the remaining members (problem.md / open question
+  # #1, resolved to log names) gives the operator the info they need
+  # to either remove those accounts and re-run, or to accept that the
+  # group is shared and adjust the declared list.
+  when:
+    - item.rc == 0
+    - (item.stdout | default('') | split(':'))[3] != ''

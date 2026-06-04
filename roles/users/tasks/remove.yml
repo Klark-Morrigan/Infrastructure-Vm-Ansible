@@ -1,0 +1,68 @@
+---
+# Remove direction for the users role. Counterpart to tasks/main.yml:
+# the create flow declares users via ansible.builtin.user state=present,
+# this flow deletes the same accounts. Lives in a sibling file (not
+# behind a `state` switch in main.yml) so each direction's task list
+# stays small and greppable - see plan.md Shape.
+#
+# vm_users_entry is set by roles/vm_users_entry via the meta dep chain
+# and resolves to the VmUsersConfig record for inventory_hostname. The
+# loop iterates `users` from that entry and removes each declared
+# account, its home directory, and (implicitly via userdel) its
+# same-name primary group when no other members remain. Drift removal
+# is out of scope: an account that is on the VM but not in this host's
+# vm_users_config is left alone.
+#
+# Departure from the legacy Vm-Users PS removal: that flow surfaced an
+# error and moved on when the user had running processes, leaving the
+# account stuck. Operator-driven removal is a declared act; leaving
+# processes alive is the surprising outcome. So this role first issues
+# pkill -KILL against the account, then invokes userdel with `force: yes`
+# (userdel -f). The per-iteration failed_when:false + register + final
+# assert is belt-and-braces for the rare case the pre-kill cannot free
+# the account (D-state task, kernel-thread parent) - the loop completes
+# for the rest of the users and the assert restores a non-zero exit
+# code at the end so the play still fails loudly.
+
+- name: Kill any running processes owned by the user
+  ansible.builtin.command: "pkill -KILL -u {{ item.username }}"
+  loop: "{{ vm_users_entry.users | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"
+  register: users_kill_results
+  # pkill exits 1 when no matching process exists; that is the common
+  # case (most declared accounts are not logged in) and is not an
+  # error. rc>=2 is real (rc=2 syntax error, rc=3 fatal error) and we
+  # want the play to fail there rather than silently miss processes
+  # that should have been signalled. changed_when only flips on rc=0
+  # so re-runs against an already-quiet account stay idempotent.
+  failed_when: users_kill_results.rc is defined and users_kill_results.rc >= 2
+  changed_when: users_kill_results.rc == 0
+
+- name: Remove declared users
+  ansible.builtin.user:
+    name: "{{ item.username }}"
+    state: absent
+    remove: true   # userdel -r: deletes home directory and mail spool
+    force: true    # userdel -f: belt-and-braces against pre-kill miss
+  loop: "{{ vm_users_entry.users | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"
+  register: users_remove_results
+  # Per-iteration failure does not abort the loop. The final assert
+  # below restores a non-zero exit code if any iteration errored, so
+  # an unkillable account on one VM does not strand cleanup of every
+  # other declared user.
+  failed_when: false
+
+- name: Assert no user removal errored
+  ansible.builtin.assert:
+    that:
+      - >-
+        users_remove_results.results
+        | rejectattr('failed', 'equalto', false)
+        | list | length == 0
+    fail_msg: >-
+      One or more user removals failed; see preceding task output.
+      Likely cause: a process survived SIGKILL (D-state task, kernel
+      thread parent) and userdel -f could not free the account.

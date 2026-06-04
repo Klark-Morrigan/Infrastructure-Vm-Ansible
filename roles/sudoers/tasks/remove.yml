@@ -1,0 +1,29 @@
+---
+# Remove direction for the sudoers role. Counterpart to tasks/main.yml:
+# the create flow renders /etc/sudoers.d/<username> from each user's
+# sudoersRules, this flow deletes the same files. Lives in a sibling
+# file (not behind a `state` switch in main.yml) so each direction's
+# task list stays small and greppable - see plan.md Shape.
+#
+# vm_users_entry is set by roles/vm_users_entry via the meta dep chain
+# and resolves to the VmUsersConfig record for inventory_hostname. The
+# loop iterates `users` from that entry and removes the per-user
+# drop-in unconditionally; sudoersRules is irrelevant for the remove
+# direction since "no rule = no file" already holds on the create side.
+#
+# state: absent on ansible.builtin.file is a no-op when the path is
+# missing, so the play does not need a pre-check for absence. visudo
+# is intentionally NOT invoked - removing a drop-in cannot produce a
+# broken sudoers config, only a smaller one.
+#
+# Out-of-config users (a /etc/sudoers.d/<username> file for an account
+# not declared in vm_users_config for this host) are deliberately left
+# in place. Drift removal is out of scope per problem.md - operators
+# remove what they declare, not what they find.
+- name: Remove sudoers drop-ins for declared users
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/{{ item.username }}"
+    state: absent
+  loop: "{{ vm_users_entry.users | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"

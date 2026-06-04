@@ -21,13 +21,23 @@ galaxy_info:
     - users
     - sudoers
 
-# Hard dependency on roles/users: a sudoers drop-in for a user the OS
-# does not know about is dead config (sudo never consults it for an
-# unknown account). Declaring the dependency here also means
-# `--tags sudoers` still produces a correct state when run in isolation
-# - users will be reconciled first. The create-users playbook in
-# step 12 imports users explicitly too, which is a no-op when this
-# meta dependency has already pulled it in.
+# Only dependency: the vm_users_entry helper, which sets the shared
+# `vm_users_entry` fact this role's loop reads.
+#
+# `roles/users` is intentionally NOT a meta-dep here even though the
+# write direction needs the account to exist before a drop-in references
+# it. Ansible's meta dependencies ALWAYS run `tasks/main.yml`; they
+# ignore the entry-role's `tasks_from` selector. So declaring
+# `- role: users` here would silently re-run `users/main.yml` (the
+# create direction) every time `remove-users.yml` imports
+# `sudoers` with `tasks_from: remove` - resurrecting the accounts the
+# operator just asked to delete moments before `sudoers/remove.yml`
+# wipes their drop-ins. Ordering is owned by the playbook instead:
+# `create-users.yml` explicitly lists groups -> users -> sudoers, and
+# `remove-users.yml` explicitly lists sudoers -> users -> groups
+# (reverse). Standalone `--tags sudoers` runs no longer auto-pull the
+# create dep - that mode is operator-driven and the partial-removal
+# tags work is explicitly deferred (see plan.md, resolved open
+# question #3).
 dependencies:
   - role: vm_users_entry
-  - role: users

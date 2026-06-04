@@ -10,9 +10,12 @@
 #   - ans-home: bash + password, homeDir under /opt (used by the
 #     verify play's homeDir-change case).
 #
-# ans-extra is declared under `groups` so the users role's meta
-# dependency on roles/groups creates it as part of this play. A
-# second VM entry with a different vmName proves the
+# ans-extra is declared under `groups` and must exist on the box
+# before the users role's loop runs (ans-bash's supplementary group
+# assignment references it). The users role intentionally does not
+# carry a meta dep on roles/groups (see roles/users/meta/main.yml for
+# the reason), so this converge invokes the groups role explicitly
+# first. A second VM entry with a different vmName proves the
 # selectattr(vmName == inventory_hostname) lookup filters correctly.
 
 - name: Converge - apply users role
@@ -43,6 +46,12 @@
             shell: /bin/bash
             homeDir: /home/should-not-appear
   tasks:
+    # Seed the fixture group ans-extra before the role under test
+    # runs. Replaces the implicit create the dropped meta dep provided.
+    - name: Seed fixture groups (replaces dropped meta dep)
+      ansible.builtin.include_role:
+        name: groups
+
     - name: Include the role under test
       ansible.builtin.include_role:
         name: users

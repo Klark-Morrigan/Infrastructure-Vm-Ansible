@@ -1,0 +1,42 @@
+---
+# Converge: invoke the users role's remove direction via
+# tasks_from: remove.
+#
+# The fixture declares three users on the current host - prepare
+# seeded them and prepare's process spawn means ans-remove-busy
+# exercises the pre-kill rc=0 path. The other-host entry proves the
+# vmName selectattr filter applies to the remove direction too.
+#
+# `groups: []` is set explicitly to keep the fixture minimal. The
+# users role does not (and must not) carry a meta dep on roles/groups
+# - see roles/users/meta/main.yml - so this empty list is purely
+# tidiness, not protection.
+
+- name: Converge - apply users role (remove direction)
+  hosts: all
+  gather_facts: true
+  vars:
+    vm_users_config:
+      - vmName: instance
+        groups: []
+        users:
+          - username: ans-remove-bash
+            shell: /bin/bash
+            homeDir: /home/ans-remove-bash
+          - username: ans-remove-nohome
+            shell: /bin/bash
+            homeDir: /home/ans-remove-nohome
+          - username: ans-remove-busy
+            shell: /bin/bash
+            homeDir: /home/ans-remove-busy
+      - vmName: other-host
+        groups: []
+        users:
+          - username: should-not-touch
+            shell: /bin/bash
+            homeDir: /home/should-not-touch
+  tasks:
+    - name: Include the role under test, remove direction
+      ansible.builtin.include_role:
+        name: users
+        tasks_from: remove

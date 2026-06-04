@@ -1,0 +1,59 @@
+---
+# Prepare the container before converge: seed /etc/sudoers.d/ with
+# drop-ins for the usernames the converge fixture declares (which the
+# remove flow should delete) plus one extra drop-in for a username NOT
+# in the fixture (which the remove flow must leave alone, per
+# problem.md - drift removal is out of scope).
+#
+# sudo is installed for parity with the default scenario. The remove
+# tasks themselves never invoke visudo and the sudoers role carries
+# no inter-role meta deps that would pull in useradd indirectly, so
+# this install is purely about keeping the container shape consistent
+# across the default / remove scenarios.
+
+- name: Prepare - seed /etc/sudoers.d and install sudo
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install sudo so meta deps that may need useradd downstream have a baseline
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+
+    - name: Ensure /etc/sudoers.d exists with the canonical mode
+      ansible.builtin.file:
+        path: /etc/sudoers.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    # Seed declared users' drop-ins. Content is a single benign rule
+    # rather than an empty file because some installations of sudo
+    # reject empty files under /etc/sudoers.d/; the bytes do not matter
+    # for the remove direction, only that the file exists pre-converge.
+    - name: Seed /etc/sudoers.d/<username> drop-ins for declared users
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ item }}"
+        content: "{{ item }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+      loop:
+        - ans-remove-one
+        - ans-remove-two
+
+    # Seed an out-of-config drop-in. The remove direction must leave it
+    # in place - it does not appear in vm_users_config for this host.
+    - name: Seed an out-of-config drop-in that must NOT be removed
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/ans-undeclared
+        content: "ans-undeclared ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"

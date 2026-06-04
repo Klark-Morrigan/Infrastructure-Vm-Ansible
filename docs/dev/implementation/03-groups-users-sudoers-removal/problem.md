@@ -10,11 +10,10 @@
   - [Role: groups (remove)](#role-groups-remove)
   - [Entry point: remove-users playbook](#entry-point-remove-users-playbook)
   - [Operator entry point in this repo](#operator-entry-point-in-this-repo)
-  - [Archive Infrastructure-Vm-Users](#archive-infrastructure-vm-users)
+  - [Mark Infrastructure-Vm-Users superseded](#mark-infrastructure-vm-users-superseded)
 - [Why Now](#why-now)
 - [Affected Components](#affected-components)
 - [Out of Scope](#out-of-scope)
-- [Open Questions](#open-questions)
 
 ---
 
@@ -66,10 +65,12 @@ Runs second.
 
 | Decision | Value |
 |----------|-------|
-| Module | `ansible.builtin.user` with `state: absent`, `remove: yes` |
-| Effect | Equivalent to `userdel -r` — deletes the account and its home directory. |
+| Module | `ansible.builtin.user` with `state: absent`, `remove: yes`, `force: yes` |
+| Effect | Equivalent to `userdel -f -r` — deletes the account and its home directory; `-f` lets `userdel` proceed when the user is logged in or owns files. |
+| Running processes | Killed proactively **before** `userdel` runs: a pre-task issues `pkill -KILL -u <username>` per declared user, ignoring rc=1 (no processes). Departure from the legacy PS behaviour, which surfaced a failure for the user-with-processes case and moved on. Operator-driven removal is a deliberate, declared act; leaving processes alive after the operator asks the account gone is the surprising outcome, not killing them. The pre-kill is best-effort, not authoritative: a process that survives SIGKILL (uninterruptible D-state, kernel thread parent) will leave `userdel -f -r` to deal with it. |
 | Implicit primary group | Removed automatically by `userdel` when the group has the same name as the user and no remaining members. |
 | Absence | Not an error. |
+| Per-iteration failure | Captured (`failed_when: false` + `register`) so a stuck removal does not abort the play; a final `assert` fails the play at the end if any iteration errored, preserving a non-zero exit code. Belt-and-braces against the rare case the pre-kill could not free the account. |
 
 ### Role: groups (remove)
 
@@ -78,7 +79,7 @@ Runs **last**, after all declared users for the VM are gone.
 | Decision | Value |
 |----------|-------|
 | Module | `ansible.builtin.group` with `state: absent` |
-| Non-empty group | When a group still has members (e.g. a user not in this config joined it), the group is **skipped with a warning**, not forcibly removed. Matches today's "warned and skipped rather than forcing deletion" guarantee — protects against deleting a group an operator added by hand. |
+| Non-empty group | When a group still has members (e.g. a user not in this config joined it), the group is **skipped with a warning that names the remaining members**, not forcibly removed. Matches today's "warned and skipped rather than forcing deletion" guarantee — protects against deleting a group an operator added by hand. Member names (not just count) because the diagnostic value of "which account is still holding this group open" is what the operator needs to decide the next step. |
 | Absence | Not an error. |
 
 The non-empty-group skip is the only piece in this feature that requires
@@ -116,7 +117,7 @@ A confirmation prompt is **not** added. Today's `remove-users.ps1` does
 not prompt either, and the destructive intent is already in the script
 name and the operator's choice to invoke it.
 
-### Archive Infrastructure-Vm-Users
+### Mark Infrastructure-Vm-Users superseded
 
 This is the final step of feature 03 and happens **after** the new
 removal path is validated. Up to this point Vm-Users has been completely
@@ -124,19 +125,25 @@ untouched by the migration; both create and remove paths exist twice (in
 Vm-Users and in this repo) and operators can validate the new ones
 against the old ones.
 
-The archive step is a one-shot:
+Vm-Users is **not** retired by this step. The Infrastructure-E2E
+`custom-powershell` flow (locked in feature 02 / step 13 and extended
+to the remove side in feature 03 / step 5) keeps invoking Vm-Users'
+`create-users.ps1` and `remove-users.ps1` as a permanent first-class
+non-primary implementation. The banner this step adds calls out that
+Vm-Users is no longer the operator default, not that it is dead code.
 
-1. Final commit on `Infrastructure-Vm-Users`: README replaced by a pointer
-   to `Infrastructure-VM-Ansible` and the relevant feature folders. The
-   PowerShell scripts are left in the final commit, not deleted — they
-   remain readable in the archived repo as historical reference.
-2. Archive the repo on GitHub. History, issues, and PRs are preserved;
-   the URL still resolves.
+1. A short banner and a link to `Infrastructure-VM-Ansible` are
+   prepended to the top of `Infrastructure-Vm-Users/README.md`,
+   noting that the repo is no longer the operator default and that
+   its scripts remain callable via the E2E `custom-powershell`
+   flow. Nothing else in the file is rewritten; the PowerShell
+   scripts are left in place and stay runtime-live for E2E.
 
-After this, the only repos in the migration set still active are
-`Infrastructure-VM-Ansible` (new home), `Infrastructure-Vm-Provisioner`
-(unchanged so far), and `Infrastructure-GitHubRunners` (a later
-migration target).
+After this, the operator's primary entry points are in
+`Infrastructure-VM-Ansible` (new home). `Infrastructure-Vm-Provisioner`
+is unchanged so far; `Infrastructure-GitHubRunners` is a later migration
+target. Vm-Users itself is now operator-secondary but still runtime-live
+through the E2E `custom-powershell` flow.
 
 ---
 
@@ -156,44 +163,6 @@ migration target).
 ---
 
 ## Affected Components
-
-```mermaid
-graph TD
-    subgraph Vaults ["Vaults (unchanged)"]
-        PV["VmProvisioner vault"]
-        UV["VmUsers vault"]
-    end
-
-    subgraph Entry ["Infrastructure-VM-Ansible operator entry (new, this feature)"]
-        SH["scripts/remove-users.sh\n(bash, calls bridge)"]
-    end
-
-    subgraph Bridge ["Infrastructure-VM-Ansible substrate (built in feature 02, consumed here)"]
-        BR["bash bridge + jq-generated inventory"]
-    end
-
-    subgraph Roles ["Infrastructure-VM-Ansible feature 03 (new)"]
-        SR["roles/sudoers (remove)"]
-        UR["roles/users (remove)"]
-        GR["roles/groups (remove)\n+ non-empty-group skip"]
-        PB["playbooks/remove-users.yml"]
-    end
-
-    subgraph Guest ["VM"]
-        OS["/etc/sudoers.d/*, /etc/passwd,\n/etc/group, /home/*"]
-    end
-
-    PV -.->|"read at runtime"| BR
-    UV -.->|"read at runtime"| BR
-    SH --> BR
-    BR --> PB
-    PB --> SR
-    PB --> UR
-    PB --> GR
-    SR --> OS
-    UR --> OS
-    GR --> OS
-```
 
 Sequence with one group still in use by an out-of-config user:
 
@@ -240,24 +209,11 @@ sequenceDiagram
   `VmUsersConfig` from the `VmUsers` vault as before; this feature does
   not change the vault or the consumer. The runners migration is its own
   later feature.
-
----
-
-## Open Questions
-
-1. Should the non-empty-group skip log the names of the unexpected
-   members, or just the count? Names are more useful for operators
-   diagnosing why a group survived; counts are quieter. Current
-   proposal: log the names (small list, high diagnostic value).
-2. Should removal of a user that owns running processes (rare for the
-   service accounts this repo manages, but possible) attempt to kill
-   them first, or fail loudly? `userdel` with `-r` will refuse if the
-   user is logged in or has running processes; today's PowerShell
-   behaviour is to surface the error and continue with the next user.
-   Current proposal: preserve that — fail one user, continue the rest,
-   non-zero exit at the end.
-3. Should `remove-users.yml` accept a `--limit` / `--tags` shape that
-   removes only sudoers (leaving the user) or only the user (leaving
-   sudoers)? Useful for partial rollback during a failed deploy.
-   Current proposal: defer — the create/remove split already covers
-   the common cases, and partial-removal use cases are speculative.
+- **Partial-removal scoping in `remove-users.yml`** (e.g. a flag that
+  removes only sudoers while leaving the user, or only the user while
+  leaving sudoers). Useful for partial rollback during a failed deploy,
+  but speculative — the create/remove feature split already covers the
+  common cases. The per-role tags (`sudoers`, `users`, `groups`) exist
+  on the play so `--tags` can scope a run if a future need surfaces,
+  but no special handling beyond what tags give for free is planned
+  here. A future feature lifts this when a real use case materialises.
