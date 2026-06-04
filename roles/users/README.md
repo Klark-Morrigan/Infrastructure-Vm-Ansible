@@ -106,7 +106,7 @@ Three tasks per declared user:
    missed). `failed_when: false` lets the loop visit every declared
    user even if one removal errors, so a single stuck account does
    not strand the rest.
-3. **Final assert** - inspects `user_remove_results.results` and
+3. **Final assert** - inspects `users_remove_results.results` and
    fails the play if any iteration was marked `failed`. Restores a
    non-zero exit code so a stuck removal stays loud.
 

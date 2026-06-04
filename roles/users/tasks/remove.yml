@@ -29,15 +29,15 @@
   loop: "{{ vm_users_entry.users | default([]) }}"
   loop_control:
     label: "{{ item.username }}"
-  register: user_kill_results
+  register: users_kill_results
   # pkill exits 1 when no matching process exists; that is the common
   # case (most declared accounts are not logged in) and is not an
   # error. rc>=2 is real (rc=2 syntax error, rc=3 fatal error) and we
   # want the play to fail there rather than silently miss processes
   # that should have been signalled. changed_when only flips on rc=0
   # so re-runs against an already-quiet account stay idempotent.
-  failed_when: user_kill_results.rc is defined and user_kill_results.rc >= 2
-  changed_when: user_kill_results.rc == 0
+  failed_when: users_kill_results.rc is defined and users_kill_results.rc >= 2
+  changed_when: users_kill_results.rc == 0
 
 - name: Remove declared users
   ansible.builtin.user:
@@ -48,7 +48,7 @@
   loop: "{{ vm_users_entry.users | default([]) }}"
   loop_control:
     label: "{{ item.username }}"
-  register: user_remove_results
+  register: users_remove_results
   # Per-iteration failure does not abort the loop. The final assert
   # below restores a non-zero exit code if any iteration errored, so
   # an unkillable account on one VM does not strand cleanup of every
@@ -59,7 +59,7 @@
   ansible.builtin.assert:
     that:
       - >-
-        user_remove_results.results
+        users_remove_results.results
         | rejectattr('failed', 'equalto', false)
         | list | length == 0
     fail_msg: >-
