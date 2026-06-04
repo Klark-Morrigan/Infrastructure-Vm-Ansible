@@ -1,0 +1,146 @@
+---
+# Verify post-converge state for the sudoers remove direction.
+#
+# Idempotence (case "re-run with same input") is covered by the
+# `molecule idempotence` step in the default test sequence; this file
+# asserts the post-converge state plus two cases the converge fixture
+# cannot express on its own:
+#
+#   - Empty `users` list -> the loop runs zero iterations with no
+#     errors (the `| default([])` guard is real, not just lint
+#     appeasement).
+#   - Re-converge after removal -> still reports changed: 0 (absence
+#     of the file is a no-op for ansible.builtin.file state: absent).
+
+- name: Verify - sudoers role remove-direction post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Declared drop-ins must be gone.
+    - name: Stat ans-remove-one drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-remove-one
+      register: ans_remove_one_stat
+
+    - name: Assert ans-remove-one drop-in was removed
+      ansible.builtin.assert:
+        that:
+          - not ans_remove_one_stat.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-remove-one should be absent but stat
+          reports {{ ans_remove_one_stat.stat }}.
+
+    - name: Stat ans-remove-two drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-remove-two
+      register: ans_remove_two_stat
+
+    - name: Assert ans-remove-two drop-in was removed
+      ansible.builtin.assert:
+        that:
+          - not ans_remove_two_stat.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-remove-two should be absent but stat
+          reports {{ ans_remove_two_stat.stat }}.
+
+    # Out-of-config drop-in must survive: drift removal is out of scope.
+    - name: Stat ans-undeclared drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-undeclared
+      register: ans_undeclared_stat
+
+    - name: Assert ans-undeclared drop-in was NOT removed
+      ansible.builtin.assert:
+        that:
+          - ans_undeclared_stat.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-undeclared was removed but the user is not
+          declared on this host - the remove direction must only act on
+          declared usernames (drift removal is out of scope).
+
+    # Other-host leak: a user declared on a different vmName must not
+    # be touched here (proves the selectattr filter applies to the
+    # remove direction too).
+    - name: Stat should-not-be-touched drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/should-not-be-touched
+      register: other_host_stat
+
+    - name: Assert other-host fixture did not leak onto this host
+      ansible.builtin.assert:
+        that:
+          - not other_host_stat.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/should-not-be-touched exists on this host but
+          was declared for vmName: other-host. Either prepare leaked
+          or the host filter is broken.
+
+    # Re-converge: removing absent files is a no-op. set_fact rather
+    # than `vars:` on include_role so the fixture is play-scoped
+    # (matches the default scenario's pattern and keeps ansible-lint's
+    # var-naming check off the include_role call site).
+    - name: Stage fixture - same users, second pass
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users:
+              - username: ans-remove-one
+                shell: /bin/bash
+                homeDir: /home/ans-remove-one
+              - username: ans-remove-two
+                shell: /bin/bash
+                homeDir: /home/ans-remove-two
+
+    - name: Re-apply role (idempotence proof)
+      ansible.builtin.include_role:
+        name: sudoers
+        tasks_from: remove
+
+    - name: Stat ans-remove-one drop-in after re-converge
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-remove-one
+      register: ans_remove_one_after
+
+    - name: Assert ans-remove-one is still absent after re-converge
+      ansible.builtin.assert:
+        that:
+          - not ans_remove_one_after.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-remove-one reappeared after re-converge;
+          the remove direction is not idempotent.
+
+    # Empty users list: the loop must not error and must not touch any
+    # of the seeded files. Re-seed ans-remove-one to prove it is left
+    # alone when the declared list is empty.
+    - name: Re-seed ans-remove-one for the empty-list proof
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/ans-remove-one
+        content: "ans-remove-one ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+
+    - name: Stage fixture - empty users list for this host
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users: []
+
+    - name: Re-apply role with an empty users list
+      ansible.builtin.include_role:
+        name: sudoers
+        tasks_from: remove
+
+    - name: Stat ans-remove-one after empty-users converge
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-remove-one
+      register: ans_remove_one_after_empty
+
+    - name: Assert ans-remove-one survives the empty-users converge
+      ansible.builtin.assert:
+        that:
+          - ans_remove_one_after_empty.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-remove-one was removed despite the
+          declared users list being empty; the remove loop is not
+          respecting the empty-list contract.

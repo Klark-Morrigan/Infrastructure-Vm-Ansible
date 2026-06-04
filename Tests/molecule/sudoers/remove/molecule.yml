@@ -1,0 +1,46 @@
+---
+# Molecule scenario for the sudoers role's REMOVE direction
+# (tasks_from: remove). Mirrors the default scenario shape: single
+# Ubuntu 24.04 container, Docker driver, ansible verifier. visudo is
+# NOT required here (the remove path only calls ansible.builtin.file
+# with state: absent), but the scenario still installs sudo in prepare
+# to keep parity with the default scenario - the meta dependency chain
+# (sudoers -> users -> groups -> vm_users_entry) still pulls in the
+# create-side of users/groups, which is harmless for the remove
+# assertions but means the container needs the same baseline tools.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live four levels above the scenario; point Ansible at the
+      # repo's roles/ directory so include_role: name=sudoers resolves
+      # the role (and its meta dependency chain) without copying files
+      # into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible
