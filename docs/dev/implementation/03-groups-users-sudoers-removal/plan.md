@@ -21,6 +21,24 @@ Per-role README sections gain a "Remove direction" subsection so the
 contract for both directions lives next to the role. Top-level README
 gains an `ops/remove-users.sh` line in the operator surface table.
 
+**Meta-dep posture.** Each role's `meta/main.yml` declares only the
+direction-neutral `vm_users_entry` dep. No inter-role meta deps
+(`sudoers` -> `users`, `users` -> `groups`): Ansible's meta
+dependencies always run the dep's `tasks/main.yml` and ignore the
+entry role's `tasks_from` selector, so
+`import_role { name: sudoers, tasks_from: remove }` with a
+`- role: users` meta dep would silently re-run `users/main.yml`
+first, resurrecting the users this play is trying to delete. The
+playbook is the single source of truth for role order:
+`create-users.yml` lists groups -> users -> sudoers, and
+`remove-users.yml` lists sudoers -> users -> groups. Trade-off:
+standalone `ansible-playbook --tags sudoers` (or `--tags users`)
+no longer auto-pulls create deps, but tag-scoped partial removal
+is deferred (resolved open question #3 below) so the safety net
+is not load-bearing. Role-level molecule scenarios that exercise
+sudoers or users in isolation `include_role` their prerequisites
+explicitly in their converge files.
+
 Resolved open questions (problem.md / Open Questions):
 
 1. **Non-empty-group skip logs member names**, not just the count.
@@ -326,6 +344,20 @@ remove flow is end-to-end runnable.
   below the create entries. No confirmation prompt; the destructive
   intent is in the script name and the operator's choice to invoke it
   (decision in problem.md).
+- `roles/sudoers/meta/main.yml`, `roles/users/meta/main.yml`,
+  `roles/groups/meta/main.yml` (modified) - each carries only the
+  direction-neutral `vm_users_entry` meta dep. Comments in each
+  file explain why inter-role create-direction deps are
+  intentionally absent (would resurrect users mid-teardown — see
+  **Meta-dep posture** in Shape).
+- `playbooks/create-users.yml` (modified) - role-order comment
+  states the playbook is the single source of truth for order,
+  not the meta-dep graph.
+- `Tests/molecule/sudoers/default/converge.yml`,
+  `Tests/molecule/users/default/converge.yml` (modified) -
+  prepend explicit `include_role` for the prerequisite role
+  (users / groups respectively) so the role-level fixtures are
+  self-seeding rather than relying on a meta-dep chain.
 
 **Behaviour (playbook)**
 

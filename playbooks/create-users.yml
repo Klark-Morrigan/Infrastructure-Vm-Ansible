@@ -3,11 +3,17 @@
 # repo-local roles (groups -> users -> sudoers) against every host the
 # bash bridge dropped into the vm_provisioner_hosts inventory group.
 #
-# Role order is significant and matches each role's meta dependency
-# graph (sudoers depends on users, users depends on groups, all three
-# depend on the vm_users_entry helper). The deps would pull missing
-# roles in on their own, but listing them here keeps the create flow
-# legible without chasing meta files.
+# Role order is significant: groups must reconcile before users (so
+# supplementary group assignments resolve), and users must reconcile
+# before sudoers (so a drop-in references a real account). This
+# playbook is the single source of truth for that ordering. The
+# role meta files intentionally do NOT carry inter-role create-
+# direction deps (sudoers -> users -> groups) - Ansible's meta deps
+# always run the dep's `tasks/main.yml` and ignore the entry role's
+# `tasks_from` selector, so any such dep would silently re-create
+# users mid-teardown when `remove-users.yml` imports `sudoers` /
+# `users` with `tasks_from: remove`. Only the vm_users_entry helper
+# is a meta dep on each role (it is direction-neutral).
 #
 # any_errors_fatal: false - the bridge's inventory can contain several
 # VMs, and one host being temporarily offline should not strand the

@@ -107,8 +107,9 @@
     # ansible.builtin.group task is a no-op; the still non-empty group
     # still trips the warning task but the probe is changed_when:false
     # and debug carries no state, so the role is idempotent at the
-    # task-count level. Empty users list is set to keep the meta dep
-    # chain quiet.
+    # task-count level. Empty users list is set for fixture parity
+    # with the converge - the groups role carries no users meta dep
+    # so it is tidiness, not protection.
     - name: Stage fixture - same groups, second pass
       ansible.builtin.set_fact:
         vm_users_config:

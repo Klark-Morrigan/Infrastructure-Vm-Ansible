@@ -5,9 +5,11 @@
 # in the fixture (which the remove flow must leave alone, per
 # problem.md - drift removal is out of scope).
 #
-# sudo is installed for parity with the default scenario - the meta
-# dep chain still pulls in users/main (create), which needs useradd to
-# be present. The remove tasks themselves never invoke visudo.
+# sudo is installed for parity with the default scenario. The remove
+# tasks themselves never invoke visudo and the sudoers role carries
+# no inter-role meta deps that would pull in useradd indirectly, so
+# this install is purely about keeping the container shape consistent
+# across the default / remove scenarios.
 
 - name: Prepare - seed /etc/sudoers.d and install sudo
   hosts: all

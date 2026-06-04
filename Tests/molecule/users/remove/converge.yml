@@ -7,9 +7,10 @@
 # exercises the pre-kill rc=0 path. The other-host entry proves the
 # vmName selectattr filter applies to the remove direction too.
 #
-# `groups: []` is set explicitly because the users role's meta
-# dependency on roles/groups would otherwise read .groups off the
-# entry; an empty list makes that create-side step a quiet no-op.
+# `groups: []` is set explicitly to keep the fixture minimal. The
+# users role does not (and must not) carry a meta dep on roles/groups
+# - see roles/users/meta/main.yml - so this empty list is purely
+# tidiness, not protection.
 
 - name: Converge - apply users role (remove direction)
   hosts: all

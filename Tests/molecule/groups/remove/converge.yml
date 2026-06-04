@@ -7,10 +7,10 @@
 # vmName (filtered out by vm_users_entry's selectattr) to prove the
 # host-scoped lookup applies to the remove direction too.
 #
-# `users: []` is set explicitly because the create-side meta dep chain
-# from vm_users_entry reads .users off the entry in other roles; here
-# we only exercise the groups remove path, so an empty users list
-# keeps any incidental traversal quiet.
+# `users: []` is set explicitly to keep the fixture minimal. The
+# groups role does not read .users, and the role meta files carry
+# no inter-role deps that could pull in a sibling role's reader, so
+# this empty list is purely tidiness.
 
 - name: Converge - apply groups role (remove direction)
   hosts: all
