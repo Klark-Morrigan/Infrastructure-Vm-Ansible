@@ -400,33 +400,54 @@ be archived because the E2E layer still calls into it.
   remove-side dispatcher is `Remove-VmUsersForTest`; the existing
   teardown call in `Invoke-VmUsersTest` is extracted into it.
 - **Parameter chain unchanged.** `Start-E2EAgent.ps1`'s existing
-  `-UsersFlow` and `-AnsiblePath` parameters already propagate to
-  `Invoke-VmUsersTest`; no new parameters needed - the teardown
-  picks them up from the same chain.
+  `-UsersFlow`, `-AnsiblePath`, and `-WslDistro` parameters already
+  propagate to `Invoke-VmUsersTest` via `$Config`; no new parameters
+  needed - the teardown picks them up from the same chain.
+- **Signature mirrors `Set-VmUsersForTest` exactly.** The remove
+  dispatcher takes `-WslDistro` (not in the original sketch below)
+  because the create-side dispatcher already needs it to avoid
+  Docker Desktop's no-bash default-distro trap
+  ([feedback_check_wsl_default_first](../../../../../.claude/projects/c--a-Code-GitHub-Common/memory/feedback_check_wsl_default_first.md));
+  the remove path runs the same bridge and would re-introduce the
+  same bug without it. `-Entry` is also accepted for parity with the
+  create-side dispatcher and any future per-host invocation logic
+  (neither flow uses it today).
 
 **Files (in Infrastructure-E2E)**
 
 - `agent/e2e/vm-users/Remove-VmUsersForTest.ps1` (new) - the
-  teardown dispatcher. Mirrors `Set-VmUsersForTest.ps1`'s shape:
-  takes `-UsersFlow`, `-UsersPath`, `-AnsiblePath`, the VM
-  definition. Switches on `-UsersFlow`:
+  teardown dispatcher. Mirrors `Set-VmUsersForTest.ps1`'s shape and
+  parameter list (`-UsersFlow`, `-UsersPath`, `-AnsiblePath`,
+  `-WslDistro`, `-VmDef`, `-Entry`). Switches on `-UsersFlow`:
   - `custom-powershell` -> invokes
-    `& "$UsersPath/hyper-v/ubuntu/remove-users.ps1"` with the same
-    arg shape the current teardown uses.
-  - `ansible` -> invokes
-    `wsl --cd $AnsiblePath -- ./ops/remove-users.sh` and propagates
+    `& "$UsersPath\hyper-v\ubuntu\remove-users.ps1" -SecretSuffix
+    $script:E2ETestSecretSuffix` (same arg shape as the create-side
+    PS call so both directions read the same E2E-scoped vault entry).
+  - `ansible` -> `Push-Location $AnsiblePath` then
+    `& wsl -d $WslDistro -- ./ops/remove-users.sh 2>&1 | Out-Host`
+    (anchored cwd over `wsl --cd`'s sparse-PATH interop, native-stdout
+    Out-Host so subexpression callers do not swallow the bridge
+    output - same gotchas as the create-side dispatcher), propagates
     `$LASTEXITCODE`.
-  - Any other value throws with the allowed list named.
-- `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` (modified) - extract
-  the inline `remove-users.ps1` call into `Remove-VmUsersForTest`
-  and pass the existing flow / path parameters through. No new
-  parameters; no behaviour change for `custom-powershell` callers.
-- `Tests/agent/e2e/vm-users/Remove-VmUsersForTest.Tests.ps1` (new,
-  Pester) - unit tests for the teardown dispatcher.
-- `Tests/agent/e2e/vm-users/Invoke-VmUsersTest.Tests.ps1` (modified) -
-  add cases asserting the new dispatcher is called with the
-  parameters forwarded from the agent chain. The existing create-side
-  cases still pass.
+  - Any other value is rejected by `ValidateSet` at parameter binding
+    time.
+- `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` (modified) - dot-source
+  the new dispatcher next to `Set-VmUsersForTest`, then replace the
+  inline `& "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"`
+  call inside `Invoke-VmUsersTeardown` with
+  `Remove-VmUsersForTest -UsersFlow $Config.UsersFlow ...`. No new
+  parameters on `Invoke-VmUsersTeardown`; both production callers
+  (`Invoke-VmUsersTest` and `Invoke-RunnerLifecycleTest`) already
+  pass a `$Config` that carries `UsersFlow`/`AnsiblePath`/`WslDistro`
+  unconditionally, so strict-mode property access is safe.
+- `Tests/Remove-VmUsersForTest.Tests.ps1` (new, Pester) - unit tests
+  for the teardown dispatcher. Lives at the flat `Tests/` root next
+  to `Set-VmUsersForTest.Tests.ps1`, matching the repo's existing
+  convention (no nested `Tests/agent/e2e/vm-users/` tree).
+- No edit to `Invoke-VmUsersTest.Tests.ps1` - that file does not exist
+  in the repo today. The dispatcher boundaries are covered by the new
+  unit tests; integration of the full create+remove chain is covered
+  by the real-VM acceptance runs below.
 
 **Behaviour (Remove-VmUsersForTest)**
 
@@ -435,23 +456,28 @@ function Remove-VmUsersForTest {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [ValidateSet('custom-powershell','ansible')] [string] $UsersFlow,
-        [Parameter(Mandatory)] [string] $UsersPath,
-        [string] $AnsiblePath,
-        [Parameter(Mandatory)] [PSCustomObject] $VmDef
+        [Parameter(Mandatory)] [string]          $UsersPath,
+        [string]                                 $AnsiblePath,
+        [string]                                 $WslDistro,
+        [Parameter(Mandatory)] [PSCustomObject]  $VmDef,
+        [Parameter(Mandatory)] [object]          $Entry
     )
 
     switch ($UsersFlow) {
         'custom-powershell' {
-            & "$UsersPath\hyper-v\ubuntu\remove-users.ps1"
+            & "$UsersPath\hyper-v\ubuntu\remove-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
             if ($LASTEXITCODE -ne 0) {
                 throw "custom-powershell remove-users.ps1 exited $LASTEXITCODE"
             }
         }
         'ansible' {
-            if (-not $AnsiblePath) {
-                throw "UsersFlow=ansible requires -AnsiblePath"
+            if (-not $AnsiblePath) { throw 'UsersFlow=ansible requires -AnsiblePath' }
+            if (-not $WslDistro)   { throw 'UsersFlow=ansible requires -WslDistro' }
+            Push-Location $AnsiblePath
+            try {
+                & wsl -d $WslDistro -- ./ops/remove-users.sh 2>&1 | Out-Host
             }
-            & wsl --cd $AnsiblePath -- ./ops/remove-users.sh
+            finally { Pop-Location }
             if ($LASTEXITCODE -ne 0) {
                 throw "Ansible remove-users.sh exited $LASTEXITCODE"
             }
@@ -463,15 +489,17 @@ function Remove-VmUsersForTest {
 **Tests (Pester, mocked)**
 
 - `UsersFlow=custom-powershell` -> invokes the PS script; `wsl` is
-  never called.
-- `UsersFlow=ansible` with `AnsiblePath` set -> invokes `wsl` with
-  the expected args; the PS script is never called.
-- `UsersFlow=ansible` without `AnsiblePath` -> throws.
-- Either flow exiting non-zero -> throws with the exit code in the
-  message.
-- `Invoke-VmUsersTest` end-to-end: create + remove dispatchers each
-  invoked with the forwarded flow / path; teardown assertions still
-  run after `Remove-VmUsersForTest` exits.
+  never called; non-zero exit -> throws with exit code.
+- `UsersFlow=ansible` with `AnsiblePath` + `WslDistro` set -> invokes
+  `wsl -d <distro> -- ./ops/remove-users.sh` from the AnsiblePath
+  cwd; the PS script is never called; non-zero exit -> throws with
+  exit code.
+- `UsersFlow=ansible` without `AnsiblePath` -> throws
+  `*requires -AnsiblePath*`.
+- `UsersFlow=ansible` without `WslDistro` -> throws
+  `*requires -WslDistro*`.
+- Unknown `UsersFlow` value -> rejected by `ValidateSet` at parameter
+  binding time.
 
 **Real-VM acceptance (manual)**
 
