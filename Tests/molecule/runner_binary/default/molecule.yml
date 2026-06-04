@@ -1,0 +1,52 @@
+---
+# Molecule scenario for the runner_binary role.
+#
+# Same shape as the groups / users scenarios: single Ubuntu 24.04
+# container, Docker driver, ansible verifier. The role only manipulates
+# the filesystem (get_url, unarchive, file:directory), so a non-systemd
+# sleep-infinity container is sufficient.
+#
+# The fixture HTTP server runs INSIDE the container - prepare.yml stages
+# a fake tarball under a serving directory and launches
+# `python3 -m http.server` bound to 127.0.0.1 on a fixed high port. The
+# role then fetches from that loopback address, so no host-side
+# listener is involved (which would not exist on the molecule controller
+# anyway). This is a behaviour-equivalent fixture for the real
+# production path where _start-host-file-server.ps1 binds on the
+# Hyper-V switch IP.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the scenario; point Ansible at the
+      # repo's roles/ directory so include_role: name=runner_binary
+      # resolves the role (and its meta dependency on
+      # runner_entry_resolve) without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

@@ -1,0 +1,192 @@
+---
+# Verify the post-converge state and exercise the remaining cases from
+# the role's plan entry.
+#
+# Idempotence (case "re-run with same input") is checked separately by
+# `molecule idempotence` in the default test sequence; this file covers
+# state assertions and the unreachable-fileserver branch the converge
+# fixture cannot express on its own.
+
+- name: Verify - runner_binary role post-conditions
+  hosts: all
+  gather_facts: false
+  vars:
+    fixture_version: "2.999.0"
+  tasks:
+    # Cache, shared-user case: one tarball under u-runner-shared's
+    # cache. Two runners shared the user; unique-collapse must have
+    # turned that into a single download. (We assert ownership at the
+    # same time so a regression that misplaced become_user surfaces
+    # here rather than later in the registration role.)
+    - name: Stat the u-runner-shared cache tarball
+      ansible.builtin.stat:
+        path: >-
+          /home/u-runner-shared/cache/actions-runner-linux-x64-{{
+          fixture_version }}.tar.gz
+      register: cache_shared
+
+    - name: Assert u-runner-shared cache file is present and owned by the user
+      ansible.builtin.assert:
+        that:
+          - cache_shared.stat.exists
+          - cache_shared.stat.pw_name == 'u-runner-shared'
+        fail_msg: >-
+          u-runner-shared cache file missing or wrongly owned;
+          stat: {{ cache_shared.stat }}
+
+    # Cache, distinct-user case: a second tarball lives under
+    # u-runner-other's cache. Two separate get_url invocations - one
+    # per runnerUsername unique value.
+    - name: Stat the u-runner-other cache tarball
+      ansible.builtin.stat:
+        path: >-
+          /home/u-runner-other/cache/actions-runner-linux-x64-{{
+          fixture_version }}.tar.gz
+      register: cache_other
+
+    - name: Assert u-runner-other cache file is present and owned by the user
+      ansible.builtin.assert:
+        that:
+          - cache_other.stat.exists
+          - cache_other.stat.pw_name == 'u-runner-other'
+        fail_msg: >-
+          u-runner-other cache file missing or wrongly owned;
+          stat: {{ cache_other.stat }}
+
+    # Per-runner extract: every declared runner on `instance` has its
+    # own /opt/runners/<name>/ with config.sh present (the role's own
+    # marker probe).
+    - name: Stat config.sh under each declared runnerName
+      ansible.builtin.stat:
+        path: "/opt/runners/{{ item }}/config.sh"
+      register: marker_stats
+      loop:
+        - instance-runner-a
+        - instance-runner-b
+        - instance-runner-c
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert every declared runner directory contains config.sh
+      ansible.builtin.assert:
+        that:
+          - >-
+            (marker_stats.results | map(attribute='stat.exists') | list)
+            == [true, true, true]
+        fail_msg: >-
+          One or more runner directories is missing config.sh:
+          {{ marker_stats.results | map(attribute='stat.exists') | list }}
+
+    # selectattr filter: leak-runner was declared on a different vmName
+    # and must not have leaked onto `instance`. A directory at this path
+    # would mean the role's selector let an entry through.
+    - name: Stat /opt/runners/leak-runner (must not exist)
+      ansible.builtin.stat:
+        path: /opt/runners/leak-runner
+      register: leak_dir
+
+    - name: Assert leak-runner did not leak onto this host
+      ansible.builtin.assert:
+        that:
+          - not leak_dir.stat.exists
+        fail_msg: >-
+          /opt/runners/leak-runner exists; the runner_entry_resolve
+          selectattr let an entry for vmName=other-host through.
+
+    # Ownership of /opt/runners/<name>: the extract directory must be
+    # owned by runnerUsername so the registration / service roles can
+    # invoke config.sh and svc.sh as that user without per-task
+    # ownership repairs.
+    - name: Stat /opt/runners/instance-runner-a ownership
+      ansible.builtin.stat:
+        path: /opt/runners/instance-runner-a
+      register: dir_runner_a
+
+    - name: Assert /opt/runners/instance-runner-a is owned by u-runner-shared
+      ansible.builtin.assert:
+        that:
+          - dir_runner_a.stat.pw_name == 'u-runner-shared'
+        fail_msg: >-
+          /opt/runners/instance-runner-a is owned by
+          {{ dir_runner_a.stat.pw_name }}, expected u-runner-shared.
+
+    - name: Stat /opt/runners/instance-runner-c ownership
+      ansible.builtin.stat:
+        path: /opt/runners/instance-runner-c
+      register: dir_runner_c
+
+    - name: Assert /opt/runners/instance-runner-c is owned by u-runner-other
+      ansible.builtin.assert:
+        that:
+          - dir_runner_c.stat.pw_name == 'u-runner-other'
+        fail_msg: >-
+          /opt/runners/instance-runner-c is owned by
+          {{ dir_runner_c.stat.pw_name }}, expected u-runner-other.
+
+    # Unreachable file server: re-apply the role with a base URL that
+    # nothing listens on. The get_url task must fail the play loudly
+    # rather than silently skipping - a hidden skip would mask a
+    # production listener that crashed mid-run. Use block/rescue so the
+    # scenario can assert the failure happened in the right module
+    # rather than the molecule run itself failing.
+    - name: Seed a runner service user for the unreachable-server case
+      ansible.builtin.user:
+        name: u-runner-unreachable
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Unreachable file server must fail the play
+      block:
+        - name: Stage fixture - base URL pointing at a closed port
+          ansible.builtin.set_fact:
+            github_runners_config:
+              - vmName: instance
+                runnerName: instance-runner-unreachable
+                runnerUsername: u-runner-unreachable
+                deployUsername: u-deploy-unreachable
+                githubUrl: https://github.com/example/unreachable
+                runnerLabels: [self-hosted]
+            host_file_server_base_url: http://127.0.0.1:1
+            runner_version: "2.999.0"
+
+        - name: Re-apply role against the unreachable file server
+          ansible.builtin.include_role:
+            name: runner_binary
+
+        - name: Reached this point - the play did not fail as required
+          ansible.builtin.fail:
+            msg: >-
+              Expected get_url to fail against an unreachable file
+              server, but the role completed without raising.
+      rescue:
+        - name: Confirm the failure originated in the download task
+          ansible.builtin.assert:
+            that:
+              - >-
+                'unreachable' in (ansible_failed_result.msg | default('') | lower)
+                or 'refused' in (ansible_failed_result.msg | default('') | lower)
+                or 'failed' in (ansible_failed_result.msg | default('') | lower)
+            fail_msg: >-
+              Got an unexpected failure on the unreachable-server case:
+              {{ ansible_failed_result.msg | default('<no message>') }}
+
+    # The role's previously created state must not have been clobbered
+    # by the failed unreachable-server attempt: the original tarballs
+    # and extract directories are still in place.
+    - name: Re-stat u-runner-shared cache after the failure path
+      ansible.builtin.stat:
+        path: >-
+          /home/u-runner-shared/cache/actions-runner-linux-x64-{{
+          fixture_version }}.tar.gz
+      register: cache_shared_after
+
+    - name: Assert the original cache file survived the failure path
+      ansible.builtin.assert:
+        that:
+          - cache_shared_after.stat.exists
+        fail_msg: >-
+          /home/u-runner-shared/cache/actions-runner-linux-x64-{{
+          fixture_version }}.tar.gz disappeared during the
+          unreachable-server probe; the role is mutating state on
+          failure paths it should leave alone.

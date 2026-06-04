@@ -1,0 +1,24 @@
+---
+# Converge: nothing to do here.
+#
+# The runner_entry_resolve role is a pure-fact helper. Its only output
+# is a single set_fact, and the verify play exercises the three host-
+# slice shapes (0 / 1 / 2 entries) directly by varying the input fixture
+# and re-including the role each time. Running the role once during
+# converge would just exercise one of those shapes; the verify play is
+# the right place for all three.
+#
+# Keeping converge non-empty (a no-op debug task) so molecule's standard
+# create -> converge -> verify sequence still records a converge phase
+# in the play recap; an empty play file trips parser warnings on some
+# molecule versions.
+
+- name: Converge - no-op (role exercised in verify)
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Record that converge ran
+      ansible.builtin.debug:
+        msg: >-
+          runner_entry_resolve is exercised in verify so each host-slice
+          shape (0 / 1 / 2 entries) is asserted in isolation.

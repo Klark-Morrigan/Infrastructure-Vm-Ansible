@@ -1,0 +1,16 @@
+---
+# Role defaults. Only one value: the runner_version fallback used when
+# the bash bridge has not passed a resolved version in (the production
+# path always supplies one via the extra-vars file). The literal string
+# "latest" exists so molecule scenarios can drive the role with an
+# explicit fixture URL whose basename pins to a known version, without
+# wiring the full bridge pre-task chain into the scenario. The scenario
+# overrides this default in its converge play.
+#
+# The variable name intentionally has no `runner_binary_` prefix:
+# `runner_version` is the input contract from the bridge (an extra-var
+# set by `_build-extra-vars-runners.sh`) and is shared with the other
+# two runner roles. Renaming it under a role-private prefix would just
+# force every call site to alias it back. Same posture as
+# vm_users_entry's facts vs ansible-lint's no-role-prefix rule.
+runner_version: "latest"  # noqa: var-naming[no-role-prefix]

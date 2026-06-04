@@ -1,0 +1,43 @@
+---
+# Molecule scenario for the runner_entry_resolve helper role.
+#
+# Same shape as the groups / users scenarios: single Ubuntu 24.04
+# container, Docker driver, ansible verifier. The role only sets a
+# fact; the container is irrelevant to the assertion but molecule
+# requires a platform, so we use the same minimal sleep-infinity
+# image the other scenarios use.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the scenario; point Ansible at the
+      # repo's roles/ directory so include_role resolves the helper
+      # without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

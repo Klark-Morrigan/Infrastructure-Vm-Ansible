@@ -1,0 +1,35 @@
+---
+# Resolve the GitHubRunnersConfig slice for the current host into a
+# single shared fact. Consumed via meta dependency by roles/runner_binary,
+# roles/runner_registration, and roles/runner_service so the three
+# consumer roles do not each carry their own selectattr+filter expression
+# under three different fact names. Single-source-of-truth posture
+# mirrors roles/vm_users_entry from feature 02; the rationale (one place
+# to change the selector when the vault schema shifts, no duplicated
+# host-slice logic across consumers) is identical.
+#
+# Unlike vm_users_entry the value is a LIST, not an object: a single VM
+# can host several runners (multi-repo / multi-purpose hosts are the
+# expected case per problem.md), so consumers loop over the slice
+# instead of treating it as a one-entry record.
+#
+# Kept as a role rather than a play-level pre_task so each consuming
+# role still resolves correctly when invoked standalone (e.g.
+# `--tags runner_binary` or include_role from a molecule scenario that
+# does not know about this lookup).
+
+# The fact name intentionally matches the role name (modulo plural).
+# ansible-lint's no-role-prefix rule wants `runner_entry_resolve_<suffix>`
+# but the role is a one-output helper whose entire job is to expose this
+# single fact; renaming would propagate across three consumer roles for
+# no semantic gain. Hence the inline noqa, matching how vm_users_entry
+# handles the same trade-off.
+- name: Resolve declared GitHub runner entries for this host  # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    vm_runner_entries: >-
+      {{
+        github_runners_config
+        | default([])
+        | selectattr('vmName', 'equalto', inventory_hostname)
+        | list
+      }}

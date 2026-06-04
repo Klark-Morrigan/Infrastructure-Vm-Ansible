@@ -465,6 +465,19 @@ each role lands; the create-users playbook orders them
   temp file before the atomic swap, so a malformed rule fails the
   task without touching the live file. An empty / absent
   `sudoersRules` array removes the drop-in.
+- [`roles/runner_entry_resolve`](roles/runner_entry_resolve/README.md) -
+  repo-internal helper. Resolves the per-host slice of
+  `GitHubRunnersConfig` into the shared `vm_runner_entries` fact;
+  pulled in via meta dependency by the runner roles below so the
+  selectattr filter lives in one file instead of three. Same
+  single-source-of-truth posture as `vm_users_entry`.
+- [`roles/runner_binary`](roles/runner_binary/README.md) - cache the
+  `actions/runner` tarball under each declared `runnerUsername` on a
+  host and extract a copy into `/opt/runners/<runnerName>/`. First
+  role in the register-runners flow; downloads from
+  `host_file_server_base_url` (the Hyper-V switch IP the bridge's
+  PowerShell `HttpListener` binds to) so VMs avoid the NAT path to
+  `github.com`.
 
 ## Feature folders
 
