@@ -1,0 +1,44 @@
+---
+# Molecule scenario for the users role.
+#
+# Same shape as the groups scenario: single Ubuntu 24.04 container,
+# Docker driver, ansible verifier. The users role only manipulates
+# /etc/passwd, /etc/shadow, and /etc/group via ansible.builtin.user,
+# none of which need a real init - a sleep-infinity container with
+# tmpfs over /run and /tmp is enough.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the molecule scenario; point
+      # Ansible at the repo's roles/ directory so include_role:
+      # name=users resolves the role (and its meta dependency on
+      # groups) without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

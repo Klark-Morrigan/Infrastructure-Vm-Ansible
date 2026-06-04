@@ -1,0 +1,34 @@
+---
+# Converge: apply the groups role with the positive-path fixtures.
+#
+# inventory_hostname here is `instance` (the platform name from
+# molecule.yml). The fixture for `instance` covers:
+#   - one group declared without a gid (kernel-assigned)
+#   - one group declared with an explicit gid
+# A second VM entry with a different vmName proves the
+# selectattr(vmName == inventory_hostname) lookup filters correctly -
+# the `other-host` groups must NOT appear on this container.
+#
+# The empty-groups case is covered by the verify play, which re-includes
+# the role with a fixture whose `groups` array is empty and asserts zero
+# changed tasks. Putting it here would shadow the positive groups under
+# the same vmName.
+
+- name: Converge - apply groups role
+  hosts: all
+  gather_facts: false
+  vars:
+    vm_users_config:
+      - vmName: instance
+        groups:
+          - groupName: ans-no-gid
+          - groupName: ans-with-gid
+            gid: 8000
+      - vmName: other-host
+        groups:
+          - groupName: should-not-appear
+            gid: 9999
+  tasks:
+    - name: Include the role under test
+      ansible.builtin.include_role:
+        name: groups

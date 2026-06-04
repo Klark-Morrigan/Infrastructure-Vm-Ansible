@@ -1,0 +1,47 @@
+---
+# Reconcile per-user /etc/sudoers.d/<username> drop-ins for the current
+# host. Third role in the create-users play; runs after roles/users so
+# that the account a drop-in references already exists. sudoersRules
+# entries are written verbatim - the role does not parse them - so a
+# typo in config surfaces as a visudo error at apply time rather than
+# being silently rewritten (matches the "verbatim string contract" call
+# in problem.md - Role: sudoers).
+
+# vm_users_entry is set by roles/vm_users_entry (pulled in via the
+# meta dep chain sudoers -> users -> groups -> vm_users_entry; runs
+# once per play). Consumer roles just read .users off it.
+#
+# Two-task split keyed on whether sudoersRules is non-empty:
+#
+#   - Non-empty -> render the per-user drop-in via template. validate
+#     runs `visudo -cf` against the staged temp file BEFORE the atomic
+#     swap, so a syntax error fails the task and leaves the live file
+#     untouched (the no-broken-sudo guarantee from problem.md).
+#   - Empty (or absent) -> remove the drop-in if it exists. Matches the
+#     "empty list = file absent" contract carried over from the legacy
+#     PowerShell flow; an operator clearing the rules array genuinely
+#     wants the file gone, not an empty 0440 file lingering.
+#
+# Mode 0440 root:root is the only ownership/mode sudo accepts under
+# /etc/sudoers.d/; anything else and sudo silently ignores the file.
+- name: Render sudoers drop-in for users with rules
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: "/etc/sudoers.d/{{ item.username }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ vm_users_entry.users | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"
+  when: (item.sudoersRules | default([])) | length > 0
+
+- name: Remove sudoers drop-in for users with no rules
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/{{ item.username }}"
+    state: absent
+  loop: "{{ vm_users_entry.users | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"
+  when: (item.sudoersRules | default([])) | length == 0

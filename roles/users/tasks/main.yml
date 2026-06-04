@@ -1,0 +1,63 @@
+---
+# Reconcile declared OS users for the current host.
+#
+# Runs after the groups role so any primary or supplementary group a
+# user references already exists. Password handling, when a password
+# is declared, hashes controller-side via password_hash('sha512', ...)
+# with a per-user deterministic salt derived from the username. The
+# determinism is what makes re-runs report changed=0 even though
+# update_password=always: the same plaintext + same salt yields the
+# same crypt string, so ansible.builtin.user sees no diff against
+# /etc/shadow. Rationale and the salt-uniqueness argument live in
+# problem.md (Role: users).
+#
+# move_home=no is the no-data-loss guarantee from problem.md: when an
+# operator edits homeDir in the config, /etc/passwd's home column
+# updates but the on-disk directory is never relocated. Migrating
+# data stays an explicit, out-of-band operator step.
+
+# vm_users_entry is set by roles/vm_users_entry (meta dep chain
+# users -> groups -> vm_users_entry; runs once per play). Consumer
+# roles just read .users / .groups off it.
+#
+# Single task; the password arg is gated by a ternary so users without
+# a declared password get `omit` (account auth state untouched - the
+# "do not lock the account" branch from the plan) and users with one
+# get the hashed value. Salt is the first 16 hex chars of md5(username):
+# MD5 here is a stable bucketing function (not a cryptographic
+# primitive) producing a string in SHA-512 crypt's salt charset.
+# Uniqueness across users defeats rainbow tables; the determinism is
+# what makes update_password=always actually idempotent. update_password
+# stays unconditional - it has no effect when password is omitted.
+# no_log: true applies to every iteration; the loop_control.label keeps
+# per-user traceability so we still see which account each iteration
+# is reconciling.
+- name: Reconcile declared users
+  ansible.builtin.user:
+    name: "{{ item.username }}"
+    shell: "{{ item.shell }}"
+    home: "{{ item.homeDir }}"
+    groups: "{{ item.groups | default([]) }}"
+    append: false
+    move_home: false
+    state: present
+    password: >-
+      {{ (item.password
+          | password_hash('sha512', salt=(item.username | hash('md5'))[:16]))
+         if item.password is defined else omit }}
+    update_password: always
+  loop: "{{ vm_users_entry.users | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"
+  # No task-level no_log. The ansible.builtin.user module marks its
+  # `password` parameter no_log in its own argspec, so the resolved
+  # hash is scrubbed to "VALUE_SPECIFIED_IN_NO_LOG_PARAMETER" in
+  # every code path that prints module args - failure messages,
+  # registered results, -v / -vv output. loop_control.label limits
+  # the per-iteration label to the username so the raw item dict
+  # (which would contain the plaintext) does not appear at default
+  # verbosity. Stacking task-level no_log on top only blinds the
+  # operator to error messages that contain no secret. At -vvv+
+  # Ansible may dump the templated `item` itself, which would
+  # expose the plaintext password - operators running at that
+  # verbosity are assumed to know they have lifted the safety.

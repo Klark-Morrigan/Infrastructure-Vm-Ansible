@@ -1,0 +1,33 @@
+---
+# Role metadata. Same shape as roles/groups/meta/main.yml: galaxy_info
+# is present to satisfy ansible-lint's role-name / meta-no-info rules,
+# not to publish to Galaxy.
+
+galaxy_info:
+  role_name: users
+  author: Infrastructure-VM-Ansible
+  description: >-
+    Reconcile declared OS users on a target VM from the VmUsersConfig
+    vault entry for the host. Runs after roles/groups so any primary
+    or supplementary group referenced by a user already exists.
+  license: MIT
+  min_ansible_version: "2.18"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - system
+    - users
+
+# Hard dependency on roles/groups: a user's supplementary `groups`
+# entries must exist before ansible.builtin.user is invoked, and the
+# users role cannot reconcile that on its own. Declaring it here means
+# `ansible-playbook ... --tags users` (or running the role standalone
+# from another play) still produces a correct state without having
+# to remember to invoke groups first. The create-users playbook in
+# step 12 also imports groups explicitly, which is a no-op when the
+# meta dependency has already pulled it in.
+dependencies:
+  - role: vm_users_entry
+  - role: groups

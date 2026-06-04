@@ -1,0 +1,38 @@
+---
+# Operator-facing entry into the create-users flow. Composes the three
+# repo-local roles (groups -> users -> sudoers) against every host the
+# bash bridge dropped into the vm_provisioner_hosts inventory group.
+#
+# Role order is significant and matches each role's meta dependency
+# graph (sudoers depends on users, users depends on groups, all three
+# depend on the vm_users_entry helper). The deps would pull missing
+# roles in on their own, but listing them here keeps the create flow
+# legible without chasing meta files.
+#
+# any_errors_fatal: false - the bridge's inventory can contain several
+# VMs, and one host being temporarily offline should not strand the
+# rest. Ansible's default already keeps going on per-host failures;
+# making the choice explicit so a later edit does not silently flip it
+# via a play-level error_strategy override.
+#
+# gather_facts: true - ansible.builtin.user reads facts when deciding
+# defaults (notably for shell / home derivation on systems where the
+# config omits them), and the per-host cost is one extra SSH round-trip
+# at play start. Cheap insurance vs. surprising fact-absent failures
+# mid-role.
+#
+# Tags mirror the role names so operators can scope a run with
+# --tags groups, --tags users, or --tags sudoers without having to
+# know the role file layout.
+
+- name: Reconcile OS groups, users, and sudoers on provisioned VMs
+  hosts: vm_provisioner_hosts
+  gather_facts: true
+  any_errors_fatal: false
+  roles:
+    - role: groups
+      tags: groups
+    - role: users
+      tags: users
+    - role: sudoers
+      tags: sudoers

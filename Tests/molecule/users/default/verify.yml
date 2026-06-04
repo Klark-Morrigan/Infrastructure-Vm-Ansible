@@ -1,0 +1,200 @@
+---
+# Verify the post-converge state and exercise the remaining cases from
+# the role's plan entry.
+#
+# Idempotence (case "re-run with same input") is checked separately by
+# `molecule idempotence` in the default test sequence; this file
+# covers state assertions and the password-change / group-removal /
+# homeDir-change branches the converge fixture cannot express on its
+# own.
+
+- name: Verify - users role post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Case: nologin user exists with the declared shell.
+    - name: Look up ans-nologin in /etc/passwd
+      ansible.builtin.getent:
+        database: passwd
+        key: ans-nologin
+
+    - name: Assert ans-nologin has the nologin shell
+      ansible.builtin.assert:
+        that:
+          - getent_passwd['ans-nologin'][5] == '/usr/sbin/nologin'
+        fail_msg: >-
+          ans-nologin shell was {{ getent_passwd['ans-nologin'][5] }},
+          expected /usr/sbin/nologin
+
+    # Case: bash user with a password exists with the expected hash
+    # shape. Read /etc/shadow directly (getent shadow is root-only,
+    # which the container provides). The hash must start with $6$
+    # (sha512crypt) and the salt segment must match the deterministic
+    # derivation - first 16 hex chars of md5(username).
+    - name: Read ans-bash shadow entry
+      ansible.builtin.command: getent shadow ans-bash
+      register: ans_bash_shadow
+      changed_when: false
+
+    - name: Assert ans-bash shadow hash uses sha512crypt and the expected salt
+      ansible.builtin.assert:
+        that:
+          - ans_bash_shadow.stdout.split(':')[1].startswith('$6$')
+          - >-
+            ans_bash_shadow.stdout.split(':')[1].split('$')[2]
+            == ('ans-bash' | hash('md5'))[:16]
+        fail_msg: >-
+          Unexpected shadow entry for ans-bash:
+          {{ ans_bash_shadow.stdout }}
+
+    # Case: supplementary group assignment took effect.
+    - name: Look up ans-extra in /etc/group
+      ansible.builtin.getent:
+        database: group
+        key: ans-extra
+
+    - name: Assert ans-bash is a member of ans-extra
+      ansible.builtin.assert:
+        that:
+          - >-
+            'ans-bash' in
+            (getent_group['ans-extra'][2] | default('')).split(',')
+        fail_msg: >-
+          ans-bash is not in ans-extra members:
+          {{ getent_group['ans-extra'] }}
+
+    # selectattr filter: the other-host fixture must not have leaked.
+    - name: Confirm other-host users did not leak onto this host
+      ansible.builtin.command: getent passwd should-not-appear
+      register: leak_check
+      changed_when: false
+      failed_when: leak_check.rc == 0
+
+    # Case: password change in config - re-applying with a new
+    # plaintext must change the shadow hash (changed=1 on the user
+    # task) while the rest of the state stays put.
+    - name: Capture ans-bash hash before password rotation
+      ansible.builtin.command: getent shadow ans-bash
+      register: hash_before
+      changed_when: false
+
+    - name: Stage fixture - ans-bash with rotated password
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users:
+              - username: ans-bash
+                shell: /bin/bash
+                homeDir: /home/ans-bash
+                groups:
+                  - ans-extra
+                password: "rotated-pw"
+
+    - name: Re-apply role with rotated password for ans-bash
+      ansible.builtin.include_role:
+        name: users
+
+    - name: Capture ans-bash hash after password rotation
+      ansible.builtin.command: getent shadow ans-bash
+      register: hash_after
+      changed_when: false
+
+    - name: Assert ans-bash hash changed after password rotation
+      ansible.builtin.assert:
+        that:
+          - hash_before.stdout != hash_after.stdout
+        fail_msg: >-
+          Expected ans-bash shadow hash to change after password
+          rotation but it stayed at {{ hash_before.stdout }}.
+
+    # Case: supplementary group removed from config - because the
+    # role uses append=false, dropping ans-extra from ans-bash's
+    # groups must remove the membership.
+    - name: Stage fixture - ans-bash with ans-extra dropped
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users:
+              - username: ans-bash
+                shell: /bin/bash
+                homeDir: /home/ans-bash
+                groups: []
+                password: "rotated-pw"
+
+    - name: Re-apply role with ans-extra dropped from ans-bash
+      ansible.builtin.include_role:
+        name: users
+
+    - name: Re-read ans-extra group membership
+      ansible.builtin.getent:
+        database: group
+        key: ans-extra
+
+    - name: Assert ans-bash is no longer in ans-extra
+      ansible.builtin.assert:
+        that:
+          - >-
+            'ans-bash' not in
+            (getent_group['ans-extra'][2] | default('')).split(',')
+        fail_msg: >-
+          ans-bash still appears in ans-extra members after removal:
+          {{ getent_group['ans-extra'] }}
+
+    # Case: homeDir change in config - /etc/passwd home column must
+    # update, but the on-disk directory at the old path must still
+    # exist (move_home=no). The original /home/ans-home was created
+    # by the converge.
+    - name: Confirm original ans-home directory exists before homeDir change
+      ansible.builtin.stat:
+        path: /home/ans-home
+      register: ans_home_original_before
+
+    - name: Sanity-check the original ans-home directory really was created
+      ansible.builtin.assert:
+        that:
+          - ans_home_original_before.stat.exists
+          - ans_home_original_before.stat.isdir
+        fail_msg: >-
+          Expected /home/ans-home to exist after the converge play but
+          stat reports {{ ans_home_original_before.stat }}.
+
+    - name: Stage fixture - ans-home with new homeDir
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users:
+              - username: ans-home
+                shell: /bin/bash
+                homeDir: /opt/ans-home-new
+                password: "home-pw"
+
+    - name: Re-apply role with new homeDir for ans-home
+      ansible.builtin.include_role:
+        name: users
+
+    - name: Read ans-home /etc/passwd entry after homeDir change
+      ansible.builtin.getent:
+        database: passwd
+        key: ans-home
+
+    - name: Assert /etc/passwd home column updated
+      ansible.builtin.assert:
+        that:
+          - getent_passwd['ans-home'][4] == '/opt/ans-home-new'
+        fail_msg: >-
+          ans-home home column was {{ getent_passwd['ans-home'][4] }},
+          expected /opt/ans-home-new
+
+    - name: Confirm original ans-home directory still exists on disk
+      ansible.builtin.stat:
+        path: /home/ans-home
+      register: ans_home_original_after
+
+    - name: Assert move_home=false left the old directory in place
+      ansible.builtin.assert:
+        that:
+          - ans_home_original_after.stat.exists
+          - ans_home_original_after.stat.isdir
+        fail_msg: >-
+          /home/ans-home no longer exists after the homeDir change
+          (move_home=false guarantee violated).

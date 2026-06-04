@@ -1,0 +1,27 @@
+---
+# Reconcile declared OS groups for the current host.
+#
+# Why this role exists at all: it is the first role applied by the
+# create-users play, so users with a declared primary or supplementary
+# group find it ready before ansible.builtin.user runs. GID handling is
+# delegated to ansible.builtin.group, which already errors when a
+# declared gid conflicts with an existing group - matching the
+# "GIDs never silently change" guarantee from problem.md.
+
+# vm_users_entry is the per-host slice of vm_users_config, resolved
+# once by roles/vm_users_entry (pulled in via meta dependency). See
+# that role for the selectattr+first lookup; consumer roles just
+# read the resulting object.
+#
+# gid is optional in the schema; omit it when absent so the kernel
+# assigns one (matches the "missing optional gid" decision in
+# problem.md). When present, a mismatch with an existing group fails
+# the play - exactly the behaviour we want.
+- name: Reconcile declared groups
+  ansible.builtin.group:
+    name: "{{ item.groupName }}"
+    gid: "{{ item.gid | default(omit) }}"
+    state: present
+  loop: "{{ vm_users_entry.groups | default([]) }}"
+  loop_control:
+    label: "{{ item.groupName }}"

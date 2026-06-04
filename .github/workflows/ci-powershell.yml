@@ -1,0 +1,15 @@
+# Delegates to the shared PowerShell CI workflow in PowerShell-Common.
+# Runs Pester unit tests (Run-Tests.ps1 from the run-unit-tests
+# composite) and the bare-return-empty-array lint over this repo's
+# .ps1 surface. Kept as a local file so the pull_request trigger
+# works for PRs in this repo.
+name: ci-powershell
+
+on:
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  ci-powershell:
+    uses: VitaliiAndreev/PowerShell-Common/.github/workflows/ci-powershell.yml@master

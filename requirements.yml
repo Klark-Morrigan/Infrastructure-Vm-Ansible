@@ -1,0 +1,18 @@
+---
+# Galaxy collections required by the playbooks and roles in this repo.
+#
+# Pinned to specific versions so a fresh controller bootstrap is
+# reproducible. Bump deliberately, not opportunistically.
+collections:
+  # ansible.posix: needed for sysctl, mount, and other POSIX modules
+  # likely to appear once toolchain/runner roles land. Pinned now so
+  # later features inherit a known baseline.
+  - name: ansible.posix
+    version: 1.6.2
+
+  # community.general: broad utility collection. The users role does not
+  # strictly require it today, but later roles (sudoers helpers,
+  # filesystem utilities) typically do, and pinning it now avoids a
+  # version-discovery step during step 6/7.
+  - name: community.general
+    version: 10.1.0

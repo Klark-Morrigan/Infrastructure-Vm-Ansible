@@ -1,0 +1,42 @@
+---
+# Molecule scenario for the groups role.
+#
+# Single-container Docker driver on Ubuntu 24.04 (noble) - matches the
+# target VM distro. The role only manipulates /etc/group via
+# ansible.builtin.group, so a non-systemd container is sufficient and
+# avoids the privileged/cgroup setup a full init would need.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the molecule scenario; point
+      # Ansible at the repo's roles/ directory so include_role:
+      # name=groups resolves without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

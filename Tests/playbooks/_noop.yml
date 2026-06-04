@@ -1,0 +1,14 @@
+---
+# No-op playbook used by the bridge smoke test (step 3) and the
+# end-to-end smoke test (step 9). It targets the same inventory group
+# the real create-users.yml will, so a green run proves the bridge
+# generated a usable inventory and resolved extra-vars without
+# touching the guest beyond a localhost debug.
+- name: Bridge smoke test
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  tasks:
+    - name: Confirm bridge reached ansible-playbook
+      ansible.builtin.debug:
+        msg: bridge ok

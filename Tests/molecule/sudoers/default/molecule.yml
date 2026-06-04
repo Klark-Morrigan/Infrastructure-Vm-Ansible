@@ -1,0 +1,46 @@
+---
+# Molecule scenario for the sudoers role.
+#
+# Same shape as the groups and users scenarios: single Ubuntu 24.04
+# container, Docker driver, ansible verifier. The role writes
+# /etc/sudoers.d/<username> files via ansible.builtin.template with
+# `validate: visudo -cf %s`, so the image needs visudo on PATH - the
+# stock ubuntu:24.04 image already ships sudo (which provides visudo).
+# A sleep-infinity container with tmpfs over /run and /tmp is enough;
+# no real init required.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the molecule scenario; point
+      # Ansible at the repo's roles/ directory so include_role:
+      # name=sudoers resolves the role (and its meta dependency chain
+      # users -> groups) without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

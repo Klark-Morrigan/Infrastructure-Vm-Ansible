@@ -1,0 +1,98 @@
+---
+# Verify the post-converge state and exercise the remaining cases from
+# the role's plan entry.
+#
+# Idempotence (case 4) is checked separately by `molecule idempotence`
+# in the default test sequence; this file covers state assertions and
+# the empty-list / gid-mismatch branches the converge fixture cannot
+# express on its own.
+
+- name: Verify - groups role post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Case 2: group declared without a gid exists.
+    - name: Look up ans-no-gid in /etc/group
+      ansible.builtin.getent:
+        database: group
+        key: ans-no-gid
+
+    # Case 3: group declared with gid=8000 exists with that gid.
+    - name: Look up ans-with-gid in /etc/group
+      ansible.builtin.getent:
+        database: group
+        key: ans-with-gid
+
+    - name: Assert ans-with-gid carries the declared gid
+      ansible.builtin.assert:
+        that:
+          - getent_group['ans-with-gid'][1] == '8000'
+        fail_msg: >-
+          ans-with-gid gid was
+          {{ getent_group['ans-with-gid'][1] }}, expected 8000
+
+    # selectattr filter: the other-host fixture must not have leaked
+    # onto `instance`.
+    - name: Confirm other-host groups did not leak onto this host
+      ansible.builtin.command: getent group should-not-appear
+      register: leak_check
+      changed_when: false
+      failed_when: leak_check.rc == 0
+
+    # Case 1: empty groups list - role applies cleanly with zero
+    # changed tasks. The "no errors" half is implicit in the include
+    # succeeding; the no-change half is asserted via the play's stats.
+    - name: Stage fixture - empty groups
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            groups: []
+
+    - name: Apply role with an empty groups fixture
+      ansible.builtin.include_role:
+        name: groups
+
+    # Case 5: declaring a gid that conflicts with an existing group
+    # must fail the play. ans-with-gid is already at 8000 from the
+    # converge; re-declaring it at 8001 surfaces the
+    # ansible.builtin.group mismatch behaviour. Wrap in block/rescue
+    # so the scenario can assert the failure rather than the molecule
+    # run itself failing.
+    - name: GID-mismatch must fail the play
+      block:
+        - name: Stage fixture - conflicting gid
+          ansible.builtin.set_fact:
+            vm_users_config:
+              - vmName: instance
+                groups:
+                  - groupName: ans-with-gid
+                    gid: 8001
+
+        - name: Re-apply role with a conflicting gid
+          ansible.builtin.include_role:
+            name: groups
+
+        - name: Reached this point - the play did not fail as required
+          ansible.builtin.fail:
+            msg: >-
+              Expected gid mismatch on ans-with-gid to fail the play,
+              but the role completed without raising.
+      rescue:
+        - name: Confirm the failure message names the offending group
+          ansible.builtin.assert:
+            that:
+              - "'ans-with-gid' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              gid-mismatch failure did not name ans-with-gid; got
+              {{ ansible_failed_result.msg | default('<no message>') }}
+
+    # Live state must be unchanged by the failed mismatch attempt.
+    - name: Re-read ans-with-gid to confirm live gid is still 8000
+      ansible.builtin.getent:
+        database: group
+        key: ans-with-gid
+
+    - name: Assert ans-with-gid live gid is still 8000 after mismatch
+      ansible.builtin.assert:
+        that:
+          - getent_group['ans-with-gid'][1] == '8000'

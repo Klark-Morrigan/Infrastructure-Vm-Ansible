@@ -1,0 +1,21 @@
+name: E2E
+
+# Calls the shared E2E workflow in Infrastructure-E2E as a required PR check.
+# Mirrors the Vm-Users gating shape: this repo cannot merge Ansible changes
+# to master without the lifecycle layer (provisioning + users + runner)
+# proving the new code still produces a working, online runner. Once
+# feature 02 ships, the workstation agent defaults to UsersFlow=ansible,
+# so the test that runs here exercises THIS repo's create-users.sh end
+# to end against a real VM.
+#
+# The shared workflow handles the GitHub App token mint and the deployment
+# poll. secrets: inherit forwards the upstream GH_APP_* secrets so the
+# token mint succeeds in this caller context.
+on:
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  e2e:
+    uses: VitaliiAndreev/Infrastructure-E2E/.github/workflows/e2e.yml@master
+    secrets: inherit

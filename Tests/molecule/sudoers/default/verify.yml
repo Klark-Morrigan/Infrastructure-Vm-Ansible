@@ -1,0 +1,194 @@
+---
+# Verify the post-converge state and exercise the remaining cases from
+# the role's plan entry.
+#
+# Idempotence (case "re-run with same input") is checked separately by
+# `molecule idempotence` in the default test sequence; this file
+# covers state assertions, the "previously-present drop-in is removed
+# when rules go empty" case, and the "invalid rule fails the task
+# without touching the live file" case.
+
+- name: Verify - sudoers role post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Case: single rule -> file exists, 0440, contains the rule.
+    - name: Stat ans-single drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-single
+      register: ans_single_stat
+
+    - name: Assert ans-single drop-in exists with mode 0440 and root:root
+      ansible.builtin.assert:
+        that:
+          - ans_single_stat.stat.exists
+          - ans_single_stat.stat.mode == '0440'
+          - ans_single_stat.stat.pw_name == 'root'
+          - ans_single_stat.stat.gr_name == 'root'
+        fail_msg: >-
+          /etc/sudoers.d/ans-single unexpected:
+          {{ ans_single_stat.stat }}
+
+    - name: Read ans-single drop-in content
+      ansible.builtin.slurp:
+        src: /etc/sudoers.d/ans-single
+      register: ans_single_content
+
+    - name: Assert ans-single contains the declared rule verbatim
+      ansible.builtin.assert:
+        that:
+          - >-
+            'ans-single ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx'
+            in (ans_single_content.content | b64decode)
+        fail_msg: >-
+          ans-single drop-in does not contain the declared rule:
+          {{ ans_single_content.content | b64decode }}
+
+    # Case: multiple rules -> all present, in declared order.
+    - name: Read ans-multi drop-in content
+      ansible.builtin.slurp:
+        src: /etc/sudoers.d/ans-multi
+      register: ans_multi_content
+
+    # set_fact rather than inline expressions in the assert so the
+    # decoded body is computed once and the two .find() indices are
+    # named for the failure message.
+    - name: Compute ans-multi rule indices
+      ansible.builtin.set_fact:
+        ans_multi_body: "{{ ans_multi_content.content | b64decode }}"
+        ans_multi_first_idx: >-
+          {{ (ans_multi_content.content | b64decode).find(
+             'ans-multi ALL=(ALL) NOPASSWD: /usr/bin/apt-get update') }}
+        ans_multi_second_idx: >-
+          {{ (ans_multi_content.content | b64decode).find(
+             'ans-multi ALL=(root) /usr/bin/journalctl') }}
+
+    - name: Assert ans-multi contains both rules in declared order
+      ansible.builtin.assert:
+        that:
+          - (ans_multi_first_idx | int) >= 0
+          - (ans_multi_second_idx | int) >= 0
+          - (ans_multi_first_idx | int) < (ans_multi_second_idx | int)
+        fail_msg: >-
+          ans-multi rules missing or out of order:
+          {{ ans_multi_body }}
+
+    # Case: empty rules array -> drop-in absent.
+    - name: Stat ans-empty drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-empty
+      register: ans_empty_stat
+
+    - name: Assert ans-empty drop-in is absent
+      ansible.builtin.assert:
+        that:
+          - not ans_empty_stat.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-empty should be absent but stat reports
+          {{ ans_empty_stat.stat }}
+
+    # Case: sudoersRules omitted entirely -> same branch, also absent.
+    - name: Stat ans-no-rules drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-no-rules
+      register: ans_no_rules_stat
+
+    - name: Assert ans-no-rules drop-in is absent
+      ansible.builtin.assert:
+        that:
+          - not ans_no_rules_stat.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-no-rules should be absent but stat reports
+          {{ ans_no_rules_stat.stat }}
+
+    # selectattr filter: the other-host fixture must not have leaked.
+    - name: Stat should-not-appear drop-in
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/should-not-appear
+      register: leak_check
+
+    - name: Assert other-host drop-in did not leak onto this host
+      ansible.builtin.assert:
+        that:
+          - not leak_check.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/should-not-appear leaked from the other-host
+          fixture.
+
+    # Case: a previously-present drop-in is removed when rules go empty.
+    # Re-apply the role with ans-single's rules cleared and assert the
+    # file is gone. This is the "remove drop-in if previously present"
+    # branch that the converge fixture cannot express on its own.
+    - name: Stage fixture - ans-single rules emptied
+      ansible.builtin.set_fact:
+        vm_users_config:
+          - vmName: instance
+            users:
+              - username: ans-single
+                shell: /bin/bash
+                homeDir: /home/ans-single
+                sudoersRules: []
+
+    - name: Re-apply role with ans-single sudoersRules emptied
+      ansible.builtin.include_role:
+        name: sudoers
+
+    - name: Stat ans-single drop-in after rules cleared
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/ans-single
+      register: ans_single_after_clear
+
+    - name: Assert ans-single drop-in was removed
+      ansible.builtin.assert:
+        that:
+          - not ans_single_after_clear.stat.exists
+        fail_msg: >-
+          /etc/sudoers.d/ans-single should be gone after clearing rules
+          but stat reports {{ ans_single_after_clear.stat }}.
+
+    # Case: an invalid rule fails the play and leaves the live file
+    # untouched (validate runs on the temp file before the swap).
+    # Capture ans-multi's current content, attempt to re-apply with a
+    # deliberately broken rule, expect failure, then re-read and assert
+    # the live file is byte-identical.
+    - name: Capture ans-multi content before invalid-rule attempt
+      ansible.builtin.slurp:
+        src: /etc/sudoers.d/ans-multi
+      register: ans_multi_before_invalid
+
+    - name: Attempt to apply an invalid sudoers rule
+      block:
+        - name: Stage fixture - ans-multi with malformed rule
+          ansible.builtin.set_fact:
+            vm_users_config:
+              - vmName: instance
+                users:
+                  - username: ans-multi
+                    shell: /bin/bash
+                    homeDir: /home/ans-multi
+                    sudoersRules:
+                      - "this is not a valid sudoers line at all"
+
+        - name: Re-apply role with a malformed rule for ans-multi
+          ansible.builtin.include_role:
+            name: sudoers
+        - name: Fail if the invalid rule did not error out
+          ansible.builtin.fail:
+            msg: visudo validation should have rejected the malformed rule
+      rescue:
+        - name: Mark the validate failure as expected
+          ansible.builtin.debug:
+            msg: visudo correctly rejected the malformed rule
+
+    - name: Capture ans-multi content after invalid-rule attempt
+      ansible.builtin.slurp:
+        src: /etc/sudoers.d/ans-multi
+      register: ans_multi_after_invalid
+
+    - name: Assert ans-multi live file is unchanged after validate failure
+      ansible.builtin.assert:
+        that:
+          - ans_multi_before_invalid.content == ans_multi_after_invalid.content
+        fail_msg: >-
+          /etc/sudoers.d/ans-multi changed despite a failed visudo
+          validation; the validate-then-swap guarantee is broken.
