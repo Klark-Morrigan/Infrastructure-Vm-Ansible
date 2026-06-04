@@ -154,6 +154,78 @@ teardown() {
     [ -z "${leftovers}" ]
 }
 
+@test "NEEDS_GITHUB_RUNNERS unset keeps the bridge on the two-vault path" {
+    # Default entry points (create-users, remove-users) must not pay
+    # for the GitHubRunners vault read or surface the new keys.
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:VmUsers:VmUsersConfig"* ]]
+    [[ "${trace}" != *"read-vault-config:GitHubRunners:"* ]]
+    [[ "${trace}" != *"--runners-config"* ]]
+    [[ "${trace}" != *"--github-token"* ]]
+}
+
+@test "NEEDS_GITHUB_RUNNERS=1 with GH_TOKEN drives the third vault read and threads both keys" {
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:VmUsers:VmUsersConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:GitHubRunners:GitHubRunnersConfig"* ]]
+    [[ "${trace}" == *"--runners-config"* ]]
+    [[ "${trace}" == *"--github-token"*"ghp_example"* ]]
+
+    # The third read must come after the first two so a partial
+    # failure of the runners vault leaves the existing two-vault
+    # path's diagnostics intact for create-users / remove-users.
+    [ "$(awk '/^read-vault-config:VmUsers:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" ]
+}
+
+@test "NEEDS_GITHUB_RUNNERS=1 without GH_TOKEN fails fast with a clear message" {
+    # The bridge itself never prompts - that is the operator entry's
+    # job. Refusing the call here is louder than silently emitting
+    # an empty token downstream.
+    export NEEDS_GITHUB_RUNNERS=1
+    unset GH_TOKEN
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"GH_TOKEN"* ]]
+
+    # Bail before any vault read so a misconfigured caller does not
+    # spawn pwsh.exe just to discover it has no token.
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" != *"read-vault-config"* ]]
+}
+
+@test "GH_TOKEN is cleared from the bridge env before ansible-playbook runs" {
+    # Threading the token through extra-vars only (not env) keeps it
+    # out of any child process other than ansible-playbook itself,
+    # and out of the ansible-playbook env at that.
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+
+    # Replace the ansible-playbook stub with one that records env.
+    cat >"${TEST_TMP}/stubs/ansible-playbook" <<'STUB'
+#!/usr/bin/env bash
+printenv GH_TOKEN > "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" || true
+exit 0
+STUB
+    chmod +x "${TEST_TMP}/stubs/ansible-playbook"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" ]
+}
+
 @test "tmpdir is removed when a sibling fails mid-pipeline" {
     # Replace the inventory stub with a failing one to exercise the
     # EXIT trap on the unhappy path.

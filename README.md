@@ -276,10 +276,10 @@ Two contracts worth highlighting before invoking the flow:
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and
-`ansible-playbook` is split across four single-purpose helpers
-under `ops/` with a leading `_` (the "called by operator entries,
-not typed by a human" convention). Each is unit-testable against
-just its own external boundary:
+`ansible-playbook` is split across single-purpose helpers under
+`ops/` with a leading `_` (the "called by operator entries, not
+typed by a human" convention). Each is unit-testable against just
+its own external boundary:
 
 - [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh) - vault
   reader. Shells out to `pwsh.exe` to fetch a named secret via the
@@ -291,25 +291,53 @@ just its own external boundary:
   transform. Reads `vm_provisioner_config` on stdin and writes
   Ansible JSON inventory (group `vm_provisioner_hosts`, host key
   `vmName`) on stdout.
-- [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - pure
-  transform. Takes `--provisioner-config <file>` and
-  `--users-config <file>` and emits the canonical extra-vars JSON
-  with the two top-level keys (`vm_provisioner_config`,
-  `vm_users_config`) on stdout. File paths (not values) so secrets
-  stay out of argv.
+- [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - extra-
+  vars orchestrator. Owns no payload domain itself; accepts the
+  union of helper flags and dispatches to one per-payload-domain
+  helper per domain present, then merges their JSON fragments via
+  `jq -s add`. Required flags: `--provisioner-config <file>` and
+  `--users-config <file>`. Optional paired flags (register-runners
+  flow): `--runners-config <file>` + `--github-token <value>` (the
+  orchestrator rejects either flag alone). The per-domain helpers
+  below own their own validation and bats coverage:
+  - [`ops/_build-extra-vars-inventory.sh`](ops/_build-extra-vars-inventory.sh)
+    — emits `vm_provisioner_config`. Always-on; the inventory source
+    every payload domain shares.
+  - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
+    — emits `vm_users_config` for the groups / users / sudoers roles.
+  - [`ops/_build-extra-vars-runners.sh`](ops/_build-extra-vars-runners.sh)
+    — emits `github_runners_config` + `github_token` for the runner
+    roles. Owns the token-non-empty fast-fail and threads the value
+    through `jq --arg` so shell-special characters land verbatim.
+  Config inputs are file paths (not values) so secrets stay out of
+  argv. The GitHub token is the lone exception, passed by value
+  because the entry script already holds it in a shell variable;
+  argv on Linux is private to the owning user's process tree.
+  Future payload domains (e.g. toolchain delivery: JDK / .NET SDK /
+  file copy) land as a peer `_build-extra-vars-<domain>.sh` plus a
+  dispatch arm in the orchestrator — no other call site changes.
 - [`ops/_run-playbook.sh`](ops/_run-playbook.sh) - thin
   orchestrator. Validates args, sets up a per-invocation
   `mktemp -d` tree (`chmod 700`, files `chmod 600`, cleaned up by
-  `EXIT` trap), activates `.venv`, drives the three helpers in
-  order, and dispatches `ansible-playbook` against the requested
-  playbook path. Any args after the playbook path are forwarded
+  `EXIT` trap), activates `.venv`, drives the helpers in order,
+  and dispatches `ansible-playbook` against the requested playbook
+  path. Reads two vaults unconditionally (`VmProvisioner`,
+  `VmUsers`) and adds a third (`GitHubRunners`) when the caller
+  exports `NEEDS_GITHUB_RUNNERS=1` plus `GH_TOKEN=...` - the
+  opt-in gate keeps the create-users / remove-users entry points
+  free of an unused `pwsh.exe` round-trip. `GH_TOKEN` is cleared
+  from the bridge environment before `ansible-playbook` runs; the
+  downstream play receives the token via the chmod-600 extra-vars
+  file only. Any args after the playbook path are forwarded
   verbatim to `ansible-playbook` (so `--tags`, `--limit`,
   `--check`, `-v`, etc. all work without changes to the bridge).
 
-External contract (consumed by later feature playbooks): the
-extra-vars document has exactly two top-level keys
-(`vm_provisioner_config`, `vm_users_config`); the inventory has one
-group `vm_provisioner_hosts` keyed by `vmName`.
+External contract (consumed by feature playbooks): the extra-vars
+document always has the two top-level keys `vm_provisioner_config`
+and `vm_users_config`, and additionally `github_runners_config` +
+`github_token` when the caller opts into the GitHubRunners vault
+read. The inventory has one group `vm_provisioner_hosts` keyed by
+`vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)

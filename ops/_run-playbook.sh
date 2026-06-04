@@ -20,6 +20,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 readonly VM_PROVISIONER_VAULT="VmProvisioner"
 readonly VM_USERS_VAULT="VmUsers"
+readonly GITHUB_RUNNERS_VAULT="GitHubRunners"
 
 # Required: SECRET_SUFFIX selects the lifecycle/environment whose
 # secrets this run will read. Operator invocations pass `Production`;
@@ -33,6 +34,7 @@ if [[ -z "${SECRET_SUFFIX:-}" ]]; then
 fi
 readonly VM_PROVISIONER_SECRET="VmProvisionerConfig-${SECRET_SUFFIX}"
 readonly VM_USERS_SECRET="VmUsersConfig-${SECRET_SUFFIX}"
+readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 
 # Anchor every relative path to the repo root so the script works
 # regardless of the caller's working directory.
@@ -56,6 +58,18 @@ shift
 if [[ ! -f "${repo_root}/${playbook_path}" && ! -f "${playbook_path}" ]]; then
     echo "_run-playbook.sh: playbook not found: ${playbook_path}" >&2
     exit 2
+fi
+
+# Validate the GitHubRunners opt-in inputs before any vault read so a
+# misconfigured caller (NEEDS_GITHUB_RUNNERS=1 without GH_TOKEN) fails
+# before two pwsh.exe round-trips it would never be able to consume.
+needs_github_runners=0
+if [[ "${NEEDS_GITHUB_RUNNERS:-0}" == "1" ]]; then
+    if [[ -z "${GH_TOKEN:-}" ]]; then
+        echo "_run-playbook.sh: NEEDS_GITHUB_RUNNERS=1 requires GH_TOKEN env var" >&2
+        exit 2
+    fi
+    needs_github_runners=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -89,7 +103,10 @@ source "${script_dir}/_ansible-env.sh"
 # 4. Vault reads. Each call validates its payload via jq empty before
 #    returning, so a malformed secret fails here with the vault name
 #    in the message - not later inside ansible-playbook. chmod 600 on
-#    each file mirrors the tmpdir restriction.
+#    each file mirrors the tmpdir restriction. The GitHubRunners read
+#    is gated by NEEDS_GITHUB_RUNNERS so the create-users / remove-users
+#    entry points do not pay for a pwsh.exe round-trip they cannot
+#    consume.
 # ---------------------------------------------------------------------------
 provisioner_file="${tmpdir}/provisioner.json"
 users_file="${tmpdir}/users.json"
@@ -101,6 +118,25 @@ chmod 600 "${provisioner_file}"
 "${script_dir}/_read-vault-config.sh" "${VM_USERS_VAULT}" "${VM_USERS_SECRET}" \
     > "${users_file}"
 chmod 600 "${users_file}"
+
+# Entry scripts opt in to the runners pipeline by exporting
+# NEEDS_GITHUB_RUNNERS=1 (and GH_TOKEN). The bridge itself never
+# prompts - the operator edge (ops/register-runners.sh) owns that.
+runners_file=""
+github_token=""
+if [[ "${needs_github_runners}" -eq 1 ]]; then
+    runners_file="${tmpdir}/runners.json"
+    "${script_dir}/_read-vault-config.sh" "${GITHUB_RUNNERS_VAULT}" "${GITHUB_RUNNERS_SECRET}" \
+        > "${runners_file}"
+    chmod 600 "${runners_file}"
+
+    # Lift the token into a local so we can clear GH_TOKEN from the
+    # bridge's environment before invoking ansible-playbook. The
+    # downstream play receives the token via the chmod-600 extra-vars
+    # file only; nothing else in this process tree needs it in env.
+    github_token="${GH_TOKEN}"
+    unset GH_TOKEN
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Inventory generation. Pure stdin -> stdout transform; redirected
@@ -115,9 +151,18 @@ chmod 600 "${hosts_file}"
 #    payloads never appear on argv where `ps` could see them.
 # ---------------------------------------------------------------------------
 extra_vars_file="${tmpdir}/extra-vars.json"
-"${script_dir}/_build-extra-vars.sh" \
-    --provisioner-config "${provisioner_file}" \
-    --users-config       "${users_file}" \
+extra_vars_args=(
+    --provisioner-config "${provisioner_file}"
+    --users-config       "${users_file}"
+)
+if [[ -n "${runners_file}" ]]; then
+    extra_vars_args+=(
+        --runners-config "${runners_file}"
+        --github-token   "${github_token}"
+    )
+fi
+
+"${script_dir}/_build-extra-vars.sh" "${extra_vars_args[@]}" \
     > "${extra_vars_file}"
 chmod 600 "${extra_vars_file}"
 
