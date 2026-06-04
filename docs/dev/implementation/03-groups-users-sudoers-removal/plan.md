@@ -533,24 +533,6 @@ function Remove-VmUsersForTest {
 - Unknown `UsersFlow` value -> rejected by `ValidateSet` at parameter
   binding time.
 
-**Real-VM acceptance (manual)**
-
-Three recorded runs of `Start-VmUsersTest.ps1`:
-
-1. Defaults (`ansible` for both create and remove). Asserts the VM
-   ends in the expected clean state: no declared users, no declared
-   empty groups, `getent` agrees, `/etc/sudoers.d/<username>`
-   absent.
-2. `-UsersFlow custom-powershell` (legacy both ways). Identical
-   on-VM state to (1). This is the pre-feature-02 baseline still
-   working, validating the legacy path before archive.
-3. Mixed: create via `ansible`, remove via `custom-powershell`
-   (one-off override; not a default). Confirms the cross-compat
-   contract — Ansible-created users delete cleanly via the legacy
-   removal script — so an operator can swap halves during the
-   transition without surprises. After (3) the same final clean
-   state holds.
-
 **Infrastructure-E2E README update**
 
 - Document `Remove-VmUsersForTest` in the same section that already
