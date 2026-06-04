@@ -64,7 +64,7 @@ Resolved open questions (problem.md / Solution approach + Bridge):
 
 ## Index
 
-- [Step 1 - Bridge extension: GitHubRunners vault read and token plumbing](#step-1---bridge-extension-githubrunners-vault-read-and-token-plumbing)
+- [Step 1 - Bridge extension: GitHubRunners vault read, token plumbing, per-domain helper split](#step-1---bridge-extension-githubrunners-vault-read-token-plumbing-per-domain-helper-split)
 - [Step 2 - Bridge extension: host file server helpers](#step-2---bridge-extension-host-file-server-helpers)
 - [Step 3 - Role: runner_binary](#step-3---role-runner_binary)
 - [Step 4 - Role: runner_registration](#step-4---role-runner_registration)
@@ -74,7 +74,7 @@ Resolved open questions (problem.md / Solution approach + Bridge):
 
 ---
 
-## Step 1 - Bridge extension: GitHubRunners vault read and token plumbing
+## Step 1 - Bridge extension: GitHubRunners vault read, token plumbing, per-domain helper split
 
 **Reason:** The three roles need `github_runners_config` and
 `github_token` to exist as extra-vars before any of them is useful.
@@ -84,6 +84,27 @@ env var (`NEEDS_GITHUB_RUNNERS=1`) keeps the create-users /
 remove-users entry points from paying a `pwsh.exe` round-trip they do
 not need.
 
+Structuring `_build-extra-vars.sh` so each payload domain owns its
+own thin helper makes the bridge legible at a glance — one file per
+concern — and lets the future toolchain payload domain (JDK / .NET
+SDK / file delivery) land as a peer helper without touching the
+orchestrator. The CLI surface of `_build-extra-vars.sh` and the
+emitted JSON shape are unchanged from the consumer's view.
+
+**Shape**
+
+| Helper | Domain | Emitted keys | Inputs (flags) |
+|---|---|---|---|
+| `_build-extra-vars-inventory.sh` | inventory source (always-on) | `vm_provisioner_config` | `--provisioner-config <file>` |
+| `_build-extra-vars-users.sh` | users (always-on today; opt-in possible later) | `vm_users_config` | `--users-config <file>` |
+| `_build-extra-vars-runners.sh` | runners (opt-in) | `github_runners_config`, `github_token` | `--runners-config <file>`, `--github-token <value>` |
+
+Each helper parses its own flags, validates its inputs, and prints a
+single JSON object on stdout containing only its domain's keys.
+`_build-extra-vars.sh` is reduced to a thin orchestrator: accepts
+the union of helper flags (CLI surface preserved), dispatches each
+domain whose flags are present, merges fragments via `jq -s add`.
+
 **Files**
 
 - `ops/_run-playbook.sh` (modified) - after the existing two
@@ -91,23 +112,37 @@ not need.
   `${NEEDS_GITHUB_RUNNERS:-0}` being `1`. Vault name `GitHubRunners`,
   secret name `GitHubRunnersConfig-${SECRET_SUFFIX}`. Result written
   to a third tmpfs file under the same `mktemp -d` tree, `chmod 600`,
-  cleaned by the existing `trap EXIT`. New key `github_runners_config`
-  added by `_build-extra-vars.sh`. `github_token` is pulled from the
-  `GH_TOKEN` env var that `ops/register-runners.sh` is expected to set
-  (the bridge does not prompt — that is the entry script's job).
-  Both new extras are written only when `NEEDS_GITHUB_RUNNERS=1` so
-  the bridge stays generic.
-- `ops/_build-extra-vars.sh` (modified) - accepts two new optional
-  args: `--runners-config <file>` and `--github-token <value>`. When
-  present, emits `github_runners_config` and `github_token` as
-  top-level keys alongside the existing two. Token path-vs-value:
-  unlike configs (file paths, to keep secrets out of argv), the
-  token is passed by value because the entry script holds it in a
-  shell variable already and `mktemp`-ing it just to immediately read
-  it back has no security upside (subshell argv is private to the
-  current process tree, and `ps` cannot see env vars or stdin args of
-  another user's process on Linux unless `--ptrace_scope=0` which
-  Ubuntu defaults off). Validation: token non-empty if provided.
+  cleaned by the existing `trap EXIT`. `github_token` is pulled from
+  the `GH_TOKEN` env var that `ops/register-runners.sh` is expected
+  to set (the bridge does not prompt — that is the entry script's
+  job) and cleared from the bridge env before `ansible-playbook`
+  runs. The `GH_TOKEN` presence check fires before any vault read so
+  a misconfigured caller fails before two pwsh.exe round-trips it
+  cannot consume.
+- `ops/_build-extra-vars.sh` (rewritten) - thin orchestrator. Accepts
+  the union of helper flags (`--provisioner-config`, `--users-config`
+  required; `--runners-config`, `--github-token` optional), dispatches
+  each domain whose flags are present to its helper, and merges the
+  emitted JSON fragments with `jq -s add`. Per-domain bats files
+  cover helper internals; this script's bats covers dispatch +
+  merge correctness only.
+- `ops/_build-extra-vars-inventory.sh` (new) - emits
+  `vm_provisioner_config` from the file at `--provisioner-config`.
+  Validates file presence + JSON validity. Pure transform; no env
+  deps beyond `jq`.
+- `ops/_build-extra-vars-users.sh` (new) - emits `vm_users_config`
+  from the file at `--users-config`. Same validation posture as the
+  inventory helper.
+- `ops/_build-extra-vars-runners.sh` (new) - emits
+  `github_runners_config` + `github_token`. Validates the runners
+  config file the same way the other two helpers validate theirs;
+  validates `--github-token` non-empty. Token path-vs-value rationale
+  lives here: configs are file paths to keep secrets off argv, but
+  the token is passed by value because the entry script holds it in
+  a shell variable already and mktemp-ing it just to read it back
+  has no security upside (argv on Linux is private to the owning
+  user's process tree). The token is threaded into jq via `--arg`
+  so any shell-special characters land in JSON literally.
 - `ops/_read-vault-config.sh` (no change needed) - already takes
   `<VaultName> <SecretName>` and shells out to `pwsh.exe`; the
   GitHubRunners vault read is just another call.
@@ -118,10 +153,25 @@ not need.
   - `NEEDS_GITHUB_RUNNERS=1` + `GH_TOKEN=...` set -> three vault
     reads, all three keys present.
   - `NEEDS_GITHUB_RUNNERS=1` + `GH_TOKEN` unset -> bridge exits
-    non-zero with a clear message (the bridge itself does not prompt).
-- `Tests/ops/_build-extra-vars.bats` (modified) - new cases for the
-  new args; token-empty -> non-zero exit; token-value-with-special-
-  chars -> emitted verbatim, not shell-expanded.
+    non-zero with a clear message before any vault read (the bridge
+    itself does not prompt).
+  - `GH_TOKEN` cleared from the bridge env before `ansible-playbook`
+    runs (the token reaches the play via the chmod-600 extra-vars
+    file only).
+- `Tests/ops/_build-extra-vars.bats` (rewritten) - orchestration
+  coverage only: each per-domain helper is invoked when its flag is
+  present and skipped when absent; merged output is the union of
+  fragments; the full CLI surface (`--provisioner-config`,
+  `--users-config`, `--runners-config`, `--github-token`) keeps
+  working with the same semantics consumers depend on.
+- `Tests/ops/_build-extra-vars-inventory.bats` (new) - per-helper:
+  missing flag, missing file, invalid JSON, valid single-key output.
+- `Tests/ops/_build-extra-vars-users.bats` (new) - per-helper:
+  same shape as the inventory helper's bats.
+- `Tests/ops/_build-extra-vars-runners.bats` (new) - per-helper:
+  missing flag, missing file, invalid JSON, valid two-key output,
+  token-empty fast-fail, token with shell-special chars emitted
+  verbatim.
 
 **Behaviour (sketch, _run-playbook.sh)**
 
@@ -151,24 +201,46 @@ _build-extra-vars.sh "${extra_vars_args[@]}" > "$tmp/extra-vars.json"
 ansible-playbook ... --extra-vars "@$tmp/extra-vars.json" "$@"
 ```
 
+**Behaviour (sketch, _build-extra-vars.sh orchestrator)**
+
+```bash
+# parse the union of helper flags (CLI surface preserved)
+# ...
+fragments=()
+fragments+=( "$("${script_dir}/_build-extra-vars-inventory.sh" \
+                --provisioner-config "${provisioner_path}")" )
+fragments+=( "$("${script_dir}/_build-extra-vars-users.sh" \
+                --users-config       "${users_path}")" )
+if [[ -n "${runners_path}" ]]; then
+    fragments+=( "$("${script_dir}/_build-extra-vars-runners.sh" \
+                    --runners-config "${runners_path}" \
+                    --github-token   "${token}")" )
+fi
+printf '%s\n' "${fragments[@]}" | jq -s 'add'
+```
+
 **Tests (bats)**
 
-- See `Tests/ops/` modifications above. No new test files: existing
-  per-helper suites just gain cases.
+- See `Tests/ops/` files above. Per-helper bats files own their
+  helper's contract; the orchestrator's bats covers dispatch + merge
+  only.
 
 **Diagram**
 
 ```mermaid
 flowchart LR
     Entry["ops/register-runners.sh<br/>NEEDS_GITHUB_RUNNERS=1<br/>GH_TOKEN=..."] --> Br[ops/_run-playbook.sh]
-    Br -->|always| RC1["pwsh.exe Get-...<br/>VmProvisionerConfig"]
-    Br -->|always| RC2["pwsh.exe Get-...<br/>VmUsersConfig-Suffix"]
-    Br -->|only if NEEDS_GITHUB_RUNNERS=1| RC3["pwsh.exe Get-...<br/>GitHubRunnersConfig-Suffix"]
-    RC1 --> XV[ops/_build-extra-vars.sh]
-    RC2 --> XV
-    RC3 --> XV
-    Br -->|only if NEEDS_GITHUB_RUNNERS=1| XV
-    XV -->|chmod 600| EV["tmpfs extra-vars.json<br/>vm_provisioner_config<br/>vm_users_config<br/>github_runners_config<br/>github_token"]
+    Br -->|always| RC1["pwsh.exe<br/>VmProvisionerConfig"]
+    Br -->|always| RC2["pwsh.exe<br/>VmUsersConfig-Suffix"]
+    Br -->|only NEEDS_GITHUB_RUNNERS=1| RC3["pwsh.exe<br/>GitHubRunnersConfig-Suffix"]
+    Br --> XV[ops/_build-extra-vars.sh<br/>orchestrator]
+    XV --> XVI[_build-extra-vars-inventory.sh<br/>vm_provisioner_config]
+    XV --> XVU[_build-extra-vars-users.sh<br/>vm_users_config]
+    XV -->|runners opt-in| XVR[_build-extra-vars-runners.sh<br/>github_runners_config<br/>+ github_token]
+    RC1 --> XVI
+    RC2 --> XVU
+    RC3 --> XVR
+    XV -->|jq -s add| EV["tmpfs extra-vars.json<br/>(chmod 600)"]
     EV --> AP[ansible-playbook --extra-vars @file]
 ```
 
@@ -211,8 +283,13 @@ before the playbook means step 6 has nothing left to do but compose.
   `host_file_server_base_url`. Register a second `trap EXIT` that
   invokes `_stop-host-file-server.ps1 -Pid $PID` so the listener
   always stops, even on `ansible-playbook` failure.
-- `ops/_build-extra-vars.sh` (modified again from step 1) - accepts
-  `--host-base-url <url>` and emits `host_file_server_base_url`.
+- `ops/_build-extra-vars.sh` (modified again from step 1) - gains
+  `--host-base-url <url>` and `--runner-version <ver>` flags on the
+  orchestrator; threads both into the runners helper.
+- `ops/_build-extra-vars-runners.sh` (modified) - emits the two
+  additional runners-domain keys (`host_file_server_base_url`,
+  `runner_version`) alongside `github_runners_config` and
+  `github_token`.
 - `ops/_resolve-runner-version.ps1` (new) - small helper, single
   responsibility: GET `repos/actions/runner/releases/latest` with the
   `GH_TOKEN`, return the version string without the leading `v`. The
