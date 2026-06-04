@@ -1,0 +1,50 @@
+---
+# Molecule scenario for the groups role's REMOVE direction
+# (tasks_from: remove). Mirrors the sudoers/remove and users/remove
+# scenario shapes: single Ubuntu 24.04 container, Docker driver,
+# ansible verifier.
+#
+# The container runs as `command: /bin/sleep infinity` with no real
+# init. That is sufficient for ansible.builtin.group (touches
+# /etc/group only) and for the getent probe; no systemd surface is
+# needed.
+#
+# The groups role's meta dep chain pulls in vm_users_entry, which
+# resolves the per-host slice of vm_users_config; the converge sets
+# that fixture inline.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live four levels above the scenario; point Ansible at
+      # the repo's roles/ directory so include_role: name=groups
+      # resolves the role (and its meta dependency chain) without
+      # copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

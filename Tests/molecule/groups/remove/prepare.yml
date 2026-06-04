@@ -1,0 +1,78 @@
+---
+# Prepare the container before converge: seed the groups landscape the
+# remove direction is expected to act on, plus the cases that prove the
+# scope guarantees.
+#
+#   - ans-remove-empty   declared on this host, exists with no members
+#                         -> must be removed
+#   - ans-remove-busy    declared on this host, exists with an
+#                         out-of-config member account
+#                         -> must be KEPT and the warning must name the
+#                            member (open question #1 resolved to log
+#                            names, not just a count)
+#   - ans-remove-missing declared on this host, NOT created on disk
+#                         -> probe rc!=0, no removal attempted, no error
+#   - ans-undeclared     NOT in vm_users_config for this host, exists
+#                         on disk -> must survive (drift removal is out
+#                         of scope, mirrors the sudoers/remove and
+#                         users/remove guards)
+#   - should-not-touch   declared on a DIFFERENT vmName, exists with no
+#                         members -> must survive (selectattr filter
+#                         applies to the remove direction too; an empty
+#                         members field is no excuse to act on a group
+#                         we did not declare for this host)
+#
+# Groups are seeded via ansible.builtin.group directly (not via the
+# role's create direction) so this prepare stays decoupled from the
+# role under test - the same shape sudoers/remove and users/remove
+# use.
+
+- name: Prepare - install baseline tools and seed groups
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    # getent ships in the base ubuntu:24.04 image (libc-bin), but
+    # useradd / groupadd come from passwd which is also baseline. No
+    # extra tooling needed for this scenario.
+
+    - name: Seed ans-remove-empty (declared, empty, removable)
+      ansible.builtin.group:
+        name: ans-remove-empty
+        state: present
+
+    - name: Seed ans-remove-busy (declared, non-empty, must be kept)
+      ansible.builtin.group:
+        name: ans-remove-busy
+        state: present
+
+    # The member account itself is out-of-config: it is not in the
+    # converge fixture's vm_users_entry.users for this host. Its
+    # presence as a member of ans-remove-busy is what makes the
+    # remove direction skip the group and emit the warning.
+    - name: Seed an out-of-config member account for ans-remove-busy
+      ansible.builtin.user:
+        name: ans-stranger
+        shell: /bin/bash
+        create_home: false
+        groups: ans-remove-busy
+        append: true
+        state: present
+
+    # ans-remove-missing is intentionally NOT created here. The
+    # converge declares it; the probe must report rc!=0 and the
+    # iteration must complete without error.
+
+    - name: Seed ans-undeclared (out-of-config drift, must survive)
+      ansible.builtin.group:
+        name: ans-undeclared
+        state: present
+
+    - name: Seed should-not-touch (declared on other-host, must survive)
+      ansible.builtin.group:
+        name: should-not-touch
+        state: present
