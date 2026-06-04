@@ -1,0 +1,27 @@
+---
+# side_effect runs between converge and idempotence. Update the mock's
+# registered-runners file to reflect post-converge reality: every
+# runner the converge play registered (runner-fresh, runner-reregister)
+# now needs to appear in the mock's GET /actions/runners response too,
+# matching what real GitHub would have done after config.sh --unattended.
+#
+# Without this step the idempotence run would re-take the register /
+# re-register branch on the same two runners (the static mock would
+# still report them absent), which is a fixture-side artefact, not a
+# real role idempotence regression.
+
+- name: Side effect - update mock to reflect post-converge GitHub state
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    mock_registered_file: /tmp/runner-registration-mock-registered.txt
+  tasks:
+    - name: Rewrite registered-runners file with the full post-converge set
+      ansible.builtin.copy:
+        dest: "{{ mock_registered_file }}"
+        content: |
+          runner-healthy
+          runner-fresh
+          runner-reregister
+        mode: "0644"

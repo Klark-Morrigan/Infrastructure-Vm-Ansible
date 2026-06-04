@@ -1,0 +1,73 @@
+---
+# Molecule scenario for the runner_registration role.
+#
+# Same Docker / Ubuntu 24.04 shape as the runner_binary scenario, with
+# one structural difference: the role's GitHub REST calls run
+# `delegate_to: localhost`, so the mock GitHub API has to live on the
+# controller (where Ansible's localhost connection lands), not inside
+# the managed container. prepare.yml's first play launches the mock
+# on the controller via `connection: local`; converge sets
+# `github_api_base_url` to that loopback URL; cleanup.yml kills the
+# mock pidfile-tracked process.
+#
+# Custom test_sequence: we replace the stock `idempotence` slot with
+# `side_effect -> idempotence` because a static GitHub mock cannot
+# observe `config.sh --unattended` writing a registration the way
+# real GitHub does. side_effect.yml mutates the mock's
+# registered-runners file to reflect the post-converge reality
+# (every fresh / re-register runner is now known to GitHub), then
+# molecule's idempotence step re-converges and asserts 0 changes.
+# Skipping idempotence entirely would lose the natural-state
+# idempotence guarantee the role does honour in production.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /bin/sleep infinity
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the scenario; point Ansible at
+      # the repo's roles/ directory so include_role: name=runner_registration
+      # resolves the role (and its meta dependency on runner_entry_resolve)
+      # without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible
+
+scenario:
+  test_sequence:
+    - dependency
+    - lint
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - side_effect
+    - idempotence
+    - verify
+    - cleanup
+    - destroy

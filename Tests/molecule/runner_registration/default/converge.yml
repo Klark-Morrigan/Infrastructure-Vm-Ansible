@@ -1,0 +1,64 @@
+---
+# Converge - apply runner_registration against four declared entries:
+#
+#   runner-healthy    on `instance`    - registered on GitHub (mock
+#                                        seeds runner-healthy in the
+#                                        registered-runners file) and
+#                                        .runner pre-seeded. Healthy
+#                                        branch: no token mint, no
+#                                        config.sh call.
+#   runner-fresh      on `instance`    - not on GitHub, no .runner.
+#                                        Register branch: mint
+#                                        registration token, run
+#                                        config.sh --unattended.
+#   runner-reregister on `instance`    - not on GitHub, .runner present.
+#                                        Re-register branch: mint
+#                                        removal + registration tokens,
+#                                        run config.sh remove then
+#                                        --unattended.
+#   runner-leak       on `other-host`  - selector negative: the
+#                                        runner_entry_resolve filter
+#                                        must drop this entry on
+#                                        `instance` so the mock never
+#                                        sees /repos/example/repo-leak.
+#
+# github_api_base_url points at the controller-side mock prepare
+# launched on 127.0.0.1:18080. github_token is a non-empty placeholder
+# - the mock does not validate it, but the role's input assert needs
+# it to be a non-empty string.
+
+- name: Converge - apply runner_registration role
+  hosts: all
+  gather_facts: false
+  vars:
+    github_runners_config:
+      - vmName: instance
+        runnerName: runner-healthy
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-healthy
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: runner-fresh
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-fresh
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: runner-reregister
+        runnerUsername: u-runner-other
+        deployUsername: u-deploy-other
+        githubUrl: https://github.com/example/repo-reregister
+        runnerLabels: [self-hosted, ubuntu]
+      - vmName: other-host
+        runnerName: runner-leak
+        runnerUsername: u-leak
+        deployUsername: u-deploy-leak
+        githubUrl: https://github.com/example/repo-leak
+        runnerLabels: [self-hosted]
+    github_token: "fake-pat-for-molecule-scenario-only"
+    github_api_base_url: "http://127.0.0.1:18080"
+  tasks:
+    - name: Include the role under test
+      ansible.builtin.include_role:
+        name: runner_registration

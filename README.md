@@ -478,6 +478,15 @@ each role lands; the create-users playbook orders them
   `host_file_server_base_url` (the Hyper-V switch IP the bridge's
   PowerShell `HttpListener` binds to) so VMs avoid the NAT path to
   `github.com`.
+- [`roles/runner_registration`](roles/runner_registration/README.md) -
+  reconcile each runner's registration state on GitHub and on disk.
+  Second role in the register-runners flow; runs after
+  `runner_binary` (which lays `config.sh` on disk) and before
+  `runner_service`. Controller-side `ansible.builtin.uri` calls probe
+  `/repos/.../actions/runners` and mint registration / removal tokens
+  with `no_log: true` on every token-bearing task; the GitHub PAT
+  rides only in `Authorization` headers and never lands in URL query
+  strings, argv, or shell history.
 
 ## Feature folders
 

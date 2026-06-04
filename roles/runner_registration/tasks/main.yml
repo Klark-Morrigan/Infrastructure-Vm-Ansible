@@ -1,0 +1,50 @@
+---
+# Reconcile every declared runner on the current host against its
+# GitHub registration and its on-disk .runner marker (problem.md /
+# Role: runner_registration). Three branches:
+#
+#   (a) Marker present + GitHub registered    -> nothing to do.
+#   (b) Marker absent  + GitHub absent / present
+#       OR marker present + GitHub absent     -> register.
+#       The marker-present + GitHub-absent case additionally runs
+#       `config.sh remove` first with a fresh removal token (re-register
+#       branch from problem.md: a stale local registration must be
+#       cleared with the matching CLI verb before --unattended will
+#       re-write the marker).
+#
+# The role mints both the registration token and the removal token
+# controller-side (delegate_to: localhost) via the GitHub REST API.
+# Tokens are never written to disk and never appear in any task that
+# is not `no_log: true`. The PAT itself rides in the `Authorization`
+# header so it never lands in URL query strings (which would survive
+# in any proxy log along the way).
+
+# Fast-fail before any GitHub round-trip: an empty token would
+# universally yield a 401 we cannot recover from, so a clear local
+# message at the top of the role is friendlier than the eventual
+# uri-module error. Empty-string check, not just `is defined`,
+# because the bridge passes an empty string when the operator
+# dismissed the GH_TOKEN prompt before the env-var clear ran (the
+# env var alone would have failed the bridge earlier, but mounting
+# the file as an empty string is a degenerate path worth catching).
+- name: Assert github_token is defined and non-empty
+  ansible.builtin.assert:
+    that:
+      - github_token is defined
+      - github_token | length > 0
+    fail_msg: >-
+      runner_registration requires a non-empty `github_token` extra-var
+      - check ops/register-runners.sh and the bridge's GitHubRunners
+      opt-in branch.
+
+# vm_runner_entries is set by roles/runner_entry_resolve (pulled in via
+# meta dep; runs once per play). One include_tasks per entry so each
+# runner's facts stay scoped to its own file - the reconcile decision
+# is per-entry and would be hard to read if set_fact chains for several
+# entries lived in one play scope.
+- name: Reconcile declared runners on this host
+  ansible.builtin.include_tasks: reconcile-entry.yml
+  loop: "{{ vm_runner_entries }}"
+  loop_control:
+    loop_var: entry
+    label: "{{ entry.runnerName }}"

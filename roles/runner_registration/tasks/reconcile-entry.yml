@@ -1,0 +1,169 @@
+---
+# Per-runner reconcile, included once per vm_runner_entries item from
+# tasks/main.yml. Each fact is scoped to the current entry via set_fact;
+# the next iteration overwrites them before any consumer reads them.
+#
+# Branching summary (matches problem.md / Reconcile branches):
+#   runner_registration_should_register
+#       = not on disk OR not on GitHub
+#   runner_registration_should_remove_first
+#       = on disk AND not on GitHub
+#
+# The remove_first branch is the re-register path: a stale local
+# registration (config.sh laid .runner down but GitHub no longer knows
+# the runner) needs an explicit `config.sh remove --token <removal>`
+# before `config.sh --unattended` will accept a fresh registration.
+
+# Split the GitHub owner/repo out of the entry's githubUrl so the
+# REST endpoints below stay readable. urlsplit('path') yields
+# `/<owner>/<repo>` (with possible trailing slash or .git suffix);
+# strip the leading slash, then take the first two path segments.
+# Done once per entry so the four URI tasks below do not each repeat
+# the parse.
+- name: Parse owner and repo from githubUrl
+  ansible.builtin.set_fact:
+    runner_registration_entry_owner: >-
+      {{ (entry.githubUrl | urlsplit('path')
+          | regex_replace('^/', '')
+          | regex_replace('\\.git$', '')).split('/')[0] }}
+    runner_registration_entry_repo: >-
+      {{ (entry.githubUrl | urlsplit('path')
+          | regex_replace('^/', '')
+          | regex_replace('\\.git$', '')).split('/')[1] }}
+
+# Existence probe on GitHub. delegate_to: localhost because the
+# controller has internet access and api.github.com round-trips do not
+# belong on the managed VM (which the production deployments may have
+# behind a NAT with no GitHub egress). per_page=100 is the default API
+# cap; runner counts per repo well under that in practice. no_log keeps
+# the Authorization header out of every verbosity level.
+- name: Probe GitHub for existing registration of this runner
+  ansible.builtin.uri:
+    url: >-
+      {{ github_api_base_url }}/repos/{{ runner_registration_entry_owner
+      }}/{{ runner_registration_entry_repo }}/actions/runners?per_page=100
+    headers:
+      Authorization: "token {{ github_token }}"
+      Accept: application/vnd.github+json
+    return_content: true
+  delegate_to: localhost
+  register: runner_registration_runners_resp
+  no_log: true
+
+- name: Record whether GitHub already knows this runner by name
+  ansible.builtin.set_fact:
+    runner_registration_on_github: >-
+      {{ (runner_registration_runners_resp.json.runners
+          | default([])
+          | selectattr('name', 'equalto', entry.runnerName)
+          | list | length) > 0 }}
+
+# On-disk probe. .runner is the marker config.sh --unattended writes
+# at the runner directory root after a successful registration; its
+# presence is the canonical "this runner already configured itself"
+# signal monolithprojects.github_actions_runner also uses.
+- name: Stat the on-disk registration marker
+  ansible.builtin.stat:
+    path: "/opt/runners/{{ entry.runnerName }}/.runner"
+  register: runner_registration_marker_stat
+
+# Reconcile decision. Two booleans drive the four tasks below; computing
+# them in one set_fact keeps the conditions on those tasks short and
+# their guard logic self-evident at the call site.
+- name: Decide reconcile branch for this runner
+  ansible.builtin.set_fact:
+    runner_registration_on_disk: "{{ runner_registration_marker_stat.stat.exists }}"
+    runner_registration_should_register: >-
+      {{ (not runner_registration_marker_stat.stat.exists)
+         or (not runner_registration_on_github) }}
+    runner_registration_should_remove_first: >-
+      {{ runner_registration_marker_stat.stat.exists
+         and (not runner_registration_on_github) }}
+
+# Mint the removal token for the re-register branch. POST to
+# .../actions/runners/remove-token returns a short-lived token usable
+# by `config.sh remove`. Tokens are minted run-time only; nothing in
+# this role writes them to disk or to a registered variable that
+# could survive past the per-entry scope.
+- name: Mint a removal token for the re-register branch
+  ansible.builtin.uri:
+    url: >-
+      {{ github_api_base_url }}/repos/{{ runner_registration_entry_owner
+      }}/{{ runner_registration_entry_repo }}/actions/runners/remove-token
+    method: POST
+    headers:
+      Authorization: "token {{ github_token }}"
+      Accept: application/vnd.github+json
+    status_code: 201
+    return_content: true
+  delegate_to: localhost
+  register: runner_registration_remove_token_resp
+  no_log: true
+  when: runner_registration_should_remove_first
+
+# Run `config.sh remove --token <removal>` as the runner service user
+# to clear a stale local registration. become_user (not root) so the
+# files config.sh touches keep the runner-user ownership runner_binary
+# established. argv form (not shell string) so the token never reaches
+# a shell history file. changed_when: true because config.sh has
+# side effects every time we invoke it; suppressing changed would lie
+# about what the role did.
+- name: Run config.sh remove (re-register branch)
+  ansible.builtin.command:
+    argv:
+      - ./config.sh
+      - remove
+      - --token
+      - "{{ runner_registration_remove_token_resp.json.token }}"
+    chdir: "/opt/runners/{{ entry.runnerName }}"
+  become: true
+  become_user: "{{ entry.runnerUsername }}"
+  changed_when: true
+  no_log: true
+  when: runner_registration_should_remove_first
+
+# Mint the registration token. Same controller-side delegate; same
+# no_log; same status_code: 201. The registration token differs from
+# the removal token (different endpoint, different scope) so each
+# branch mints its own rather than trying to share one.
+- name: Mint a registration token
+  ansible.builtin.uri:
+    url: >-
+      {{ github_api_base_url }}/repos/{{ runner_registration_entry_owner
+      }}/{{ runner_registration_entry_repo }}/actions/runners/registration-token
+    method: POST
+    headers:
+      Authorization: "token {{ github_token }}"
+      Accept: application/vnd.github+json
+    status_code: 201
+    return_content: true
+  delegate_to: localhost
+  register: runner_registration_token_resp
+  no_log: true
+  when: runner_registration_should_register
+
+# Run `config.sh --unattended` to write .runner and register the
+# runner with GitHub. The four documented flags (--url, --token,
+# --name, --labels) match the problem.md contract. runnerLabels is
+# joined with `,` because the actions/runner CLI takes a comma-
+# separated list. argv form keeps the token out of any shell history;
+# no_log keeps it out of Ansible's own output.
+- name: Run config.sh --unattended (register branch)
+  ansible.builtin.command:
+    argv:
+      - ./config.sh
+      - --unattended
+      - --url
+      - "{{ entry.githubUrl }}"
+      - --token
+      - "{{ runner_registration_token_resp.json.token }}"
+      - --name
+      - "{{ entry.runnerName }}"
+      - --labels
+      - "{{ entry.runnerLabels | join(',') }}"
+    chdir: "/opt/runners/{{ entry.runnerName }}"
+  become: true
+  become_user: "{{ entry.runnerUsername }}"
+  changed_when: true
+  no_log: true
+  when: runner_registration_should_register
