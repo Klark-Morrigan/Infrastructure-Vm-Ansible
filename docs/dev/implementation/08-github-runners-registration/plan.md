@@ -257,55 +257,92 @@ before the playbook means step 6 has nothing left to do but compose.
 
 **Files**
 
-- `ops/_start-host-file-server.ps1` (new) - takes `-StagePath` (a
-  pre-fetched tarball), `-TargetVmIp` (used to derive which switch
-  IP to bind to). Opens an `HttpListener` on a free port, serves the
-  staged file by basename, prints `BASE_URL=http://<ip>:<port>` on
-  stdout, then `PID=<pid>` on a second line so the bridge can pass
-  the pid to the stop helper. Keeps listening until killed. Lifts the
-  body of `Infrastructure-GitHubRunners/.../Invoke-WithVmFileServer`
-  + `Add-VmFileServerFile` with no behaviour change — same bind
-  algorithm, same single-file serving, same port-selection logic.
-  PowerShell because the host-side switch IP discovery and
-  `HttpListener` both live cleanest on the Windows side; the bridge
-  already calls `pwsh.exe` for vault reads.
-- `ops/_stop-host-file-server.ps1` (new) - takes `-Pid`. `Stop-Process
-  -Id $Pid -Force` then waits for exit. Idempotent: a missing process
-  is logged and treated as success (the listener already died from
-  whatever caused the bridge trap to fire).
+- `ops/_resolve-runner-version.ps1` - small helper, single
+  responsibility: GETs `repos/actions/runner/releases/latest` with
+  the supplied token and returns the version string without the
+  leading `v`. The bridge needs this to know what to download and
+  stage. Mirrors `Resolve-RunnerVersion.ps1` in
+  Infrastructure-GitHubRunners. Lives here (not in a role) because
+  the staging happens on the Windows side before any
+  `ansible-playbook` task runs. Body wrapped in
+  `Resolve-RunnerVersion` so Pester can dot-source the file without
+  auto-invoking.
+- `ops/_ensure-runner-tarball.ps1` - small helper: given a version,
+  ensures the tarball exists at
+  `$env:LOCALAPPDATA\Temp\runner-cache\actions-runner-linux-x64-<ver>.tar.gz`,
+  downloading from `github.com` on cache miss and purging stale
+  `actions-runner-*.tar.gz` siblings before each download so the
+  cache directory does not grow unboundedly. Cached across runs.
+  Mirrors `Invoke-RunnerTarballEnsure.ps1`. Body wrapped in
+  `Invoke-RunnerTarballEnsure` for testability.
+- `ops/_start-host-file-server.ps1` - takes `-StagingDir` (the
+  directory whose files are served), `-TargetVmIp` (production:
+  derive which switch IP to bind to via /24 match) **or** `-HostIp`
+  (tests: bind to a known address directly). Opens an `HttpListener`
+  on `-Port` (default 8745), serves any file in `-StagingDir` by
+  its basename (404 otherwise), prints `BASE_URL=http://<ip>:<port>`
+  on stdout, then `PID=<pid>` on a second line so the bridge can
+  pass the pid to the stop helper. Keeps listening until killed.
+  Lifts the body of `Infrastructure.HyperV/.../Start-VmFileServer`
+  with no behaviour change - same bind algorithm, same multi-file
+  serving, same port-selection logic. The multi-file shape leaves
+  room for a future toolchain-delivery feature to stage extra
+  payloads (JDK, .NET SDK, agent binaries) in the same dir without
+  touching this script. Idempotent firewall-rule creation:
+  Remove-then-Create on the fixed-name rule so a leaked rule from
+  a prior crash does not block the next start. Body wrapped in
+  `Start-HostFileServer` so Pester can call the function directly
+  without entering the blocking outer wait loop.
+- `ops/_stop-host-file-server.ps1` - takes `-ProcessId` (with
+  `-Pid` as an alias for callers that prefer the shorter name;
+  `$PID` is a PowerShell automatic variable so the parameter cannot
+  be named `Pid` directly). `Stop-Process -Id <pid> -Force` then
+  `WaitForExit`. Idempotent: a missing process is logged and
+  treated as success (the listener already died from whatever caused
+  the bridge trap to fire). Body wrapped in `Stop-HostFileServer`
+  for testability.
+- `ops/_stage-host-fileserver.sh` - GitHubRunners opt-in branch of
+  the bridge, extracted into its own helper so `_run-playbook.sh`
+  stays a sequence of one-line dispatch steps. Drives the three
+  pwsh.exe round-trips (`_resolve-runner-version.ps1`,
+  `_ensure-runner-tarball.ps1`, `_start-host-file-server.ps1`),
+  picks the first VM's `ipAddress` from the provisioner config for
+  the bind, backgrounds the listener with stdout redirected to
+  `--listener-log <path>` (owned by the caller), polls for the
+  `BASE_URL=` + `PID=` contract lines, and emits its own three-line
+  contract on stdout: `RUNNER_VERSION=<x.y.z>`, `BASE_URL=<url>`,
+  `PID=<pwsh-pid>`. Inputs: `--provisioner-config <path>`,
+  `--github-token <value>`, `--listener-log <path>`.
 - `ops/_run-playbook.sh` (modified) - when `NEEDS_GITHUB_RUNNERS=1`,
-  resolve the runner version once via a pre-bridge `pwsh.exe`
-  one-liner (or defer to the controller-side pre-task — see
-  decision below), fetch the tarball to a Windows-side cache
-  directory, then invoke `_start-host-file-server.ps1` and capture
-  `BASE_URL` / `PID`. The captured `BASE_URL` becomes a new
-  `--host-base-url <url>` arg to `_build-extra-vars.sh` which emits
-  `host_file_server_base_url`. Register a second `trap EXIT` that
-  invokes `_stop-host-file-server.ps1 -Pid $PID` so the listener
-  always stops, even on `ansible-playbook` failure.
+  calls `_stage-host-fileserver.sh` once with the three flags above
+  (using a `${tmpdir}/fileserver.out` as the listener log), parses
+  `RUNNER_VERSION`, `BASE_URL`, and `PID` from its stdout into
+  locals, and threads `BASE_URL` + `RUNNER_VERSION` into
+  `_build-extra-vars.sh` as `--host-base-url` / `--runner-version`.
+  The existing tmpdir `trap EXIT` is replaced by a `cleanup`
+  function that first invokes
+  `_stop-host-file-server.ps1 -ProcessId <pid>` when a PID was
+  captured, then removes the tmpdir - bundling both into one EXIT
+  handler keeps the orchestrator's lifecycle in one place.
 - `ops/_build-extra-vars.sh` (modified again from step 1) - gains
   `--host-base-url <url>` and `--runner-version <ver>` flags on the
-  orchestrator; threads both into the runners helper.
+  orchestrator; threads both into the runners helper. The pairing
+  rule generalises: all four runners flags (`--runners-config`,
+  `--github-token`, `--host-base-url`, `--runner-version`) must
+  arrive together or none - any partial subset is rejected before
+  dispatch because a config without a token would fail at the
+  helper anyway, and any one of the three string flags alone would
+  silently never reach the play.
 - `ops/_build-extra-vars-runners.sh` (modified) - emits the two
   additional runners-domain keys (`host_file_server_base_url`,
   `runner_version`) alongside `github_runners_config` and
-  `github_token`.
-- `ops/_resolve-runner-version.ps1` (new) - small helper, single
-  responsibility: GET `repos/actions/runner/releases/latest` with the
-  `GH_TOKEN`, return the version string without the leading `v`. The
-  bridge needs this to know what to download and stage. Mirrors
-  `Resolve-RunnerVersion.ps1` in Infrastructure-GitHubRunners. Lives
-  here (not in a role) because the staging happens on the Windows
-  side before any `ansible-playbook` task runs.
-- `ops/_ensure-runner-tarball.ps1` (new) - small helper: given a
-  version, ensure the tarball exists at
-  `$env:LOCALAPPDATA\Temp\runner-cache\actions-runner-linux-x64-<ver>.tar.gz`,
-  downloading it from `github.com` if missing. Cached across runs.
-  Mirrors `Invoke-RunnerTarballEnsure.ps1`.
-- `Tests/ops/_start-host-file-server.Tests.ps1` (new, Pester) -
-  unit-tests `_resolve-runner-version`, `_ensure-runner-tarball`,
-  and the start/stop helpers against mocked GitHub HTTP responses
-  and a temp file. Lives at `Tests/ops/` next to existing helpers.
+  `github_token`; the four flags are now jointly required.
+- `Tests/ops/Start-HostFileServer.Tests.ps1` (Pester) - unit-tests
+  `Resolve-RunnerVersion`, `Invoke-RunnerTarballEnsure`, and the
+  start/stop helpers against mocked GitHub HTTP responses, a temp
+  cache, and a live `HttpListener` bound to `127.0.0.1` on a
+  random high port (with `New-NetFirewallRule` mocked so the test
+  host does not need admin rights for firewall manipulation).
 
   Why Pester (not bats) for these four: each helper is single-file
   PowerShell calling `Invoke-RestMethod` / `HttpListener` /
@@ -313,12 +350,23 @@ before the playbook means step 6 has nothing left to do but compose.
   per assertion which is slower and harder to mock. The bash bats
   suite still owns `_run-playbook.sh`'s orchestration coverage and
   stubs the four PS helpers as boundaries.
-- `Tests/ops/_run-playbook.bats` (modified again from step 1) - new
-  case: `NEEDS_GITHUB_RUNNERS=1` exercise stubs `_start-host-file-
-  server.ps1` to print `BASE_URL=http://1.2.3.4:8745` + `PID=1234`;
-  asserts that the URL ends up in extra-vars and that `_stop-host-
-  file-server.ps1` is invoked with the captured PID on exit (both
-  clean exit and forced failure).
+- `Tests/ops/_stage-host-fileserver.bats` - per-helper coverage
+  for the GitHubRunners opt-in branch. Stubs `pwsh.exe` on `PATH`
+  to mimic each PS helper's contract; asserts argument validation
+  (missing flags, empty token, missing config), the three-line
+  stdout contract on the happy path, and the listener-log capture
+  on a start-helper failure.
+- `Tests/ops/_run-playbook.bats` (modified again from step 1) - the
+  `NEEDS_GITHUB_RUNNERS=1` provisioner stub now returns a one-VM
+  array (kept even though only `_stage-host-fileserver.sh` consumes
+  the IP, because the inventory build still needs it), and a stub
+  for `_stage-host-fileserver.sh` returns canned
+  `RUNNER_VERSION` / `BASE_URL` / `PID`. New cases assert: the
+  staging helper fires between the third vault read and the
+  extra-vars compose; `BASE_URL` + `runner_version` are threaded
+  into the extra-vars args; the stop helper is invoked with the
+  captured PID via the EXIT trap on clean exit; and a staging-
+  helper failure aborts the bridge before `ansible-playbook` runs.
 
 **Decision: runner-version resolution split between bridge and play**
 
@@ -339,18 +387,30 @@ be invoked standalone for molecule scenarios.
 
 **Tests (bats + Pester)**
 
-- `_resolve-runner-version.ps1`: mocked GitHub response with
-  `tag_name=v2.999.0` -> returns `2.999.0`. 401 -> throws with token
-  hint. Network error -> throws with retry hint.
-- `_ensure-runner-tarball.ps1`: cache hit -> no download, returns
-  existing path. Cache miss -> downloads, verifies file size > 0,
-  returns path. Re-run with same version -> cache hit.
-- `_start-host-file-server.ps1`: stubs `HttpListener` to a free port;
-  asserts `BASE_URL=<url>` + `PID=<pid>` printed; a `curl`-equivalent
-  PS web request against the URL returns the staged file bytes.
-- `_stop-host-file-server.ps1`: live process -> killed and exits 0;
-  already-dead pid -> exits 0 with a notice; no pid arg -> exits 2.
-- Bridge bats: orchestration only — see modification above.
+- `Resolve-RunnerVersion`: mocked `Invoke-RestMethod` with
+  `tag_name=v2.999.0` -> returns `2.999.0`. The Bearer header
+  carries the token. The Uri targets
+  `repos/actions/runner/releases/latest`. A 401 response -> throws
+  with a token-shaped hint. A response with no `tag_name` -> throws
+  with a `tag_name`-shaped hint.
+- `Invoke-RunnerTarballEnsure`: cache hit -> no download, returns
+  existing path. Cache miss -> downloads to the version-named path,
+  verifies the file exists with non-zero size. Stale
+  `actions-runner-*.tar.gz` siblings are purged before the
+  download. An empty downloaded file -> throws.
+- `Start-HostFileServer`: with `-HostIp 127.0.0.1` and a random
+  high port, exposes `BaseUrl`, records the `StagingDir` on the
+  handle, serves an arbitrary file in the staging dir by its
+  basename (HTTP 200 with the bytes), serves a second file from
+  the same dir without restarting (the multi-file contract), and
+  returns 404 for a request whose basename is not present.
+  Parameter validation: missing both `-HostIp` and `-TargetVmIp`
+  throws; non-existent `-StagingDir` throws; a `-StagingDir`
+  pointing at a regular file (instead of a directory) throws.
+- `Stop-HostFileServer`: a live powershell child process is
+  force-stopped and `WaitForExit` returns synchronously; a pid no
+  longer running is a no-op (no throw).
+- Bridge bats: orchestration only - see modification above.
 
 **Diagram**
 

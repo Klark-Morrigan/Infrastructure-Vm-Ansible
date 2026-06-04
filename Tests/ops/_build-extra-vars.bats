@@ -63,39 +63,51 @@ teardown() {
     [ "$(printf '%s' "${output}" | jq -r '.vm_users_config[0].vmName')" = "a" ]
 }
 
-@test "all four flags -> merged output has all four keys" {
+@test "all runners flags supplied -> merged output has all six keys" {
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --users-config "${USERS}" \
         --runners-config "${RUNNERS}" \
-        --github-token "ghp_example"
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
     [ "${status}" -eq 0 ]
-    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config,vm_users_config" ]
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,host_file_server_base_url,runner_version,vm_provisioner_config,vm_users_config" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_runners_config[0].runnerName')" = "r1" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
+    [ "$(printf '%s' "${output}" | jq -r '.host_file_server_base_url')" = "http://10.10.0.1:8745" ]
+    [ "$(printf '%s' "${output}" | jq -r '.runner_version')" = "2.999.0" ]
 }
 
-@test "--runners-config without --github-token is rejected before dispatch" {
-    # Pairing rule lives in the orchestrator, not the runners helper:
-    # the helper would also reject this, but failing here lets the
-    # error name the orchestrator-level contract violation.
+@test "partial runners flags are rejected before dispatch" {
+    # All four runners flags must arrive together; any subset is a
+    # contract violation the orchestrator surfaces before any helper
+    # runs, so the error names the dispatcher-level rule.
+    # --runners-config alone
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --users-config "${USERS}" \
         --runners-config "${RUNNERS}"
     [ "${status}" -eq 2 ]
-    [[ "${output}" == *"--runners-config requires --github-token"* ]]
-}
+    [[ "${output}" == *"must be supplied together"* ]]
 
-@test "--github-token without --runners-config is rejected before dispatch" {
-    # Symmetric pairing rule: a token alone would silently never
-    # reach a play, so refuse the call instead of dropping it.
+    # --github-token alone
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --users-config "${USERS}" \
         --github-token "ghp_example"
     [ "${status}" -eq 2 ]
-    [[ "${output}" == *"--github-token requires --runners-config"* ]]
+    [[ "${output}" == *"must be supplied together"* ]]
+
+    # Three of four (missing --runner-version)
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --users-config "${USERS}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"must be supplied together"* ]]
 }
 
 @test "helper failures surface to the orchestrator's exit code" {

@@ -80,8 +80,23 @@ fi
 # ---------------------------------------------------------------------------
 tmpdir="$(mktemp -d -t vm-ansible.XXXXXX)"
 chmod 700 "${tmpdir}"
-# shellcheck disable=SC2064  # expand $tmpdir at trap-install time on purpose
-trap "rm -rf '${tmpdir}'" EXIT
+
+# Combined cleanup. The host file server (when GitHubRunners opt-in
+# is active) is a long-lived pwsh process the bridge starts before
+# ansible-playbook runs; killing it on every exit path - including
+# signal-induced - is the trap's job, and bundling that with the
+# tmpdir rm keeps a single EXIT handler for the orchestrator.
+host_fs_pid=""
+cleanup() {
+    if [[ -n "${host_fs_pid}" ]]; then
+        pwsh.exe -NoProfile -File "${script_dir}/_stop-host-file-server.ps1" \
+            -ProcessId "${host_fs_pid}" >/dev/null 2>&1 || true
+        host_fs_pid=""
+    fi
+    rm -rf "${tmpdir}"
+}
+# shellcheck disable=SC2064  # expand $tmpdir/$script_dir at trap-install time on purpose
+trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
 # 3. Venv activation. Step 2's bootstrap creates .venv with the pinned
@@ -124,6 +139,8 @@ chmod 600 "${users_file}"
 # prompts - the operator edge (ops/register-runners.sh) owns that.
 runners_file=""
 github_token=""
+host_base_url=""
+runner_version=""
 if [[ "${needs_github_runners}" -eq 1 ]]; then
     runners_file="${tmpdir}/runners.json"
     "${script_dir}/_read-vault-config.sh" "${GITHUB_RUNNERS_VAULT}" "${GITHUB_RUNNERS_SECRET}" \
@@ -147,6 +164,34 @@ hosts_file="${tmpdir}/hosts.json"
 chmod 600 "${hosts_file}"
 
 # ---------------------------------------------------------------------------
+# 5b. Host file server staging (GitHubRunners opt-in only).
+#
+#     The whole resolve-tarball-then-listener pipeline lives in its
+#     own helper so this orchestrator stays a thin sequence of
+#     one-line dispatch steps. The helper prints three KEY=value
+#     lines on stdout - RUNNER_VERSION, BASE_URL, PID - which we
+#     parse into locals for use below (extra-vars compose, EXIT
+#     trap). The listener it backgrounds lives until the EXIT trap
+#     hands its pid to _stop-host-file-server.ps1.
+# ---------------------------------------------------------------------------
+if [[ "${needs_github_runners}" -eq 1 ]]; then
+    listener_log="${tmpdir}/fileserver.out"
+    stage_out="$("${script_dir}/_stage-host-fileserver.sh" \
+        --provisioner-config "${provisioner_file}" \
+        --github-token       "${github_token}" \
+        --listener-log       "${listener_log}")"
+
+    runner_version="$(grep '^RUNNER_VERSION=' <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
+    host_base_url="$(grep  '^BASE_URL='        <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
+    host_fs_pid="$(grep    '^PID='             <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
+
+    if [[ -z "${runner_version}" || -z "${host_base_url}" || -z "${host_fs_pid}" ]]; then
+        echo "_run-playbook.sh: staging helper did not return RUNNER_VERSION/BASE_URL/PID" >&2
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Extra-vars composition. Pure transform; takes file paths so the
 #    payloads never appear on argv where `ps` could see them.
 # ---------------------------------------------------------------------------
@@ -159,6 +204,8 @@ if [[ -n "${runners_file}" ]]; then
     extra_vars_args+=(
         --runners-config "${runners_file}"
         --github-token   "${github_token}"
+        --host-base-url  "${host_base_url}"
+        --runner-version "${runner_version}"
     )
 fi
 

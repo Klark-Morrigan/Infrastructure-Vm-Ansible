@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # Tests for ops/_build-extra-vars-runners.sh - per-domain helper
-# emitting github_runners_config + github_token. Owns the token-non-
-# empty fast-fail and the shell-special-chars-verbatim contract since
-# token hygiene is part of this domain.
+# emitting github_runners_config + github_token +
+# host_file_server_base_url + runner_version. Owns the token-non-empty
+# fast-fail and the shell-special-chars-verbatim contract since token
+# hygiene is part of this domain.
 # Run with: bats Tests/ops/_build-extra-vars-runners.bats
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars-runners.sh"
@@ -17,7 +18,7 @@ teardown() {
     rm -rf "${TEST_TMP}"
 }
 
-@test "fails with usage when either required flag is missing" {
+@test "fails with usage when any required flag is missing" {
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"usage:"* ]]
@@ -27,6 +28,14 @@ teardown() {
     [[ "${output}" == *"usage:"* ]]
 
     run "${BASH_BIN}" "${SCRIPT}" --github-token "ghp_example"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"usage:"* ]]
+
+    # Missing --runner-version - the helper rejects any partial set.
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"usage:"* ]]
 }
@@ -43,16 +52,44 @@ teardown() {
     printf '%s' '[]' > "${RUNNERS}"
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${RUNNERS}" \
-        --github-token ""
+        --github-token "" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"github-token"* ]]
+    [[ "${output}" == *"non-empty"* ]]
+}
+
+@test "fails fast when --host-base-url is the empty string" {
+    printf '%s' '[]' > "${RUNNERS}"
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example" \
+        --host-base-url "" \
+        --runner-version "2.999.0"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"host-base-url"* ]]
+    [[ "${output}" == *"non-empty"* ]]
+}
+
+@test "fails fast when --runner-version is the empty string" {
+    printf '%s' '[]' > "${RUNNERS}"
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version ""
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"runner-version"* ]]
     [[ "${output}" == *"non-empty"* ]]
 }
 
 @test "fails with file path when the runners config is missing" {
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${TEST_TMP}/does-not-exist.json" \
-        --github-token "ghp_example"
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"runners-config"* ]]
     [[ "${output}" == *"not found"* ]]
@@ -62,22 +99,28 @@ teardown() {
     printf '%s' 'not-json' > "${RUNNERS}"
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${RUNNERS}" \
-        --github-token "ghp_example"
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"runners-config"* ]]
     [[ "${output}" == *"not valid JSON"* ]]
 }
 
-@test "valid inputs emit a two-key object with the runners-domain keys" {
+@test "valid inputs emit a four-key object with the runners-domain keys" {
     printf '%s' '[{"vmName":"a","runnerName":"r1"}]' > "${RUNNERS}"
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${RUNNERS}" \
-        --github-token "ghp_example"
+        --github-token "ghp_example" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
     [ "${status}" -eq 0 ]
 
-    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token" ]
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,host_file_server_base_url,runner_version" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_runners_config[0].runnerName')" = "r1" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
+    [ "$(printf '%s' "${output}" | jq -r '.host_file_server_base_url')" = "http://10.10.0.1:8745" ]
+    [ "$(printf '%s' "${output}" | jq -r '.runner_version')" = "2.999.0" ]
 }
 
 @test "github-token with shell-special characters is emitted verbatim" {
@@ -87,7 +130,9 @@ teardown() {
     weird_token='ghp_$VAR `cmd` "quoted" '"'"'apostrophe'"'"' & |'
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${RUNNERS}" \
-        --github-token "${weird_token}"
+        --github-token "${weird_token}" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
     [ "${status}" -eq 0 ]
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "${weird_token}" ]
 }

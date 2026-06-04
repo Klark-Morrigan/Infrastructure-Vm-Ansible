@@ -297,16 +297,19 @@ its own external boundary:
   helper per domain present, then merges their JSON fragments via
   `jq -s add`. Required flags: `--provisioner-config <file>` and
   `--users-config <file>`. Optional paired flags (register-runners
-  flow): `--runners-config <file>` + `--github-token <value>` (the
-  orchestrator rejects either flag alone). The per-domain helpers
-  below own their own validation and bats coverage:
+  flow): `--runners-config <file>`, `--github-token <value>`,
+  `--host-base-url <url>`, `--runner-version <ver>` — all four
+  arrive together or none, the orchestrator rejects any partial
+  set. The per-domain helpers below own their own validation and
+  bats coverage:
   - [`ops/_build-extra-vars-inventory.sh`](ops/_build-extra-vars-inventory.sh)
     — emits `vm_provisioner_config`. Always-on; the inventory source
     every payload domain shares.
   - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
     — emits `vm_users_config` for the groups / users / sudoers roles.
   - [`ops/_build-extra-vars-runners.sh`](ops/_build-extra-vars-runners.sh)
-    — emits `github_runners_config` + `github_token` for the runner
+    — emits `github_runners_config`, `github_token`,
+    `host_file_server_base_url`, and `runner_version` for the runner
     roles. Owns the token-non-empty fast-fail and threads the value
     through `jq --arg` so shell-special characters land verbatim.
   Config inputs are file paths (not values) so secrets stay out of
@@ -325,19 +328,52 @@ its own external boundary:
   `VmUsers`) and adds a third (`GitHubRunners`) when the caller
   exports `NEEDS_GITHUB_RUNNERS=1` plus `GH_TOKEN=...` - the
   opt-in gate keeps the create-users / remove-users entry points
-  free of an unused `pwsh.exe` round-trip. `GH_TOKEN` is cleared
-  from the bridge environment before `ansible-playbook` runs; the
-  downstream play receives the token via the chmod-600 extra-vars
-  file only. Any args after the playbook path are forwarded
-  verbatim to `ansible-playbook` (so `--tags`, `--limit`,
+  free of an unused `pwsh.exe` round-trip. When opted in, the
+  bridge delegates the Windows-side staging to
+  `_stage-host-fileserver.sh` and (via the EXIT trap) stops the
+  listener it backgrounded on every exit path. `GH_TOKEN` is
+  cleared from the bridge environment before `ansible-playbook`
+  runs; the downstream play receives the token via the chmod-600
+  extra-vars file only. Any args after the playbook path are
+  forwarded verbatim to `ansible-playbook` (so `--tags`, `--limit`,
   `--check`, `-v`, etc. all work without changes to the bridge).
+- [`ops/_stage-host-fileserver.sh`](ops/_stage-host-fileserver.sh)
+  - GitHubRunners opt-in branch. Drives the three pwsh.exe
+  round-trips (resolve version, ensure tarball, start listener),
+  picks the first VM's `ipAddress` from the provisioner config for
+  the bind, polls the backgrounded listener for `BASE_URL=` +
+  `PID=`, and emits its own three-line contract on stdout
+  (`RUNNER_VERSION=`, `BASE_URL=`, `PID=`) for the bridge to parse.
+- [`ops/_resolve-runner-version.ps1`](ops/_resolve-runner-version.ps1)
+  - GitHub Releases API client. GETs
+  `repos/actions/runner/releases/latest` with the supplied token and
+  prints the version string with the leading `v` stripped. Mirrors
+  `Resolve-RunnerVersion` in Infrastructure-GitHubRunners so both
+  flows resolve identically.
+- [`ops/_ensure-runner-tarball.ps1`](ops/_ensure-runner-tarball.ps1)
+  - tarball cache helper. Returns the path to
+  `$LOCALAPPDATA\Temp\runner-cache\actions-runner-linux-x64-<ver>.tar.gz`,
+  downloading from `github.com` on cache miss and purging stale
+  versions in the same cache directory. Mirrors
+  `Invoke-RunnerTarballEnsure` in Infrastructure.GitHub.
+- [`ops/_start-host-file-server.ps1`](ops/_start-host-file-server.ps1)
+  - long-lived listener. Binds an `HttpListener` to the host adapter
+  whose IP shares a /24 with the target VM (same algorithm as
+  `Start-VmFileServer` in Infrastructure.HyperV), serves any file in
+  the supplied `-StagingDir` by its basename, prints `BASE_URL=<url>`
+  then `PID=<pid>` on stdout, and blocks until killed. Multi-file
+  serving leaves room for a future toolchain-delivery feature to
+  stage extra payloads in the same dir.
+- [`ops/_stop-host-file-server.ps1`](ops/_stop-host-file-server.ps1)
+  - idempotent stop helper. Force-stops the listener process by PID
+  and waits for exit; a missing PID is treated as already-stopped.
 
 External contract (consumed by feature playbooks): the extra-vars
 document always has the two top-level keys `vm_provisioner_config`
-and `vm_users_config`, and additionally `github_runners_config` +
-`github_token` when the caller opts into the GitHubRunners vault
-read. The inventory has one group `vm_provisioner_hosts` keyed by
-`vmName`.
+and `vm_users_config`, and additionally `github_runners_config`,
+`github_token`, `host_file_server_base_url`, and `runner_version`
+when the caller opts into the GitHubRunners vault read. The
+inventory has one group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
@@ -345,12 +381,17 @@ installs it via `sudo apt-get` when absent and falls back to the
 `sudo apt-get install -y jq` hint if the install itself cannot
 proceed.
 
-Each helper has its own bats suite under
+Each bash helper has its own bats suite under
 [`Tests/ops/`](Tests/ops/) covering its boundary in isolation;
-`_run-playbook.bats` stubs all four boundaries (`pwsh.exe`,
-`ansible-playbook`, plus the three sibling helpers) and asserts
-orchestration only. The end-to-end smoke against a real VM is
-captured in step 12 of the feature plan.
+`_run-playbook.bats` stubs `pwsh.exe`, `ansible-playbook`, and the
+sibling bash helpers, then asserts orchestration only. The four
+PowerShell helpers are covered by
+[`Tests/ops/Start-HostFileServer.Tests.ps1`](Tests/ops/Start-HostFileServer.Tests.ps1)
+- Pester rather than bats because each helper is single-file
+PowerShell calling `Invoke-RestMethod`, `HttpListener`, or
+`Get-NetIPAddress`; mocking those from bats would require a
+`pwsh.exe` round-trip per assertion. The end-to-end smoke against a
+real VM is captured in the feature plan.
 
 ## Tests and lint
 
@@ -427,7 +468,10 @@ each role lands; the create-users playbook orders them
 
 ## Feature folders
 
-- [Current feature: 03 - groups, users, sudoers removal](docs/dev/implementation/03-groups-users-sudoers-removal/)
+- [Current feature: 08 - GitHub runners registration](docs/dev/implementation/08-github-runners-registration/)
+  - [Problem](docs/dev/implementation/08-github-runners-registration/problem.md)
+  - [Plan](docs/dev/implementation/08-github-runners-registration/plan.md)
+- [03 - groups, users, sudoers removal](docs/dev/implementation/03-groups-users-sudoers-removal/)
   - [Problem](docs/dev/implementation/03-groups-users-sudoers-removal/problem.md)
   - [Plan](docs/dev/implementation/03-groups-users-sudoers-removal/plan.md)
 - [02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)
