@@ -125,17 +125,25 @@ untouched by the migration; both create and remove paths exist twice (in
 Vm-Users and in this repo) and operators can validate the new ones
 against the old ones.
 
-1. A short warning banner and a link to `Infrastructure-VM-Ansible` are
-   prepended to the top of `Infrastructure-Vm-Users/README.md`. Nothing
-   else in the file is rewritten; the existing README content stays so
-   archaeology against the archived repo is straightforward. The
-   PowerShell scripts are left in place, not deleted — they remain
-   readable in the archived repo as historical reference.
+Vm-Users is **not** retired by this step. The Infrastructure-E2E
+`custom-powershell` flow (locked in feature 02 / step 13 and extended
+to the remove side in feature 03 / step 5) keeps invoking Vm-Users'
+`create-users.ps1` and `remove-users.ps1` as a permanent first-class
+non-primary implementation. The banner this step adds calls out that
+Vm-Users is no longer the operator default, not that it is dead code.
 
-After this, the only repos in the migration set still active are
-`Infrastructure-VM-Ansible` (new home), `Infrastructure-Vm-Provisioner`
-(unchanged so far), and `Infrastructure-GitHubRunners` (a later
-migration target).
+1. A short banner and a link to `Infrastructure-VM-Ansible` are
+   prepended to the top of `Infrastructure-Vm-Users/README.md`,
+   noting that the repo is no longer the operator default and that
+   its scripts remain callable via the E2E `custom-powershell`
+   flow. Nothing else in the file is rewritten; the PowerShell
+   scripts are left in place and stay runtime-live for E2E.
+
+After this, the operator's primary entry points are in
+`Infrastructure-VM-Ansible` (new home). `Infrastructure-Vm-Provisioner`
+is unchanged so far; `Infrastructure-GitHubRunners` is a later migration
+target. Vm-Users itself is now operator-secondary but still runtime-live
+through the E2E `custom-powershell` flow.
 
 ---
 
