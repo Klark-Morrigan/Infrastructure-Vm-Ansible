@@ -1,0 +1,56 @@
+---
+# Operator-facing entry into the remove-users flow. Counterpart to
+# create-users.yml: the same three roles, invoked in reverse order via
+# `tasks_from: remove` so each role runs its sibling remove.yml instead
+# of main.yml. Why three import_role calls instead of `roles:` entries:
+# `roles:` always runs main.yml and offers no per-role tasks_from
+# selector; import_role is the stock pattern for picking a non-default
+# tasks file.
+#
+# Order is sudoers -> users -> groups (mirror of the create order):
+# - sudoers first: drop-ins reference users, so they go before the
+#   accounts they grant rights to.
+# - users next: userdel clears each account's implicit primary group,
+#   which lets the groups pass treat the group as empty (and therefore
+#   removable) instead of skipping it with a "still has members" warn.
+# - groups last: the only remove path with non-stock glue
+#   (non-empty-group skip), and it benefits from running after the
+#   users pass has cleared implicit primary-group membership.
+#
+# Same posture as create-users.yml so the two flows behave identically
+# against a partially offline fleet:
+# - gather_facts: true keeps ansible.builtin.user happy on remove too
+#   (it still consults facts for shell / home derivation before deletion
+#   on some platforms), and the per-host SSH-round-trip cost is small.
+# - any_errors_fatal: false - one transiently offline VM should not
+#   strand the rest of the inventory. Per-host failures still surface
+#   in the recap; the play just does not abort the others.
+#
+# Tags mirror the role names so operators can scope a partial remove
+# (`--tags sudoers`, `--tags users`, `--tags groups`) without having to
+# learn the playbook layout. The roles do not coordinate across tag
+# scopes - skipping `users` while running `groups` will hit the
+# non-empty-group skip path, which is the intended safety net.
+
+- name: Remove OS sudoers, users, and groups on provisioned VMs
+  hosts: vm_provisioner_hosts
+  gather_facts: true
+  any_errors_fatal: false
+  tasks:
+    - name: Remove sudoers drop-ins
+      ansible.builtin.import_role:
+        name: sudoers
+        tasks_from: remove
+      tags: sudoers
+
+    - name: Remove declared users
+      ansible.builtin.import_role:
+        name: users
+        tasks_from: remove
+      tags: users
+
+    - name: Remove declared empty groups
+      ansible.builtin.import_role:
+        name: groups
+        tasks_from: remove
+      tags: groups
