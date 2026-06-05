@@ -1,0 +1,30 @@
+---
+# Per-host systemd unit probe shared by both directions.
+#
+# `systemctl list-unit-files` accepts glob patterns and prints one line
+# per match plus a trailing summary; --no-legend strips the summary so
+# awk + head can pull the unit name cleanly when present and yield empty
+# stdout when absent. The role's reconcile decisions (install branch in
+# the register direction, stop/uninstall guard in the remove direction)
+# both key off the same stdout shape, so the probe lives here and is
+# included from both tasks/main.yml and tasks/remove.yml to avoid drift.
+#
+# The glob filters by the runnerName suffix only - parsing owner/repo
+# out of githubUrl to pin the prefix would duplicate work the next
+# probe and the systemd / svc.sh tasks already no-op against.
+#
+# shell (not command) because the pipe to awk + head is part of the
+# contract.
+- name: Probe for the systemd unit file (per runner)
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    systemctl list-unit-files
+      --type=service --no-pager --no-legend
+      'actions.runner.*{{ item.runnerName }}.service'
+    | awk '{print $1}' | head -n1
+  loop: "{{ vm_runner_entries }}"
+  loop_control:
+    label: "{{ item.runnerName }}"
+  register: runner_service_unit_probes
+  changed_when: false
+  # noqa command-instead-of-shell - pipe to awk + head is the contract

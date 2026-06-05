@@ -1,0 +1,64 @@
+---
+# Converge - apply runner_service with `tasks_from: remove` against
+# four declared entries:
+#
+#   runner-active   on `instance`    - unit present + active: stop
+#                                       transitions inactive (changed),
+#                                       uninstall removes the unit
+#                                       file.
+#   runner-stopped  on `instance`    - unit present + inactive: stop
+#                                       is a no-op, uninstall removes
+#                                       the unit file.
+#   runner-absent   on `instance`    - no unit installed: probe stdout
+#                                       empty, both branches skip on
+#                                       the `length > 0` guard.
+#   runner-leak     on `other-host`  - selector negative: the
+#                                       runner_entry_resolve filter
+#                                       must drop this entry on
+#                                       `instance` so the role never
+#                                       touches it.
+#
+# `include_role` (not `import_role`) for the same reason the default
+# scenario uses it: `import_role` resolves the role at parse-time
+# against the syntax-check inventory's roles search path, which does
+# not honour the molecule.yml `roles_path` override. `include_role`
+# defers resolution to runtime, when the override is in effect. The
+# deregister playbook itself uses `import_role` (step 5) because it
+# runs against the real repo layout where `roles/` is on the standard
+# path; the scenario's job is to exercise the role's remove direction,
+# not the playbook's import shape.
+
+- name: Converge - apply runner_service role, remove direction
+  hosts: all
+  gather_facts: false
+  vars:
+    github_runners_config:
+      - vmName: instance
+        runnerName: runner-active
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: runner-stopped
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: runner-absent
+        runnerUsername: u-runner-other
+        deployUsername: u-deploy-other
+        githubUrl: https://github.com/example/repo
+        runnerLabels: [self-hosted, ubuntu]
+      - vmName: other-host
+        runnerName: runner-leak
+        runnerUsername: u-leak
+        deployUsername: u-deploy-leak
+        githubUrl: https://github.com/example/repo-leak
+        runnerLabels: [self-hosted]
+  tasks:
+    - name: Include the role under test (remove direction)
+      ansible.builtin.include_role:
+        name: runner_service
+        tasks_from: remove

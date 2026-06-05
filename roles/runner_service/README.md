@@ -13,6 +13,7 @@ GitHub.
 
 - [Var contract](#var-contract)
 - [Register direction](#register-direction)
+- [Remove direction](#remove-direction)
 - [Idempotence guarantees](#idempotence-guarantees)
 - [Tests](#tests)
 - [Rationale](#rationale)
@@ -80,26 +81,84 @@ even when the unit went active then immediately crashed (the module
 observes the start transition only), so the explicit re-check is the
 contract that catches a service that fails its first work cycle.
 
+## Remove direction
+
+Selected by [`playbooks/deregister-runners.yml`](../../playbooks/deregister-runners.yml)
+via `import_role { name: runner_service, tasks_from: remove }`. Runs
+first in the remove order (before `runner_registration` and
+`runner_binary`) because a running runner process can hold
+`.credentials` open and race `config.sh remove`, so the unit must be
+quiesced before the next role touches anything.
+
+Inputs are the same `vm_runner_entries` slice the register direction
+reads. Per entry, the role drives three phases:
+
+1. **Unit probe.** Same `tasks/_probe-unit.yml` the register direction
+   uses. An empty `stdout` for an entry means no unit is installed on
+   this host (already torn down, or never installed) and both branches
+   below skip that entry. The shared probe file is the single source of
+   truth so the two directions cannot drift apart on glob / parser
+   shape.
+2. **Stop + disable.** `ansible.builtin.systemd` with `state: stopped`,
+   `enabled: false`, `become: true`. Stock module idempotence makes
+   already-stopped / already-disabled a silent no-op; only the
+   active -> inactive transition reports `changed: true`.
+3. **`svc.sh uninstall`.** `./svc.sh uninstall` with
+   `chdir: /opt/runners/<runnerName>` and `become: true`. svc.sh resolves
+   the runner root via `$(pwd)`, so the chdir is the contract (same as
+   the install branch in the register direction). Removes the unit file
+   under `/etc/systemd/system` and runs `daemon-reload`.
+
+Idempotence: a second pass after a successful remove finds the probe
+stdout empty for every entry and skips both branches with `changed: 0`.
+A partial state (unit absent but `/opt/runners/<name>/` still present)
+is also a silent no-op - the next role
+([`runner_binary`](../runner_binary/README.md)'s remove direction) is
+responsible for the on-disk extract.
+
+Local marker files (`.runner`, `.credentials`) are not touched on this
+path; they live inside `/opt/runners/<name>/` and disappear when
+`runner_binary`'s remove direction deletes the directory.
+
 ## Idempotence guarantees
 
-- Re-running with the same `vm_runner_entries` and a healthy fleet
-  (every unit installed, enabled, started, and active) reports
-  `changed: 0` across the role - the probe and re-probe tasks are
-  `changed_when: false`, the install branch's `when` skips because the
-  probe stdout is non-empty, the systemd task reports `ok` for
-  already-enabled+started units, and the is-active capture is also
+- **Register direction.** Re-running with the same `vm_runner_entries`
+  and a healthy fleet (every unit installed, enabled, started, and
+  active) reports `changed: 0` across the role - the probe and re-probe
+  includes are `changed_when: false`, the install branch's `when` skips
+  because the probe stdout is non-empty, the systemd task reports `ok`
+  for already-enabled+started units, and the is-active capture is also
   `changed_when: false`.
-- The role never stops, disables, or removes a unit. Tearing a
-  registered runner down is the deregister flow's job (feature 09's
-  `remove` direction on this role).
-- A new entry added to `vm_runner_entries` between runs reconciles only
-  the new entry; existing healthy entries skip the install branch and
-  the systemd task reports `ok`.
+- **Register direction.** The register direction never stops, disables,
+  or removes a unit. Tearing a registered runner down is the remove
+  direction's job (below).
+- **Register direction.** A new entry added to `vm_runner_entries`
+  between runs reconciles only the new entry; existing healthy entries
+  skip the install branch and the systemd task reports `ok`.
+- **Remove direction.** Re-running after a successful remove reports
+  `changed: 0` - the probe stdout is empty for every entry, the
+  stop+disable branch and the uninstall branch both skip on the
+  `length > 0` guard.
+- **Remove direction.** A removed entry left in `vm_runner_entries`
+  (e.g. an operator removed half the fleet) is a no-op for every
+  already-removed entry; only entries whose unit is still installed
+  produce work.
 
 ## Tests
 
+Two molecule scenarios, one per direction. Both run inside a
+systemd-enabled Ubuntu 24.04 container (privileged + cgroup mounts,
+`/usr/sbin/init` as PID 1) so the `systemd` module, `systemctl
+list-unit-files`, and `systemctl is-active` behave as they would on a
+real VM. A stub `svc.sh` in each runner directory implements `install`
+(writes a `Type=oneshot RemainAfterExit=yes` unit and
+`systemctl enable`s it) and `uninstall` (disables the unit and removes
+its file under `/etc/systemd/system`) - the active-without-a-long-lived
+-process unit is all the role's reconcile and teardown contracts
+observe.
+
 [`Tests/molecule/runner_service/default/`](../../Tests/molecule/runner_service/default/)
-exercises the role inside a systemd-enabled Ubuntu 24.04 container:
+exercises the register direction:
 
 - **Install branch.** Entry with `/opt/runners/<name>/` pre-seeded but
   no installed unit - `svc.sh install` runs, the unit becomes active,
@@ -118,13 +177,23 @@ exercises the role inside a systemd-enabled Ubuntu 24.04 container:
   scenario; the runner_service scenario also asserts no
   `actions.runner.*leak*.service` exists after converge).
 
-The container runs `systemd` as PID 1 (the prepare step installs the
-package if the image flavour ships without it) so the `systemd`
-module, `systemctl list-unit-files`, and `systemctl is-active` all
-behave as they would on a real VM. A stub `svc.sh` in each runner
-directory writes a `Type=oneshot RemainAfterExit=yes` unit with
-`ExecStart=/bin/true` - active without a long-lived process, which is
-all the role's reconcile contract observes.
+[`Tests/molecule/runner_service/remove/`](../../Tests/molecule/runner_service/remove/)
+exercises the remove direction. The prepare step runs the role's
+register direction against a pre-seeded `/opt/runners/<name>/` (stub
+svc.sh, same shape as the default scenario) to land enabled+started
+units; converge then invokes the role with `tasks_from: remove`:
+
+- **Active entry.** Unit present + active - stop + disable + uninstall
+  all run, the unit file is absent under `/etc/systemd/system`, and
+  `systemctl list-unit-files` returns no match for the runner name.
+- **Inactive entry.** Unit present + inactive - stop is a no-op,
+  uninstall runs, final state is no matching unit file.
+- **Absent entry.** Probe stdout empty - both branches skip cleanly.
+- **Multi-entry.** Two entries on the same host, both with units
+  present - two stop tasks, two uninstall tasks, both end with no
+  matching unit file.
+- **Re-converge.** A second pass after a successful remove reports
+  `changed: 0` across every task.
 
 ## Rationale
 
@@ -142,6 +211,14 @@ sees that the systemd task has the unit name regardless of whether
 the install branch fired, and the re-probe cost is trivial against
 the install cost. Mirrors the same "stat then act" idiom
 `runner_binary` uses for its cache + extract guards.
+
+The probe body itself lives in
+[`tasks/_probe-unit.yml`](tasks/_probe-unit.yml) and is `include_tasks`
+'d from both directions and from both call sites in the register
+direction. One file is the single source of truth for the glob, the
+parser, and the `runner_service_unit_probes` register name; both
+directions stay locked together on systemctl output shape without
+code duplication.
 
 Splitting the is-active capture and the assert (rather than using
 `failed_when: stdout != 'active'` on a single task) is what lets the
