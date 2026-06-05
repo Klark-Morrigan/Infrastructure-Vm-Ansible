@@ -7,9 +7,9 @@
 - [What Is Changing](#what-is-changing)
   - [Inputs (consumed, not redefined)](#inputs-consumed-not-redefined)
   - [Bridge extension: opt out of the host file server](#bridge-extension-opt-out-of-the-host-file-server)
-  - [Role: runner_service_down](#role-runner_service_down)
-  - [Role: runner_registration_down](#role-runner_registration_down)
-  - [Role: runner_binary_down](#role-runner_binary_down)
+  - [Role: runner_service (remove direction)](#role-runner_service-remove-direction)
+  - [Role: runner_registration (remove direction)](#role-runner_registration-remove-direction)
+  - [Role: runner_binary (remove direction)](#role-runner_binary-remove-direction)
   - [Controller-side force path: unreachable VMs](#controller-side-force-path-unreachable-vms)
   - [Entry point: deregister-runners playbook](#entry-point-deregister-runners-playbook)
   - [Operator entry point in this repo](#operator-entry-point-in-this-repo)
@@ -70,7 +70,7 @@ Survey of off-the-shelf candidates:
 |---|---|---|---|
 | [monolithprojects.github_actions_runner](https://galaxy.ansible.com/ui/standalone/roles/monolithprojects/github_actions_runner/) | OSS, Apache-2.0, Galaxy | active | Exposes `state: absent` — `config.sh remove`, service uninstall, directory delete. Single runner-user model — same constraint that ruled it out in feature 08. No "host unreachable, remove from GitHub anyway" mode. |
 | [gantsign.github-actions-runner](https://galaxy.ansible.com/ui/standalone/roles/gantsign/github-actions-runner/) | OSS, MIT | quieter | Same `state: absent` story, same single-user limitation, same lack of force path. |
-| Symmetric custom port of feature 08 (`runner_service_down`, `runner_registration_down`, `runner_binary_down`) | n/a | n/a | Reuses the bridge from feature 08 (vault reads, `GH_TOKEN`, extra-vars). No new bridge surface beyond a flag to skip the host file server on the down path. |
+| Symmetric custom port of feature 08 (`tasks/remove.yml` on the existing three roles) | n/a | n/a | Reuses the bridge from feature 08 (vault reads, `GH_TOKEN`, extra-vars). No new bridge surface beyond a flag to skip the host file server on the down path. Follows the per-role `tasks/main.yml` + `tasks/remove.yml` split features 02 / 03 established for `groups` / `users` / `sudoers`. |
 
 Three contracts already rule out the Galaxy roles, two inherited from
 feature 08 and one specific to this feature:
@@ -88,10 +88,16 @@ feature 08 and one specific to this feature:
    from unreachable-without-force VMs and surfaces them as a single
    non-zero exit at the end of the run. Galaxy roles fail-fast per host.
 
-**Direction chosen: custom port, symmetric to feature 08.** Three
-new "down" roles whose names mirror the "up" roles, a new
-`deregister-runners.yml` playbook, an `ops/deregister-runners.sh` wrapper
-matching the register entry point with a `--force` flag. The bridge from
+**Direction chosen: custom port, symmetric to feature 08.** Each of the
+three roles from feature 08 (`runner_binary`, `runner_registration`,
+`runner_service`) grows a sibling `tasks/remove.yml`; a new
+`deregister-runners.yml` playbook imports each with
+`tasks_from: remove` in the reversed order; a new `ops/deregister-runners.sh`
+wrapper matches the register entry point with a `--force` flag. Per-role
+split rather than a `state` parameter switch inside `tasks/main.yml` for
+the same reasons feature 03 already documented: each direction has its
+own glue and its own test surface, and `import_role { name, tasks_from }`
+is a stock Ansible pattern with no custom dispatch. The bridge from
 feature 08 is reused; the only bridge extension is a `NEEDS_HOST_FILE_SERVER`
 gate (defaults to `1` for register, `0` for deregister) so the deregister
 entry point does not spawn the HttpListener for nothing.
@@ -133,38 +139,39 @@ absent).
 | Vault reads | Unchanged — `NEEDS_GITHUB_RUNNERS=1` still triggers the third vault read for the GitHubRunners config. |
 | Failure surface | Unchanged — same exit-code propagation as feature 08. |
 
-### Role: runner_service_down
+### Role: runner_service (remove direction)
 
-Reconciles the systemd unit toward absent. Maps 1:1 to
-`Remove-RunnerService` today (stop-if-active, then svc.sh uninstall).
+`roles/runner_service/tasks/remove.yml` reconciles the systemd unit
+toward absent. Maps 1:1 to `Remove-RunnerService` today (stop-if-active,
+then svc.sh uninstall).
 
 | Decision | Value |
 |----------|-------|
-| Unit name probe | `ansible.builtin.shell` for `systemctl list-unit-files 'actions.runner.*.service'` filtered by runner name. Same probe as feature 08's `runner_service` role, reused via include or duplicated in-role — decision deferred to the plan. |
+| Unit name probe | `ansible.builtin.shell` for `systemctl list-unit-files 'actions.runner.*.service'` filtered by runner name. Same probe as `tasks/main.yml` in this role — extracted into `tasks/_probe-unit.yml` and `include_tasks`'d from both directions so the probe lives in one place. |
 | Stop branch | Unit present and active -> `ansible.builtin.systemd` with `state: stopped`. Already-stopped is a no-op. |
 | Uninstall branch | Unit present (regardless of active state) -> `ansible.builtin.shell` for `cd '{{ runner_dir }}' && sudo ./svc.sh uninstall`. `become: true` (root), matching today. svc.sh resolves the runner root via `$(pwd)` so the working directory must be the runner dir. |
 | Absence | Both branches are guarded by the probe; an absent unit is a silent skip. Matches today's per-step independent guards. |
 | Order | Runs **first**. Stopping the unit before deregistration prevents `config.sh remove` from racing with an active runner process touching `.credentials`. |
 
-### Role: runner_registration_down
+### Role: runner_registration (remove direction)
 
-Reconciles the runner's GitHub registration toward absent and removes
-the local `.runner` / `.credentials` marker files. Maps 1:1 to
-`Invoke-RunnerConfigRemove` plus the GitHub-side check in
-`Invoke-VmDeregisterGroup` today.
+`roles/runner_registration/tasks/remove.yml` reconciles the runner's
+GitHub registration toward absent and removes the local `.runner` /
+`.credentials` marker files. Maps 1:1 to `Invoke-RunnerConfigRemove`
+plus the GitHub-side check in `Invoke-VmDeregisterGroup` today.
 
 | Decision | Value |
 |----------|-------|
 | Existence probe | `ansible.builtin.uri` (delegated to localhost) hits `GET /repos/{owner}/{repo}/actions/runners` and filters by `runnerName`. Token passed via `headers`, never in the URL. Result cached per-runner in a fact. |
 | Removal-token mint | When the existence probe finds the runner: `ansible.builtin.uri` (delegated to localhost) `POST /repos/{owner}/{repo}/actions/runners/remove-token`. `no_log: true`. Token never persisted, never logged. Removal token expires in 1 hour, fetched immediately before use to match today. |
 | Deregister | `ansible.builtin.command` for `'{{ runner_dir }}/config.sh' remove --token <removeToken> --unattended`, `become_user: {{ runner_user }}` (via the existing sudoers grant for the deploy user). `no_log: true`. |
-| Skip branch | Existence probe shows the runner is **not** on GitHub -> the `config.sh remove` task is skipped. Matches today's "only call `Invoke-RunnerConfigRemove` when confirmed registered" guard. The local marker files (`.runner`, `.credentials`) are still removed by the next role (`runner_binary_down`) when it deletes the runner directory — so we do not need a separate "remove local credentials but not GitHub" branch in this role. |
+| Skip branch | Existence probe shows the runner is **not** on GitHub -> the `config.sh remove` task is skipped. Matches today's "only call `Invoke-RunnerConfigRemove` when confirmed registered" guard. The local marker files (`.runner`, `.credentials`) are still removed by `runner_binary`'s remove direction when it deletes the runner directory — so we do not need a separate "remove local credentials but not GitHub" branch in this role. |
 | Order | Runs **second**, after the service is stopped. |
 
-### Role: runner_binary_down
+### Role: runner_binary (remove direction)
 
-Reconciles the runner directory toward absent. Maps 1:1 to
-`Remove-RunnerFiles` today.
+`roles/runner_binary/tasks/remove.yml` reconciles the runner directory
+toward absent. Maps 1:1 to `Remove-RunnerFiles` today.
 
 | Decision | Value |
 |----------|-------|
@@ -184,7 +191,7 @@ the per-VM plays:
 | Decision | Value |
 |----------|-------|
 | Reachability split | Existing `ansible.builtin.wait_for_connection` (or the same SSH probe feature 08 uses for the register path) marks hosts unreachable. Unreachable hosts are added to a `runners_unreachable` group via `add_host` during a pre-task. |
-| Existence probe | For every entry whose `vmName` falls in `runners_unreachable`, `ansible.builtin.uri` (delegated to localhost) checks `GET /repos/{owner}/{repo}/actions/runners`. Same module call as the `runner_registration_down` probe. |
+| Existence probe | For every entry whose `vmName` falls in `runners_unreachable`, `ansible.builtin.uri` (delegated to localhost) checks `GET /repos/{owner}/{repo}/actions/runners`. Same module call as `runner_registration`'s remove-direction probe. |
 | Force branch | When `runners_force_remove` (extra-var) is true and the entry is still registered -> `ansible.builtin.uri` `DELETE /repos/{owner}/{repo}/actions/runners/{id}`, 404 mapped to success via `status_code: [200, 204, 404]`. |
 | Report-and-fail branch | When `runners_force_remove` is false and the entry is still registered -> accumulate into a `runners_unreachable_errors` list via `set_fact`. After the per-VM plays complete, a final `assert` fails the play if the list is non-empty, printing each entry. Preserves today's "process reachable VMs first, then surface the unreachable-with-registration set as a single end-of-run failure". |
 | Default | `runners_force_remove` defaults to `false`. Operators opt in via `ops/deregister-runners.sh --force` (which the bridge translates to `runners_force_remove=true` in extra-vars). Mirrors today's `-Force` switch one-for-one. |
@@ -197,11 +204,18 @@ the per-VM plays:
 1. **`hosts: localhost`** — reachability split + force-branch fan-out
    (see above). Runs `run_once: true` semantics naturally since it is a
    single-host play.
-2. **`hosts: vm_provisioner_hosts`** with the three down roles in order:
-   `runner_service_down -> runner_registration_down -> runner_binary_down`.
-   Each role is tagged with its own name (`--tags runner_binary_down`
-   works the same as the existing `--tags users` etc.). `any_errors_fatal: false`
+2. **`hosts: vm_provisioner_hosts`** with the three roles imported via
+   `tasks_from: remove` in the reversed order:
+   `runner_service -> runner_registration -> runner_binary`. Each
+   import is tagged with the role name (`--tags runner_binary` works
+   the same as the existing `--tags users` etc.). `any_errors_fatal: false`
    matches the create/remove posture — one stuck VM does not strand the rest.
+   Meta-dep posture follows feature 03's resolution exactly: no
+   inter-role meta deps, because Ansible meta deps ignore the entry
+   role's `tasks_from` selector and would re-run the role's
+   `tasks/main.yml` (re-installing the very runner this play is
+   trying to remove). Role order lives in the playbook, not in
+   `meta/main.yml`.
 3. **`hosts: localhost`** — the end-of-run assert that surfaces the
    accumulated `runners_unreachable_errors` as a single non-zero exit.
 
@@ -287,10 +301,10 @@ graph TD
         XV["tmpfs extra-vars\n+ github_runners_config\n+ github_token\n+ runners_force_remove"]
     end
 
-    subgraph Roles ["Infrastructure-VM-Ansible roles (new, this feature)"]
-        RSD["roles/runner_service_down"]
-        RRD["roles/runner_registration_down"]
-        RBD["roles/runner_binary_down"]
+    subgraph Roles ["Infrastructure-VM-Ansible roles (extended, this feature)"]
+        RSD["roles/runner_service/tasks/remove.yml"]
+        RRD["roles/runner_registration/tasks/remove.yml"]
+        RBD["roles/runner_binary/tasks/remove.yml"]
         PB["playbooks/deregister-runners.yml"]
     end
 
