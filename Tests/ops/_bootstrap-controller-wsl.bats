@@ -28,7 +28,6 @@
 bats_require_minimum_version 1.5.0
 
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-SCRIPT="${REPO_ROOT}/ops/_bootstrap-controller-wsl.sh"
 
 setup() {
     # Capture bash before scrubbing PATH - some bats images (Alpine)
@@ -47,6 +46,24 @@ setup() {
     TEST_TMP="$(mktemp -d -t bootstrapCtl.XXXXXX)"
     STUBS="${TEST_TMP}/stubs"
     mkdir -p "${STUBS}"
+
+    # Per-test fake repo root. The script under test anchors
+    # `repo_root` via `cd "$script_dir/.."` and then sets
+    # `venv_dir="$repo_root/.venv"`. Pointing SCRIPT at the real
+    # ops/ would resolve `repo_root` to the actual checkout and
+    # `venv_dir` to whatever .venv the developer's last
+    # `bootstrap-controller` run left behind - so on any workstation
+    # with a populated .venv the script skips its venv-create branch,
+    # reaches `"$venv_dir/bin/pip" install --upgrade pip`, and runs
+    # real pip against PyPI. That hangs (or just takes seconds the
+    # tests cannot afford) and turns this suite into a slow,
+    # environment-dependent flake. Mirroring `ops/` into TEST_TMP
+    # makes `venv_dir` land at TEST_TMP/.venv - which never exists -
+    # so every test takes the no-venv branch and exits as expected.
+    FAKE_REPO="${TEST_TMP}/repo"
+    mkdir -p "${FAKE_REPO}"
+    cp -r "${REPO_ROOT}/ops" "${FAKE_REPO}/"
+    SCRIPT="${FAKE_REPO}/ops/_bootstrap-controller-wsl.sh"
 
     # SCRIPT_PATH is the PATH passed to the script's subprocess (via
     # env on each `run`). The script itself anchors paths via bash
