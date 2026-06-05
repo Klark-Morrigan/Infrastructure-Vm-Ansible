@@ -17,6 +17,7 @@ was extended by the feature step that earned it.
 - [Vault setup](#vault-setup)
 - [Create users](#create-users)
 - [Remove users](#remove-users)
+- [Register runners](#register-runners)
 - [Bridge contract](#bridge-contract)
 - [Tests and lint](#tests-and-lint)
 - [Roles](#roles)
@@ -187,6 +188,33 @@ by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
 first-class implementation when the vault contract diverges (or
 Vm-Users is archived).
 
+The `GitHubRunnersConfig` payload (consumed by the
+[register-runners flow](#register-runners)) lands in the
+`GitHubRunners` vault under the secret name
+`GitHubRunnersConfig-<Suffix>` via a peer wrapper:
+
+```
+pwsh ./ops/setup-runners-secrets.ps1 `
+    -ConfigFile C:\private\runners-config.json `
+    -SecretSuffix Production
+```
+
+or by dropping the JSON file onto
+[`ops/setup-runners-secrets.bat`](ops/setup-runners-secrets.bat) (the
+launcher omits `-SecretSuffix` on purpose so pwsh prompts the operator
+for the lifecycle label at drop time rather than silently defaulting).
+
+[`ops/setup-runners-secrets.ps1`](ops/setup-runners-secrets.ps1)
+delegates to
+[`Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1`](../Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1)
+under the same sibling-checkout convention as the Vm-Users wrapper.
+Both repos target the same `GitHubRunners` vault and the same
+`GitHubRunnersConfig-<Suffix>` secret name - which is exactly what
+this repo's bridge reads from when `NEEDS_GITHUB_RUNNERS=1`. The
+GitHub PAT is **not** stored in this vault: it is supplied per
+register-runners invocation via the entry script's prompt (or
+`GH_TOKEN` for unattended callers).
+
 ## Create users
 
 Once the controller is bootstrapped and the vault entry is in place,
@@ -272,6 +300,64 @@ Two contracts worth highlighting before invoking the flow:
   account and its home directory; a final assert surfaces the rare
   case where even `-f` could not free the account (D-state task,
   kernel-thread parent).
+
+## Register runners
+
+The runner-registration flow brings every declared self-hosted GitHub
+Actions runner up against the same `VmProvisionerConfig` inventory.
+One command stages the actions/runner tarball over a Hyper-V-side
+HTTP listener, registers each runner with GitHub, and starts the
+systemd service:
+
+```
+wsl ./ops/register-runners.sh
+```
+
+or double-click [`ops/register-runners.bat`](ops/register-runners.bat)
+from Explorer (same Git Bash launcher pattern as the users-side
+entries).
+
+[`ops/register-runners.sh`](ops/register-runners.sh) prompts for the
+GitHub PAT via `read -s` when `GH_TOKEN` is unset, exports it plus
+`NEEDS_GITHUB_RUNNERS=1` (the opt-in flag the
+[bridge](#bridge-contract) keys off for the third vault read and the
+host-file-server staging), and dispatches
+[`playbooks/register-runners.yml`](playbooks/register-runners.yml)
+through the bridge. The same operator knobs as the users-side flows
+work unchanged:
+
+```
+wsl ./ops/register-runners.sh --check                    # dry-run
+wsl ./ops/register-runners.sh --tags runner_binary       # scope to one role
+wsl ./ops/register-runners.sh --limit vm-1,vm-2          # scope to specific VMs
+wsl ./ops/register-runners.sh -v                         # verbose play recap
+```
+
+For unattended callers (the E2E agent, CI), exporting `GH_TOKEN`
+before invoking the entry suppresses the prompt entirely - the same
+script serves both interactive operators and automation without
+branching on a flag.
+
+The playbook composes the three runner roles in
+`runner_binary -> runner_registration -> runner_service` order
+against the `vm_provisioner_hosts` inventory group; each role is
+tagged with its own name. `any_errors_fatal: false` matches the
+users-side posture - one offline VM does not strand the rest.
+
+Two contracts worth highlighting before invoking the flow:
+
+- **The GitHub PAT never reaches the vault.** It is supplied
+  per-invocation (prompt or `GH_TOKEN`), threaded into the
+  controller-side `ansible.builtin.uri` calls via the chmod-600
+  extra-vars file, and cleared from the bridge environment before
+  `ansible-playbook` runs. Every token-bearing task is `no_log: true`
+  so the value never surfaces even at `-vvv`.
+- **The tarball download bypasses the VM's NAT path.** The bridge
+  starts a Windows-side `HttpListener` bound to the Hyper-V switch
+  IP, downloads / caches the runner tarball under
+  `%LOCALAPPDATA%\Temp\runner-cache\`, and serves it to each VM by
+  basename. The listener PID rides in the bridge's `EXIT` trap, so a
+  Ctrl+C, a network blip, or a play failure all still tear it down.
 
 ## Bridge contract
 
