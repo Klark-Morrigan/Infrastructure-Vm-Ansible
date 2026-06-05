@@ -499,10 +499,16 @@ CI is wired to two reusable workflows; nothing is copied per-repo:
   real Hyper-V VM with the agent's default `UsersFlow=ansible`, and
   reports back. An Ansible role / playbook / bridge change cannot merge
   to `master` until the new code has been proven to reconcile users and
-  bring an online runner up via this repo's `ops/create-users.sh`.
-  Requires the GitHub App from Infrastructure-E2E's setup to be
-  installed on this repo and the `GH_APP_ID` / `GH_APP_PRIVATE_KEY`
-  Actions secrets to be present.
+  bring an online runner up via this repo's `ops/create-users.sh`. The
+  agent also dispatches the runner-registration half via
+  `Set-VmRunnersForTest`: when `RunnersFlow=ansible` is set in the
+  agent's `E2EConfig` vault, the same gate drives this repo's
+  `ops/register-runners.sh` instead of
+  `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`.
+  Opt in explicitly during the first validation cycle; the default-flip
+  happens in a follow-up bump. Requires the GitHub App from
+  Infrastructure-E2E's setup to be installed on this repo and the
+  `GH_APP_ID` / `GH_APP_PRIVATE_KEY` Actions secrets to be present.
 
 The same checks run locally via thin shims that delegate to the
 canonical runners in the sibling repos (so a fix to the CI logic

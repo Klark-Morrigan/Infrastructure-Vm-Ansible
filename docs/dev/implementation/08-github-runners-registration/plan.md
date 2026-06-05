@@ -1003,12 +1003,14 @@ have.
   existing inline call to `register-runners.ps1` inside
   `Invoke-RunnerLifecycleTest` is extracted into it.
 - **Parameter chain unchanged.** `Start-E2EAgent.ps1` gains
-  `-RunnersFlow` / `-RunnersPath` (the path to
-  `Infrastructure-VM-Ansible` for the Ansible flow); both propagate
-  via `$Config` to `Invoke-RunnerLifecycleTest`. `WslDistro` is
-  reused from the users-side dispatcher — the same trap
-  ([[feedback_check_wsl_default_first]]) applies and the same fix
-  works unchanged.
+  `-RunnersFlow` only; `-AnsiblePath` and `-WslDistro` are reused
+  from the users-side dispatcher because the single
+  `Infrastructure-VM-Ansible` checkout houses both
+  `ops/create-users.sh` and `ops/register-runners.sh`, and the same
+  WSL distro runs both. `RunnersFlow` propagates via `$Config` to
+  `Invoke-RunnerLifecycleTest`. The shared `-WslDistro` carries the
+  same trap ([[feedback_check_wsl_default_first]]) and the same fix
+  works unchanged for both layers.
 - **Token handover.** The E2E agent already holds a GitHub PAT for
   the GitHubRunners workflow; the dispatcher passes it as
   `GH_TOKEN=...` to the `wsl` invocation, matching the bridge's
@@ -1017,12 +1019,19 @@ have.
 
 **Files (in Infrastructure-E2E)**
 
-- `agent/e2e/runners/Set-VmRunnersForTest.ps1` (new) - dispatcher
-  mirroring `Set-VmUsersForTest.ps1`'s shape. Parameters:
+- `agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1` (new) -
+  dispatcher mirroring `Set-VmUsersForTest.ps1`'s shape, placed next
+  to `Invoke-RunnerLifecycleTest.ps1` so the lifecycle test can
+  dot-source it via the same `$PSScriptRoot\` pattern that already
+  dot-sources `Invoke-RunnerStillOnlineAssertions.ps1`. Parameters:
   `-RunnersFlow` (`custom-powershell` / `ansible`), `-RunnersPath`
-  (Infrastructure-GitHubRunners checkout for the PS flow), `-AnsiblePath`
-  (Infrastructure-VM-Ansible checkout for the ansible flow), `-WslDistro`,
-  `-Token`, `-SecretSuffix`. Switches on `-RunnersFlow`:
+  (Infrastructure-GitHubRunners checkout for the PS flow),
+  `-AnsiblePath` (Infrastructure-VM-Ansible checkout for the ansible
+  flow), `-WslDistro`, `-Token`, `-SecretSuffix`, `-VmDef`, `-Entry`.
+  `-VmDef` / `-Entry` are accepted for parity with
+  `Set-VmUsersForTest`'s contract even though neither flow consumes
+  them today (both scripts read everything from the vault). Switches
+  on `-RunnersFlow`:
   - `custom-powershell` -> `& "$RunnersPath\hyper-v\ubuntu\register-runners.ps1"
     -Token $Token -SecretSuffix $SecretSuffix`. Same arg shape the test
     uses today.
@@ -1032,38 +1041,39 @@ have.
     ([[feedback_ps_subexpr_swallows_native_output]]),
     propagated `$LASTEXITCODE`. `Remove-Item Env:GH_TOKEN` in `finally`
     so the token never lingers in the agent process env.
-- `agent/e2e/runners/Invoke-RunnerLifecycleTest.ps1` (modified) -
-  dot-source the new dispatcher; replace the inline
+- `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1`
+  (modified) - dot-source the new dispatcher; replace the inline
   `register-runners.ps1` call with
   `Set-VmRunnersForTest -RunnersFlow $Config.RunnersFlow ...`. No
   signature change on `Invoke-RunnerLifecycleTest` — the caller
   already supplies `$Config`.
-- `agent/Start-E2EAgent.ps1` (modified) - two new parameters:
+- `agent/Start-E2EAgent.ps1` (modified) - one new parameter,
   `-RunnersFlow` (`ValidateSet('custom-powershell','ansible')`,
-  default `custom-powershell`) and `-RunnersAnsiblePath` (string,
-  path to the Infrastructure-VM-Ansible checkout). Propagated into
-  `$Config` next to the existing `UsersFlow` / `AnsiblePath` /
+  default `custom-powershell`). `-AnsiblePath` and `-WslDistro` are
+  reused from the users layer because the same
+  Infrastructure-VM-Ansible checkout / WSL distro serves both flows.
+  The startup AnsiblePath/WslDistro fail-fast block is extended to
+  fire when either `UsersFlow=ansible` or `RunnersFlow=ansible`. The
+  `RunnersFlow` value is read from the `E2EConfig` vault payload
+  (optional key, guarded property access) and propagated into
+  `$Config` alongside the existing `UsersFlow` / `AnsiblePath` /
   `WslDistro` keys.
-- `agent/e2e/Get-E2EConfig.ps1` (modified) - reads the same two new
-  values from the `E2EConfig` SecretStore vault so workstations can
-  carry the operator default in the vault rather than at every
-  invocation.
 - `Tests/Set-VmRunnersForTest.Tests.ps1` (new, Pester) - mirrors
   `Set-VmUsersForTest.Tests.ps1` shape. Cases:
   - `RunnersFlow=custom-powershell` -> PS script invoked with the
     expected args; `wsl` never called; non-zero exit -> throws.
   - `RunnersFlow=ansible` with both paths + distro -> `wsl -d`
     invoked from `$AnsiblePath` cwd with `GH_TOKEN` in env; PS
-    script never called; token cleared from env in `finally` even
-    on throw.
+    script never called. Two further cases pin the env-cleanup
+    contract: `GH_TOKEN` is cleared from the agent process env
+    after a successful run, and is cleared even when the bridge
+    throws.
   - `ansible` flow with `-AnsiblePath` missing -> throws
     `*requires -AnsiblePath*`.
   - `ansible` flow with `-WslDistro` missing -> throws
     `*requires -WslDistro*`.
   - Unknown `RunnersFlow` -> rejected at parameter binding
     (`ValidateSet`).
-  - `-vvv`-equivalent forwarded arg present -> token still not in
-    any captured stdout (asserted by grep of the test transcript).
 
 **Files (in Infrastructure-VM-Ansible)**
 
@@ -1135,7 +1145,7 @@ See file list above.
 
 ```mermaid
 flowchart TD
-    SA[Start-E2EAgent.ps1<br/>-RunnersFlow, -RunnersAnsiblePath] --> IL[Invoke-E2EAgentLoop]
+    SA[Start-E2EAgent.ps1<br/>-RunnersFlow<br/>shared -AnsiblePath / -WslDistro] --> IL[Invoke-E2EAgentLoop]
     IL --> RL[Invoke-RunnerLifecycleTest]
     RL --> SV[Set-VmRunnersForTest<br/>NEW]
     SV -->|custom-powershell| PSc[GHRunners register-runners.ps1]
