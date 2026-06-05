@@ -1,0 +1,123 @@
+---
+# Prepare the container before converge: install fixture tooling, seed
+# the runner service users, build a fake actions/runner tarball, and
+# launch a loopback HTTP server so the role's get_url can fetch.
+#
+# Why an in-container http server rather than a controller-side one:
+# molecule's converge runs ansible against the managed container; the
+# role's get_url executes on the container, so the easiest reachable
+# server is one bound on the container's own loopback. A controller-
+# side server would require -network=host or a bridged container IP,
+# both fragile compared to "use 127.0.0.1 in both prepare and
+# converge".
+#
+# The tarball mimics the actions/runner archive shape just enough to
+# satisfy the role's marker probe: a single executable config.sh at
+# the archive root. The role's idempotence guard stats config.sh after
+# extraction; no other tarball contents matter for this scenario.
+
+- name: Prepare - install tooling, seed users, build fixture tarball, start fileserver
+  hosts: all
+  gather_facts: false
+  vars:
+    fixture_port: 18745
+    fixture_version: "2.999.0"
+    fixture_stage_dir: /var/lib/runner-fixture/srv
+    fixture_source_dir: /var/lib/runner-fixture/src
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    # sudo: required so become_user works inside the get_url task.
+    # tar: required so ansible.builtin.unarchive has the gtar/tar
+    # binary it shells out to; the ubuntu:24.04 minimal image does not
+    # ship it. python3 is in the base image but is listed defensively
+    # in case the image flavour changes (idempotent if already present).
+    # gzip is required by community.general.archive when format=gz.
+    - name: Install fixture prerequisites
+      ansible.builtin.apt:
+        name:
+          - python3
+          - sudo
+          - tar
+          - gzip
+        state: present
+
+    # Two runner service users so the scenario can exercise both the
+    # shared-user case (one cache download for the two runners that
+    # share u-runner-shared) and the distinct-user case
+    # (a separate cache download under u-runner-other).
+    - name: Seed runner service users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop:
+        - u-runner-shared
+        - u-runner-other
+
+    - name: Create the fixture source directory
+      ansible.builtin.file:
+        path: "{{ fixture_source_dir }}"
+        state: directory
+        mode: "0755"
+
+    # config.sh is the marker the role's idempotence guard stats after
+    # extraction. The contents do not matter; only its presence and
+    # the +x bit do (the verify play does not invoke it).
+    - name: Stage a stub config.sh inside the tarball source
+      ansible.builtin.copy:
+        dest: "{{ fixture_source_dir }}/config.sh"
+        content: |
+          #!/bin/bash
+          echo "fake config.sh fixture for runner_binary molecule scenario"
+        mode: "0755"
+
+    - name: Create the staging directory served by the fixture http server
+      ansible.builtin.file:
+        path: "{{ fixture_stage_dir }}"
+        state: directory
+        mode: "0755"
+
+    # Build the tarball from the source directory's contents. archive
+    # with path=<dir>/* would expand the glob on the controller; using
+    # the directory path with `format: gz` lets the module shell out
+    # to tar with the right -C dance to keep config.sh at the archive
+    # root (which is what the role's extract expects).
+    - name: Build the fake actions-runner tarball
+      community.general.archive:
+        path: "{{ fixture_source_dir }}/"
+        dest: >-
+          {{ fixture_stage_dir }}/actions-runner-linux-x64-{{
+          fixture_version }}.tar.gz
+        format: gz
+        mode: "0644"
+
+    # nohup + & detaches the listener so molecule's prepare phase can
+    # complete and converge can proceed. Redirecting stdout / stderr to
+    # a log file keeps the container's ansible_python_interpreter free
+    # of background-process output that would confuse the SSH-equivalent
+    # connection plugin.
+    - name: Start python http.server serving the staging directory
+      ansible.builtin.shell:
+        cmd: >-
+          nohup python3 -m http.server {{ fixture_port }}
+          --bind 127.0.0.1
+          --directory {{ fixture_stage_dir }}
+          >/var/log/runner-fixture-http.log 2>&1 &
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    # Tight wait-for so a server that died at startup (port already in
+    # use, etc.) fails the prepare phase loudly rather than letting
+    # converge hit a connection-refused get_url and obscure the root
+    # cause.
+    - name: Wait for the fixture http server to accept connections
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ fixture_port }}"
+        timeout: 10

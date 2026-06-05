@@ -1,0 +1,138 @@
+---
+# Verify - exercise the runner_entry_resolve helper against three
+# host-slice shapes and assert the resulting fact has the expected
+# structure each time.
+#
+# The role's contract: vm_runner_entries is the list of github_runners_config
+# entries whose vmName matches inventory_hostname, or [] when none does.
+# All three cases (zero entries, one entry, two entries) are covered here
+# rather than spread across the create-flow scenario because the helper
+# is independent of any consumer role and its bug surface is the
+# selectattr expression itself.
+
+- name: Verify - runner_entry_resolve fact shape
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Case 1: this host has no declared runners. The fixture lists only
+    # entries for a different vmName, so vm_runner_entries must resolve
+    # to the empty list (and the helper must not raise when the input
+    # is well-formed but yields no match).
+    - name: Stage fixture - no entries for this host
+      ansible.builtin.set_fact:
+        github_runners_config:
+          - vmName: other-host
+            runnerName: other-runner
+            runnerUsername: u-other
+            deployUsername: u-other-deploy
+            githubUrl: https://github.com/example/other
+            runnerLabels: [self-hosted]
+
+    - name: Apply helper with the zero-entry fixture
+      ansible.builtin.include_role:
+        name: runner_entry_resolve
+
+    - name: Assert vm_runner_entries is empty for the zero-entry fixture
+      ansible.builtin.assert:
+        that:
+          - vm_runner_entries is iterable
+          - (vm_runner_entries | length) == 0
+        fail_msg: >-
+          Expected vm_runner_entries to be [] when no entries match
+          inventory_hostname, got {{ vm_runner_entries }}.
+
+    # Case 2: exactly one entry on this host. Confirm the per-entry
+    # fields the consumer roles will read are present and untouched.
+    - name: Stage fixture - one entry for this host
+      ansible.builtin.set_fact:
+        github_runners_config:
+          - vmName: instance
+            runnerName: instance-runner-a
+            runnerUsername: u-runner-a
+            deployUsername: u-deploy-a
+            githubUrl: https://github.com/example/repo-a
+            runnerLabels: [self-hosted, ubuntu, x64]
+          - vmName: other-host
+            runnerName: other-runner
+            runnerUsername: u-other
+            deployUsername: u-other-deploy
+            githubUrl: https://github.com/example/other
+            runnerLabels: [self-hosted]
+
+    - name: Apply helper with the one-entry fixture
+      ansible.builtin.include_role:
+        name: runner_entry_resolve
+
+    - name: Assert vm_runner_entries has the single matching entry
+      ansible.builtin.assert:
+        that:
+          - (vm_runner_entries | length) == 1
+          - vm_runner_entries[0].runnerName == 'instance-runner-a'
+          - vm_runner_entries[0].runnerUsername == 'u-runner-a'
+          - vm_runner_entries[0].vmName == 'instance'
+        fail_msg: >-
+          Expected exactly one matching entry; got
+          {{ vm_runner_entries }}.
+
+    # Case 3: two entries on the same host (multi-runner, shared
+    # runnerUsername - the realistic shape for a multi-repo host).
+    # The fact must preserve both entries in input order.
+    - name: Stage fixture - two entries for this host
+      ansible.builtin.set_fact:
+        github_runners_config:
+          - vmName: instance
+            runnerName: instance-runner-a
+            runnerUsername: u-runner
+            deployUsername: u-deploy
+            githubUrl: https://github.com/example/repo-a
+            runnerLabels: [self-hosted, ubuntu, x64]
+          - vmName: instance
+            runnerName: instance-runner-b
+            runnerUsername: u-runner
+            deployUsername: u-deploy
+            githubUrl: https://github.com/example/repo-b
+            runnerLabels: [self-hosted, ubuntu, x64]
+          - vmName: other-host
+            runnerName: other-runner
+            runnerUsername: u-other
+            deployUsername: u-other-deploy
+            githubUrl: https://github.com/example/other
+            runnerLabels: [self-hosted]
+
+    - name: Apply helper with the two-entry fixture
+      ansible.builtin.include_role:
+        name: runner_entry_resolve
+
+    - name: Assert vm_runner_entries has both matching entries in order
+      ansible.builtin.assert:
+        that:
+          - (vm_runner_entries | length) == 2
+          - vm_runner_entries[0].runnerName == 'instance-runner-a'
+          - vm_runner_entries[1].runnerName == 'instance-runner-b'
+          - >-
+            (vm_runner_entries | map(attribute='runnerUsername')
+             | unique | list) == ['u-runner']
+        fail_msg: >-
+          Expected the two matching entries in input order with a
+          shared runnerUsername, got {{ vm_runner_entries }}.
+
+    # Boundary: input absent entirely. The role uses
+    # `github_runners_config | default([])` so this must resolve to []
+    # rather than failing with an undefined-variable error - that is
+    # the contract a standalone --tags run depends on.
+    - name: Drop the input fixture entirely
+      ansible.builtin.set_fact:
+        github_runners_config: !!null
+
+    - name: Apply helper with an absent input
+      ansible.builtin.include_role:
+        name: runner_entry_resolve
+
+    - name: Assert vm_runner_entries is [] when input is absent
+      ansible.builtin.assert:
+        that:
+          - vm_runner_entries is iterable
+          - (vm_runner_entries | length) == 0
+        fail_msg: >-
+          Expected vm_runner_entries to default to [] when
+          github_runners_config is unset, got {{ vm_runner_entries }}.

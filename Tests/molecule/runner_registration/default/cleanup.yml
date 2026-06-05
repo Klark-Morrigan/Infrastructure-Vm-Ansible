@@ -1,0 +1,43 @@
+---
+# Stop the controller-side mock GitHub API and clean up its scratch
+# files. Runs at the end of each `molecule test` sequence (and again
+# at the start of the next, defensively, via the test_sequence in
+# molecule.yml). Idempotent: missing pidfile or already-dead process
+# are no-ops.
+
+- name: Cleanup - stop controller-side mock GitHub API
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    mock_pidfile: /tmp/runner-registration-mock.pid
+    mock_log: /tmp/runner-registration-mock.log
+    mock_registered_file: /tmp/runner-registration-mock-registered.txt
+    mock_stderr: /tmp/runner-registration-mock.stderr
+  tasks:
+    - name: Kill mock server if its pidfile points at a live process
+      ansible.builtin.shell: |
+        set -eu
+        if [ -f {{ mock_pidfile }} ]; then
+          pid=$(cat {{ mock_pidfile }} 2>/dev/null || true)
+          if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" || true
+            for _ in $(seq 1 25); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.2
+            done
+          fi
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Remove mock scratch files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mock_pidfile }}"
+        - "{{ mock_log }}"
+        - "{{ mock_registered_file }}"
+        - "{{ mock_stderr }}"

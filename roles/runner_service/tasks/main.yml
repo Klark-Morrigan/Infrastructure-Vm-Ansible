@@ -1,0 +1,154 @@
+---
+# Reconcile the systemd service for every declared runner on the current
+# host (problem.md / Role: runner_service). Four phases, all keyed off
+# the per-host vm_runner_entries fact (set by the runner_entry_resolve
+# meta dep):
+#
+#   1. Unit probe   - list-unit-files filtered by the runner's name. The
+#                     install branch only fires when the probe finds the
+#                     unit absent.
+#   2. svc.sh install - actions/runner ships the unit-installer at
+#                     /opt/runners/<name>/svc.sh. Runs as root (svc.sh
+#                     touches /etc/systemd/system, which become_user
+#                     could not do) and is the only branch that needs
+#                     root in this role.
+#   3. Enable + start - ansible.builtin.systemd with the unit name a
+#                     post-install re-probe captures.
+#   4. is-active re-check - explicit systemctl is-active per entry. The
+#                     systemd module reports "started" even when the
+#                     unit went active then immediately crashed (it only
+#                     observes the start transition, not subsequent
+#                     deactivation), so the explicit re-check is the
+#                     contract that matches today's
+#                     Test-RunnerServiceActive in the PowerShell flow.
+#
+# Per-runner unit names follow actions/runner's svc.sh convention:
+# `actions.runner.<owner>-<repo>.<runnerName>.service`. The probe filters
+# by the runnerName suffix because owner/repo would require parsing
+# githubUrl in three places; the runnerName is unique enough on a host
+# that the glob has at most one match.
+
+# vm_runner_entries is set by roles/runner_entry_resolve (pulled in via
+# meta dep; runs once per play). Consumer tasks read it directly.
+
+# Unit-file probe. `systemctl list-unit-files` accepts glob patterns and
+# returns one line per match plus a trailing summary; --no-legend strips
+# the summary so awk + head can pull the unit name cleanly when present
+# and yield empty stdout when absent. shell (not command) because the
+# pipe to awk/head is part of the contract.
+- name: Probe for the systemd unit file (per runner)
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    systemctl list-unit-files
+      --type=service --no-pager --no-legend
+      'actions.runner.*{{ item.runnerName }}.service'
+    | awk '{print $1}' | head -n1
+  loop: "{{ vm_runner_entries }}"
+  loop_control:
+    label: "{{ item.runnerName }}"
+  register: runner_service_unit_probes
+  changed_when: false
+  # noqa command-instead-of-shell - pipe to awk + head is the contract
+
+# Install branch. svc.sh install writes the systemd unit file and
+# enables it for the specified user. become: true (root) because the
+# unit file lands under /etc/systemd/system, which the runner service
+# user cannot write. cmd form (not argv) because the relative
+# `./svc.sh` plus one arg is short enough to keep readable and
+# `chdir` keeps the cwd unambiguous.
+- name: Install the runner service when the unit is absent
+  ansible.builtin.command:
+    cmd: "./svc.sh install {{ item.item.runnerUsername }}"
+    chdir: "/opt/runners/{{ item.item.runnerName }}"
+  become: true
+  loop: "{{ runner_service_unit_probes.results }}"
+  loop_control:
+    label: "{{ item.item.runnerName }}"
+  when: (item.stdout | trim) | length == 0
+  changed_when: true
+
+# Re-probe after the install branch so the systemd task below has the
+# unit name on both code paths (already-installed and just-installed).
+# Same shape as the first probe; a second loop is cheaper than threading
+# install-branch state through Jinja conditionals.
+- name: Re-probe the systemd unit file after potential install
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    systemctl list-unit-files
+      --type=service --no-pager --no-legend
+      'actions.runner.*{{ item.runnerName }}.service'
+    | awk '{print $1}' | head -n1
+  loop: "{{ vm_runner_entries }}"
+  loop_control:
+    label: "{{ item.runnerName }}"
+  register: runner_service_unit_probes_after
+  changed_when: false
+  # noqa command-instead-of-shell - pipe to awk + head is the contract
+
+# Defensive assert before the systemd task: if svc.sh install succeeded
+# but no matching unit landed, the systemd task below would receive an
+# empty `name:` and fail with an opaque module error. A targeted assert
+# here surfaces the root cause (install ran but did not produce a unit
+# matching the runnerName) instead.
+- name: Assert every runner has a discoverable unit name
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | trim) | length > 0
+    fail_msg: >-
+      No systemd unit file matched
+      'actions.runner.*{{ item.item.runnerName }}.service' after the
+      install branch ran. Check that svc.sh install completed without
+      error and that /etc/systemd/system contains the expected unit.
+  loop: "{{ runner_service_unit_probes_after.results }}"
+  loop_control:
+    label: "{{ item.item.runnerName }}"
+
+# Enable + start. The systemd module reports `changed: true` on the
+# transition from disabled/stopped to enabled/started; a re-run on a
+# healthy unit reports `changed: false`. become: true because
+# systemctl start / enable on a system-level unit needs root.
+- name: Ensure each runner service is enabled and started
+  ansible.builtin.systemd:
+    name: "{{ item.stdout | trim }}"
+    state: started
+    enabled: true
+  become: true
+  loop: "{{ runner_service_unit_probes_after.results }}"
+  loop_control:
+    label: "{{ item.item.runnerName }}"
+
+# is-active re-check. Capture stdout per iteration without failing the
+# task so the assert below can render a single message that names the
+# unit and points at journalctl - failed_when on the command would
+# surface the failure with the raw module error instead.
+#
+# command (not ansible.builtin.systemd) because the systemd module's
+# return only reflects the start transition the previous task observed,
+# not a freshly-issued is-active query. A unit that activated then
+# immediately crashed would still register as "started" from the
+# previous module run; only a fresh systemctl call catches that.
+- name: Capture systemctl is-active for each runner service  # noqa command-instead-of-module
+  ansible.builtin.command:
+    cmd: "systemctl is-active {{ item.stdout | trim }}"
+  loop: "{{ runner_service_unit_probes_after.results }}"
+  loop_control:
+    label: "{{ item.item.runnerName }}"
+  register: runner_service_active_checks
+  changed_when: false
+  failed_when: false
+
+# Per-runner active assert. Failing here (rather than on the command
+# above) lets the message name the unit and the inspection command so
+# the operator does not have to translate an `rc != 0` into a guess.
+- name: Assert every runner service reached active state
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | trim) == 'active'
+    fail_msg: >-
+      Runner service '{{ item.item.stdout | trim }}' did not reach
+      active state (systemctl is-active reported
+      '{{ item.stdout | trim }}'). Inspect with:
+      journalctl -u {{ item.item.stdout | trim }} --no-pager -n 200
+  loop: "{{ runner_service_active_checks.results }}"
+  loop_control:
+    label: "{{ item.item.item.runnerName }}"

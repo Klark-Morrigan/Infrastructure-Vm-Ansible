@@ -1,0 +1,56 @@
+---
+# Operator-facing entry into the register-runners flow. Composes the
+# three runner roles (runner_binary -> runner_registration ->
+# runner_service) against every host the bash bridge dropped into the
+# vm_provisioner_hosts inventory group. Ordering is owned here, not in
+# the role meta files, for the same reason create-users.yml owns
+# groups -> users -> sudoers ordering: Ansible meta deps always run a
+# dep's `tasks/main.yml` and ignore the entry role's `tasks_from`
+# selector, so an inter-role create-direction meta dep would silently
+# re-register runners mid-teardown when feature 09's deregister
+# playbook imports the same roles with `tasks_from: remove`. Only the
+# direction-neutral `runner_entry_resolve` helper is a meta dep on
+# each role.
+#
+# Role order is significant:
+# - runner_binary first: lays the tarball cache and the per-runner
+#   /opt/runners/<name>/ extract so the next role finds config.sh on
+#   disk to run.
+# - runner_registration next: reconciles GitHub-side registration and
+#   the on-disk .runner marker; runner_service depends on .runner
+#   being present for `svc.sh install` to succeed.
+# - runner_service last: installs the systemd unit and brings the
+#   service to the active state.
+#
+# any_errors_fatal: false matches create-users.yml / remove-users.yml.
+# The bridge's inventory can contain several VMs, and one host being
+# temporarily offline should not strand the rest. Per-host failures
+# still surface in the recap; the play just does not abort the others.
+#
+# gather_facts: true keeps systemd and `ansible.builtin.command`
+# happy on hosts where the role logic consults facts (notably
+# distribution detection inside `ansible.builtin.systemd`).
+#
+# Tags mirror the role names so operators can scope a partial run
+# (--tags runner_binary, --tags runner_registration,
+# --tags runner_service) without learning the playbook layout.
+
+- name: Register self-hosted GitHub Actions runners on provisioned VMs
+  hosts: vm_provisioner_hosts
+  gather_facts: true
+  any_errors_fatal: false
+  tasks:
+    - name: Cache and extract the runner tarball
+      ansible.builtin.import_role:
+        name: runner_binary
+      tags: runner_binary
+
+    - name: Reconcile runner registration against GitHub
+      ansible.builtin.import_role:
+        name: runner_registration
+      tags: runner_registration
+
+    - name: Install and start the runner systemd service
+      ansible.builtin.import_role:
+        name: runner_service
+      tags: runner_service

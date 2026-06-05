@@ -1,0 +1,167 @@
+---
+# Prepare the container before converge: install tooling, seed runner
+# service users + /opt/runners/<name>/ directories, install a stub
+# svc.sh per directory, and pre-stage the systemd-side state for each
+# entry's reconcile branch:
+#
+#   runner-install  - directory + stub svc.sh present, no installed
+#                     unit. The role's install branch must run.
+#   runner-active   - unit pre-installed AND already started. The
+#                     role's install branch must skip and the systemd
+#                     task must report `changed: 0`.
+#   runner-stopped  - unit pre-installed but stopped. The role's
+#                     install branch must skip, the systemd task must
+#                     start it, and the is-active re-check must pass.
+#
+# The stub svc.sh writes a `Type=oneshot RemainAfterExit=yes` unit
+# whose ExecStart is `/bin/true` - active without a long-lived
+# process, which is all the role's reconcile contract observes (and
+# all the molecule verify play asserts).
+
+- name: Prepare - tooling, runner directories, pre-staged systemd state
+  hosts: all
+  gather_facts: false
+  vars:
+    # Three positive entries cover the three branches the role's
+    # reconcile produces; the fourth entry (runner-leak, vmName !=
+    # instance) is asserted absent in verify.yml.
+    runner_dirs:
+      - name: runner-install
+        user: u-runner-shared
+        pre_state: none
+      - name: runner-active
+        user: u-runner-shared
+        pre_state: started
+      - name: runner-stopped
+        user: u-runner-other
+        pre_state: stopped
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    # systemd is part of the ubuntu:24.04 base image but listing the
+    # package defensively guards against image-flavour drift (some
+    # cloud-image variants ship systemd-sysv only). sudo: required so
+    # the role's become operations work end-to-end.
+    - name: Install fixture prerequisites
+      ansible.builtin.apt:
+        name:
+          - sudo
+          - systemd
+        state: present
+
+    # Two runner service users: u-runner-shared owns runner-install +
+    # runner-active (proves the install branch and the already-active
+    # branch both work for the same User= line), u-runner-other owns
+    # runner-stopped (proves the systemd start path is per-entry and
+    # not coupled to user identity).
+    - name: Seed runner service users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop:
+        - u-runner-shared
+        - u-runner-other
+
+    - name: Create per-runner extract directory
+      ansible.builtin.file:
+        path: "/opt/runners/{{ item.name }}"
+        state: directory
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: "0755"
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Stub svc.sh stands in for the real actions/runner svc.sh. On
+    # `install <user>` it composes a unit file whose name follows the
+    # actions/runner svc.sh convention
+    # (`actions.runner.<owner>-<repo>.<runnerName>.service`), drops it
+    # under /etc/systemd/system, runs daemon-reload, and enables the
+    # unit. owner/repo are fixed strings because the role's probe
+    # filter only pins the runnerName suffix - the stub gets to pick
+    # any plausible prefix.
+    #
+    # The unit itself is Type=oneshot RemainAfterExit=yes with
+    # ExecStart=/bin/true: active without a long-lived process, which
+    # both the role's `systemctl is-active` re-check and verify's
+    # assertions observe correctly.
+    - name: Install stub svc.sh in each runner directory
+      ansible.builtin.copy:
+        dest: "/opt/runners/{{ item.name }}/svc.sh"
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          action="${1:-}"
+          svc_user="${2:-}"
+          case "$action" in
+            install)
+              [[ -n "$svc_user" ]] || {
+                echo "Usage: $0 install <user>" >&2
+                exit 2
+              }
+              here="$(cd "$(dirname "$0")" && pwd)"
+              name="$(basename "$here")"
+              unit="actions.runner.example-repo.${name}.service"
+              cat > "/etc/systemd/system/${unit}" <<EOF
+          [Unit]
+          Description=Stub GitHub Actions runner (${name}) for molecule scenario
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/bin/true
+          User=${svc_user}
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+              systemctl daemon-reload
+              systemctl enable "${unit}"
+              ;;
+            *)
+              echo "Stub svc.sh only implements 'install' (got: ${action})" >&2
+              exit 2
+              ;;
+          esac
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Pre-install the unit for the runner-active and runner-stopped
+    # cases by invoking the stub svc.sh as the role would. The
+    # already-installed branches assert the role's install task
+    # skips when the probe finds a unit; pre-installing here is the
+    # only way to set that state up.
+    - name: Pre-install the unit for already-installed entries
+      ansible.builtin.command:
+        cmd: "./svc.sh install {{ item.user }}"
+        chdir: "/opt/runners/{{ item.name }}"
+      become: true
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.pre_state in ['started', 'stopped']
+      changed_when: true
+
+    # For the runner-active entry: start the unit so converge observes
+    # an already-active state. systemd reports changed only on the
+    # inactive -> active transition, so this is the only place the
+    # state shows up in the scenario.
+    - name: Pre-start the unit for runner-active
+      ansible.builtin.systemd:
+        name: "actions.runner.example-repo.{{ item.name }}.service"
+        state: started
+      become: true
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.pre_state == 'started'

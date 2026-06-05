@@ -1,0 +1,17 @@
+---
+# Role defaults. Only one value: the GitHub API base URL the role's
+# `ansible.builtin.uri` tasks point at when probing existence and
+# minting tokens. Production runs leave the default in place
+# (api.github.com); molecule scenarios override it to a controller-
+# local mock so the role's reconcile branches can be asserted without
+# touching the real GitHub. A GHE Server deployment would override
+# the same value for the same reason - the variable carries no test-
+# framework branding (per the production-stays-test-agnostic
+# convention) and reads as the natural knob it is.
+#
+# The variable name intentionally has no `runner_registration_` prefix:
+# it is a deployment-wide constant shared with anything else in this
+# repo that might one day talk to GitHub's REST API, and renaming under
+# a role-private prefix would just force every call site to alias it
+# back. Same posture as runner_version under runner_binary.
+github_api_base_url: "https://api.github.com"  # noqa: var-naming[no-role-prefix]

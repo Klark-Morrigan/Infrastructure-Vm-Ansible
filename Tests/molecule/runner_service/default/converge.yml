@@ -1,0 +1,60 @@
+---
+# Converge - apply runner_service against four declared entries:
+#
+#   runner-install   on `instance`    - install branch fires: svc.sh
+#                                       install runs, the unit lands
+#                                       under /etc/systemd/system,
+#                                       systemd starts it, is-active
+#                                       returns 'active'.
+#   runner-active    on `instance`    - already-installed + active:
+#                                       install branch skips, systemd
+#                                       reports `changed: 0` (the unit
+#                                       is already enabled+started),
+#                                       is-active still returns
+#                                       'active'.
+#   runner-stopped   on `instance`    - already-installed + stopped:
+#                                       install branch skips, systemd
+#                                       transitions inactive -> active
+#                                       (`changed: true`), is-active
+#                                       returns 'active'.
+#   runner-leak      on `other-host`  - selector negative: the
+#                                       runner_entry_resolve filter
+#                                       must drop this entry on
+#                                       `instance` so the role never
+#                                       touches it (verify.yml asserts
+#                                       no `actions.runner.*runner-leak
+#                                       *.service` exists).
+
+- name: Converge - apply runner_service role
+  hosts: all
+  gather_facts: false
+  vars:
+    github_runners_config:
+      - vmName: instance
+        runnerName: runner-install
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: runner-active
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: runner-stopped
+        runnerUsername: u-runner-other
+        deployUsername: u-deploy-other
+        githubUrl: https://github.com/example/repo
+        runnerLabels: [self-hosted, ubuntu]
+      - vmName: other-host
+        runnerName: runner-leak
+        runnerUsername: u-leak
+        deployUsername: u-deploy-leak
+        githubUrl: https://github.com/example/repo-leak
+        runnerLabels: [self-hosted]
+  tasks:
+    - name: Include the role under test
+      ansible.builtin.include_role:
+        name: runner_service

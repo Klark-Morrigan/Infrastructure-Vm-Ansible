@@ -17,6 +17,7 @@ was extended by the feature step that earned it.
 - [Vault setup](#vault-setup)
 - [Create users](#create-users)
 - [Remove users](#remove-users)
+- [Register runners](#register-runners)
 - [Bridge contract](#bridge-contract)
 - [Tests and lint](#tests-and-lint)
 - [Roles](#roles)
@@ -187,6 +188,33 @@ by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
 first-class implementation when the vault contract diverges (or
 Vm-Users is archived).
 
+The `GitHubRunnersConfig` payload (consumed by the
+[register-runners flow](#register-runners)) lands in the
+`GitHubRunners` vault under the secret name
+`GitHubRunnersConfig-<Suffix>` via a peer wrapper:
+
+```
+pwsh ./ops/setup-runners-secrets.ps1 `
+    -ConfigFile C:\private\runners-config.json `
+    -SecretSuffix Production
+```
+
+or by dropping the JSON file onto
+[`ops/setup-runners-secrets.bat`](ops/setup-runners-secrets.bat) (the
+launcher omits `-SecretSuffix` on purpose so pwsh prompts the operator
+for the lifecycle label at drop time rather than silently defaulting).
+
+[`ops/setup-runners-secrets.ps1`](ops/setup-runners-secrets.ps1)
+delegates to
+[`Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1`](../Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1)
+under the same sibling-checkout convention as the Vm-Users wrapper.
+Both repos target the same `GitHubRunners` vault and the same
+`GitHubRunnersConfig-<Suffix>` secret name - which is exactly what
+this repo's bridge reads from when `NEEDS_GITHUB_RUNNERS=1`. The
+GitHub PAT is **not** stored in this vault: it is supplied per
+register-runners invocation via the entry script's prompt (or
+`GH_TOKEN` for unattended callers).
+
 ## Create users
 
 Once the controller is bootstrapped and the vault entry is in place,
@@ -273,13 +301,71 @@ Two contracts worth highlighting before invoking the flow:
   case where even `-f` could not free the account (D-state task,
   kernel-thread parent).
 
+## Register runners
+
+The runner-registration flow brings every declared self-hosted GitHub
+Actions runner up against the same `VmProvisionerConfig` inventory.
+One command stages the actions/runner tarball over a Hyper-V-side
+HTTP listener, registers each runner with GitHub, and starts the
+systemd service:
+
+```
+wsl ./ops/register-runners.sh
+```
+
+or double-click [`ops/register-runners.bat`](ops/register-runners.bat)
+from Explorer (same Git Bash launcher pattern as the users-side
+entries).
+
+[`ops/register-runners.sh`](ops/register-runners.sh) prompts for the
+GitHub PAT via `read -s` when `GH_TOKEN` is unset, exports it plus
+`NEEDS_GITHUB_RUNNERS=1` (the opt-in flag the
+[bridge](#bridge-contract) keys off for the third vault read and the
+host-file-server staging), and dispatches
+[`playbooks/register-runners.yml`](playbooks/register-runners.yml)
+through the bridge. The same operator knobs as the users-side flows
+work unchanged:
+
+```
+wsl ./ops/register-runners.sh --check                    # dry-run
+wsl ./ops/register-runners.sh --tags runner_binary       # scope to one role
+wsl ./ops/register-runners.sh --limit vm-1,vm-2          # scope to specific VMs
+wsl ./ops/register-runners.sh -v                         # verbose play recap
+```
+
+For unattended callers (the E2E agent, CI), exporting `GH_TOKEN`
+before invoking the entry suppresses the prompt entirely - the same
+script serves both interactive operators and automation without
+branching on a flag.
+
+The playbook composes the three runner roles in
+`runner_binary -> runner_registration -> runner_service` order
+against the `vm_provisioner_hosts` inventory group; each role is
+tagged with its own name. `any_errors_fatal: false` matches the
+users-side posture - one offline VM does not strand the rest.
+
+Two contracts worth highlighting before invoking the flow:
+
+- **The GitHub PAT never reaches the vault.** It is supplied
+  per-invocation (prompt or `GH_TOKEN`), threaded into the
+  controller-side `ansible.builtin.uri` calls via the chmod-600
+  extra-vars file, and cleared from the bridge environment before
+  `ansible-playbook` runs. Every token-bearing task is `no_log: true`
+  so the value never surfaces even at `-vvv`.
+- **The tarball download bypasses the VM's NAT path.** The bridge
+  starts a Windows-side `HttpListener` bound to the Hyper-V switch
+  IP, downloads / caches the runner tarball under
+  `%LOCALAPPDATA%\Temp\runner-cache\`, and serves it to each VM by
+  basename. The listener PID rides in the bridge's `EXIT` trap, so a
+  Ctrl+C, a network blip, or a play failure all still tear it down.
+
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and
-`ansible-playbook` is split across four single-purpose helpers
-under `ops/` with a leading `_` (the "called by operator entries,
-not typed by a human" convention). Each is unit-testable against
-just its own external boundary:
+`ansible-playbook` is split across single-purpose helpers under
+`ops/` with a leading `_` (the "called by operator entries, not
+typed by a human" convention). Each is unit-testable against just
+its own external boundary:
 
 - [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh) - vault
   reader. Shells out to `pwsh.exe` to fetch a named secret via the
@@ -291,25 +377,89 @@ just its own external boundary:
   transform. Reads `vm_provisioner_config` on stdin and writes
   Ansible JSON inventory (group `vm_provisioner_hosts`, host key
   `vmName`) on stdout.
-- [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - pure
-  transform. Takes `--provisioner-config <file>` and
-  `--users-config <file>` and emits the canonical extra-vars JSON
-  with the two top-level keys (`vm_provisioner_config`,
-  `vm_users_config`) on stdout. File paths (not values) so secrets
-  stay out of argv.
+- [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - extra-
+  vars orchestrator. Owns no payload domain itself; accepts the
+  union of helper flags and dispatches to one per-payload-domain
+  helper per domain present, then merges their JSON fragments via
+  `jq -s add`. Required flags: `--provisioner-config <file>` and
+  `--users-config <file>`. Optional paired flags (register-runners
+  flow): `--runners-config <file>`, `--github-token <value>`,
+  `--host-base-url <url>`, `--runner-version <ver>` — all four
+  arrive together or none, the orchestrator rejects any partial
+  set. The per-domain helpers below own their own validation and
+  bats coverage:
+  - [`ops/_build-extra-vars-inventory.sh`](ops/_build-extra-vars-inventory.sh)
+    — emits `vm_provisioner_config`. Always-on; the inventory source
+    every payload domain shares.
+  - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
+    — emits `vm_users_config` for the groups / users / sudoers roles.
+  - [`ops/_build-extra-vars-runners.sh`](ops/_build-extra-vars-runners.sh)
+    — emits `github_runners_config`, `github_token`,
+    `host_file_server_base_url`, and `runner_version` for the runner
+    roles. Owns the token-non-empty fast-fail and threads the value
+    through `jq --arg` so shell-special characters land verbatim.
+  Config inputs are file paths (not values) so secrets stay out of
+  argv. The GitHub token is the lone exception, passed by value
+  because the entry script already holds it in a shell variable;
+  argv on Linux is private to the owning user's process tree.
+  Future payload domains (e.g. toolchain delivery: JDK / .NET SDK /
+  file copy) land as a peer `_build-extra-vars-<domain>.sh` plus a
+  dispatch arm in the orchestrator — no other call site changes.
 - [`ops/_run-playbook.sh`](ops/_run-playbook.sh) - thin
   orchestrator. Validates args, sets up a per-invocation
   `mktemp -d` tree (`chmod 700`, files `chmod 600`, cleaned up by
-  `EXIT` trap), activates `.venv`, drives the three helpers in
-  order, and dispatches `ansible-playbook` against the requested
-  playbook path. Any args after the playbook path are forwarded
-  verbatim to `ansible-playbook` (so `--tags`, `--limit`,
+  `EXIT` trap), activates `.venv`, drives the helpers in order,
+  and dispatches `ansible-playbook` against the requested playbook
+  path. Reads two vaults unconditionally (`VmProvisioner`,
+  `VmUsers`) and adds a third (`GitHubRunners`) when the caller
+  exports `NEEDS_GITHUB_RUNNERS=1` plus `GH_TOKEN=...` - the
+  opt-in gate keeps the create-users / remove-users entry points
+  free of an unused `pwsh.exe` round-trip. When opted in, the
+  bridge delegates the Windows-side staging to
+  `_stage-host-fileserver.sh` and (via the EXIT trap) stops the
+  listener it backgrounded on every exit path. `GH_TOKEN` is
+  cleared from the bridge environment before `ansible-playbook`
+  runs; the downstream play receives the token via the chmod-600
+  extra-vars file only. Any args after the playbook path are
+  forwarded verbatim to `ansible-playbook` (so `--tags`, `--limit`,
   `--check`, `-v`, etc. all work without changes to the bridge).
+- [`ops/_stage-host-fileserver.sh`](ops/_stage-host-fileserver.sh)
+  - GitHubRunners opt-in branch. Drives the three pwsh.exe
+  round-trips (resolve version, ensure tarball, start listener),
+  picks the first VM's `ipAddress` from the provisioner config for
+  the bind, polls the backgrounded listener for `BASE_URL=` +
+  `PID=`, and emits its own three-line contract on stdout
+  (`RUNNER_VERSION=`, `BASE_URL=`, `PID=`) for the bridge to parse.
+- [`ops/_resolve-runner-version.ps1`](ops/_resolve-runner-version.ps1)
+  - GitHub Releases API client. GETs
+  `repos/actions/runner/releases/latest` with the supplied token and
+  prints the version string with the leading `v` stripped. Mirrors
+  `Resolve-RunnerVersion` in Infrastructure-GitHubRunners so both
+  flows resolve identically.
+- [`ops/_ensure-runner-tarball.ps1`](ops/_ensure-runner-tarball.ps1)
+  - tarball cache helper. Returns the path to
+  `$LOCALAPPDATA\Temp\runner-cache\actions-runner-linux-x64-<ver>.tar.gz`,
+  downloading from `github.com` on cache miss and purging stale
+  versions in the same cache directory. Mirrors
+  `Invoke-RunnerTarballEnsure` in Infrastructure.GitHub.
+- [`ops/_start-host-file-server.ps1`](ops/_start-host-file-server.ps1)
+  - long-lived listener. Binds an `HttpListener` to the host adapter
+  whose IP shares a /24 with the target VM (same algorithm as
+  `Start-VmFileServer` in Infrastructure.HyperV), serves any file in
+  the supplied `-StagingDir` by its basename, prints `BASE_URL=<url>`
+  then `PID=<pid>` on stdout, and blocks until killed. Multi-file
+  serving leaves room for a future toolchain-delivery feature to
+  stage extra payloads in the same dir.
+- [`ops/_stop-host-file-server.ps1`](ops/_stop-host-file-server.ps1)
+  - idempotent stop helper. Force-stops the listener process by PID
+  and waits for exit; a missing PID is treated as already-stopped.
 
-External contract (consumed by later feature playbooks): the
-extra-vars document has exactly two top-level keys
-(`vm_provisioner_config`, `vm_users_config`); the inventory has one
-group `vm_provisioner_hosts` keyed by `vmName`.
+External contract (consumed by feature playbooks): the extra-vars
+document always has the two top-level keys `vm_provisioner_config`
+and `vm_users_config`, and additionally `github_runners_config`,
+`github_token`, `host_file_server_base_url`, and `runner_version`
+when the caller opts into the GitHubRunners vault read. The
+inventory has one group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
@@ -317,12 +467,17 @@ installs it via `sudo apt-get` when absent and falls back to the
 `sudo apt-get install -y jq` hint if the install itself cannot
 proceed.
 
-Each helper has its own bats suite under
+Each bash helper has its own bats suite under
 [`Tests/ops/`](Tests/ops/) covering its boundary in isolation;
-`_run-playbook.bats` stubs all four boundaries (`pwsh.exe`,
-`ansible-playbook`, plus the three sibling helpers) and asserts
-orchestration only. The end-to-end smoke against a real VM is
-captured in step 12 of the feature plan.
+`_run-playbook.bats` stubs `pwsh.exe`, `ansible-playbook`, and the
+sibling bash helpers, then asserts orchestration only. The four
+PowerShell helpers are covered by
+[`Tests/ops/Start-HostFileServer.Tests.ps1`](Tests/ops/Start-HostFileServer.Tests.ps1)
+- Pester rather than bats because each helper is single-file
+PowerShell calling `Invoke-RestMethod`, `HttpListener`, or
+`Get-NetIPAddress`; mocking those from bats would require a
+`pwsh.exe` round-trip per assertion. The end-to-end smoke against a
+real VM is captured in the feature plan.
 
 ## Tests and lint
 
@@ -344,10 +499,16 @@ CI is wired to two reusable workflows; nothing is copied per-repo:
   real Hyper-V VM with the agent's default `UsersFlow=ansible`, and
   reports back. An Ansible role / playbook / bridge change cannot merge
   to `master` until the new code has been proven to reconcile users and
-  bring an online runner up via this repo's `ops/create-users.sh`.
-  Requires the GitHub App from Infrastructure-E2E's setup to be
-  installed on this repo and the `GH_APP_ID` / `GH_APP_PRIVATE_KEY`
-  Actions secrets to be present.
+  bring an online runner up via this repo's `ops/create-users.sh`. The
+  agent also dispatches the runner-registration half via
+  `Set-VmRunnersForTest`: when `RunnersFlow=ansible` is set in the
+  agent's `E2EConfig` vault, the same gate drives this repo's
+  `ops/register-runners.sh` instead of
+  `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`.
+  Opt in explicitly during the first validation cycle; the default-flip
+  happens in a follow-up bump. Requires the GitHub App from
+  Infrastructure-E2E's setup to be installed on this repo and the
+  `GH_APP_ID` / `GH_APP_PRIVATE_KEY` Actions secrets to be present.
 
 The same checks run locally via thin shims that delegate to the
 canonical runners in the sibling repos (so a fix to the CI logic
@@ -396,10 +557,44 @@ each role lands; the create-users playbook orders them
   temp file before the atomic swap, so a malformed rule fails the
   task without touching the live file. An empty / absent
   `sudoersRules` array removes the drop-in.
+- [`roles/runner_entry_resolve`](roles/runner_entry_resolve/README.md) -
+  repo-internal helper. Resolves the per-host slice of
+  `GitHubRunnersConfig` into the shared `vm_runner_entries` fact;
+  pulled in via meta dependency by the runner roles below so the
+  selectattr filter lives in one file instead of three. Same
+  single-source-of-truth posture as `vm_users_entry`.
+- [`roles/runner_binary`](roles/runner_binary/README.md) - cache the
+  `actions/runner` tarball under each declared `runnerUsername` on a
+  host and extract a copy into `/opt/runners/<runnerName>/`. First
+  role in the register-runners flow; downloads from
+  `host_file_server_base_url` (the Hyper-V switch IP the bridge's
+  PowerShell `HttpListener` binds to) so VMs avoid the NAT path to
+  `github.com`.
+- [`roles/runner_registration`](roles/runner_registration/README.md) -
+  reconcile each runner's registration state on GitHub and on disk.
+  Second role in the register-runners flow; runs after
+  `runner_binary` (which lays `config.sh` on disk) and before
+  `runner_service`. Controller-side `ansible.builtin.uri` calls probe
+  `/repos/.../actions/runners` and mint registration / removal tokens
+  with `no_log: true` on every token-bearing task; the GitHub PAT
+  rides only in `Authorization` headers and never lands in URL query
+  strings, argv, or shell history.
+- [`roles/runner_service`](roles/runner_service/README.md) - reconcile
+  the systemd service for each runner. Third (and last) role in the
+  register-runners flow; runs after `runner_registration` (which lays
+  `.runner` on disk - both `config.sh` and `.runner` are required for
+  `svc.sh install` to succeed). Probes for the unit, installs via
+  `svc.sh install <user>` when absent, enables + starts via
+  `ansible.builtin.systemd`, then re-checks `systemctl is-active` per
+  entry with a failure message that names the unit and points at
+  `journalctl -u <unit> --no-pager -n 200`.
 
 ## Feature folders
 
-- [Current feature: 03 - groups, users, sudoers removal](docs/dev/implementation/03-groups-users-sudoers-removal/)
+- [Current feature: 08 - GitHub runners registration](docs/dev/implementation/08-github-runners-registration/)
+  - [Problem](docs/dev/implementation/08-github-runners-registration/problem.md)
+  - [Plan](docs/dev/implementation/08-github-runners-registration/plan.md)
+- [03 - groups, users, sudoers removal](docs/dev/implementation/03-groups-users-sudoers-removal/)
   - [Problem](docs/dev/implementation/03-groups-users-sudoers-removal/problem.md)
   - [Plan](docs/dev/implementation/03-groups-users-sudoers-removal/plan.md)
 - [02 - groups, users, sudoers creation](docs/dev/implementation/02-groups-users-sudoers-creation/)

@@ -50,10 +50,22 @@ setup() {
     export TRACE_FILE="${TEST_TMP}/trace"
     : > "${TRACE_FILE}"
 
+    # The provisioner branch returns a one-VM array because the new
+    # host-file-server staging step reads the first ipAddress out of
+    # it; other vaults still get the placeholder object - their
+    # downstream consumers are stubbed too and never inspect the
+    # payload.
     cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "read-vault-config:$1:$2" >> "${TRACE_FILE}"
-printf '%s' '{"stub":"vault"}'
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[{"vmName":"a","ipAddress":"10.10.0.50","username":"u","password":"p"}]'
+        ;;
+    *)
+        printf '%s' '{"stub":"vault"}'
+        ;;
+esac
 STUB
 
     cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
@@ -69,7 +81,52 @@ echo "build-extra-vars:$*" >> "${TRACE_FILE}"
 printf '%s' '{"stub":"extra-vars"}'
 STUB
 
+    # _stage-host-fileserver.sh is stubbed at the orchestrator
+    # boundary - the bridge's only contract with it is the three
+    # KEY=value lines on stdout. The staging helper's own bats file
+    # covers its pwsh.exe round-trips and polling logic. Override
+    # the per-test outputs via STAGE_STUB_* env vars.
+    cat >"${TEST_REPO}/ops/_stage-host-fileserver.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "stage-host-fileserver:$*" >> "${TRACE_FILE}"
+if [[ "${STAGE_STUB_EXIT:-0}" != "0" ]]; then
+    echo "stub-stage-failure" >&2
+    exit "${STAGE_STUB_EXIT}"
+fi
+printf 'RUNNER_VERSION=%s\n' "${STAGE_STUB_VERSION:-2.999.0}"
+printf 'BASE_URL=%s\n'        "${STAGE_STUB_BASE_URL:-http://10.10.0.1:8745}"
+printf 'PID=%s\n'             "${STAGE_STUB_FS_PID:-12345}"
+STUB
+
     chmod +x "${TEST_REPO}/ops/"_*.sh
+
+    # pwsh.exe stub - the bridge still invokes pwsh.exe directly for
+    # the EXIT-trap stop call (the staging helper does not own the
+    # lifecycle of the listener it backgrounds; the bridge has to
+    # outlive ansible-playbook). The stub records the -ProcessId arg
+    # so a test can verify the captured value flows through cleanup.
+    cat >"${TEST_TMP}/stubs/pwsh.exe" <<'STUB'
+#!/usr/bin/env bash
+file=""
+process_id=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -File)      file="$2";       shift 2 ;;
+        -ProcessId) process_id="$2"; shift 2 ;;
+        *)          shift ;;
+    esac
+done
+case "$(basename "${file}")" in
+    _stop-host-file-server.ps1)
+        echo "stop-host-file-server:${process_id}" >> "${TRACE_FILE}"
+        ;;
+    *)
+        echo "pwsh-stub: unhandled file=${file}" >&2
+        exit 99
+        ;;
+esac
+STUB
+    chmod +x "${TEST_TMP}/stubs/pwsh.exe"
 
     # ansible-playbook stub - records argv to a log so the dispatch
     # contract can be asserted without an Ansible install.
@@ -152,6 +209,160 @@ teardown() {
     [ "${status}" -eq 0 ]
     leftovers="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'vm-ansible.*' -print 2>/dev/null || true)"
     [ -z "${leftovers}" ]
+}
+
+@test "NEEDS_GITHUB_RUNNERS unset keeps the bridge on the two-vault path" {
+    # Default entry points (create-users, remove-users) must not pay
+    # for the GitHubRunners vault read or surface the new keys.
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:VmUsers:VmUsersConfig"* ]]
+    [[ "${trace}" != *"read-vault-config:GitHubRunners:"* ]]
+    [[ "${trace}" != *"--runners-config"* ]]
+    [[ "${trace}" != *"--github-token"* ]]
+}
+
+@test "NEEDS_GITHUB_RUNNERS=1 with GH_TOKEN drives the third vault read and threads both keys" {
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:VmUsers:VmUsersConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:GitHubRunners:GitHubRunnersConfig"* ]]
+    [[ "${trace}" == *"--runners-config"* ]]
+    [[ "${trace}" == *"--github-token"*"ghp_example"* ]]
+
+    # The third read must come after the first two so a partial
+    # failure of the runners vault leaves the existing two-vault
+    # path's diagnostics intact for create-users / remove-users.
+    [ "$(awk '/^read-vault-config:VmUsers:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" ]
+}
+
+@test "NEEDS_GITHUB_RUNNERS=1 without GH_TOKEN fails fast with a clear message" {
+    # The bridge itself never prompts - that is the operator entry's
+    # job. Refusing the call here is louder than silently emitting
+    # an empty token downstream.
+    export NEEDS_GITHUB_RUNNERS=1
+    unset GH_TOKEN
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"GH_TOKEN"* ]]
+
+    # Bail before any vault read so a misconfigured caller does not
+    # spawn pwsh.exe just to discover it has no token.
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" != *"read-vault-config"* ]]
+}
+
+@test "GH_TOKEN is cleared from the bridge env before ansible-playbook runs" {
+    # Threading the token through extra-vars only (not env) keeps it
+    # out of any child process other than ansible-playbook itself,
+    # and out of the ansible-playbook env at that.
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+
+    # Replace the ansible-playbook stub with one that records env.
+    cat >"${TEST_TMP}/stubs/ansible-playbook" <<'STUB'
+#!/usr/bin/env bash
+printenv GH_TOKEN > "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" || true
+exit 0
+STUB
+    chmod +x "${TEST_TMP}/stubs/ansible-playbook"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" ]
+}
+
+@test "NEEDS_GITHUB_RUNNERS=1 calls the staging helper with the provisioner config and token" {
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"stage-host-fileserver:"*"--provisioner-config"*"--github-token"*"ghp_example"* ]]
+    [[ "${trace}" == *"stage-host-fileserver:"*"--listener-log"* ]]
+
+    # Staging fires between the third vault read and extra-vars
+    # compose; any reorder would corrupt the extra-vars payload.
+    [ "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^stage-host-fileserver:/{print NR; exit}'           "${TRACE_FILE}")" ]
+    [ "$(awk '/^stage-host-fileserver:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
+}
+
+@test "NEEDS_GITHUB_RUNNERS=1 threads BASE_URL + runner_version into extra-vars" {
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+    export STAGE_STUB_VERSION="2.999.0"
+    export STAGE_STUB_BASE_URL="http://10.10.0.1:8745"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"--host-base-url"*"http://10.10.0.1:8745"* ]]
+    [[ "${trace}" == *"--runner-version"*"2.999.0"* ]]
+}
+
+@test "EXIT trap stops the host file server with the captured PID even on a clean exit" {
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+    export STAGE_STUB_FS_PID="78901"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"stop-host-file-server:78901"* ]]
+}
+
+@test "EXIT trap stops the host file server when ansible-playbook itself fails" {
+    # The failure path the clean-exit case does not exercise: staging
+    # succeeded so a PID is captured, but ansible-playbook returns
+    # non-zero. The trap must still kill the listener, otherwise an
+    # operator who hits a play-side error has a stranded HttpListener
+    # holding the port until they reboot.
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+    export STAGE_STUB_FS_PID="65432"
+    export ANSIBLE_PLAYBOOK_STUB_EXIT=2
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"stop-host-file-server:65432"* ]]
+
+    # And the tmpdir still gets cleaned - both legs of cleanup() run
+    # regardless of which exit path triggered the trap.
+    leftovers="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'vm-ansible.*' -print 2>/dev/null || true)"
+    [ -z "${leftovers}" ]
+}
+
+@test "staging helper failure aborts the bridge before ansible-playbook runs" {
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+    export STAGE_STUB_EXIT=7
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+
+    # ansible-playbook stub records argv to this file when invoked;
+    # the file must be absent because the bridge bailed before the
+    # dispatch step.
+    [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}" ]
 }
 
 @test "tmpdir is removed when a sibling fails mid-pipeline" {

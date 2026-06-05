@@ -1,0 +1,255 @@
+---
+# Verify the post-converge / post-idempotence state by inspecting two
+# log surfaces:
+#   - the controller-side mock GitHub API's JSON-lines request log
+#     (asserts the right HTTP calls were made for each runner)
+#   - the per-runner stub config.sh logs inside the container
+#     (asserts the right CLI invocations happened for each runner)
+#
+# The mock log spans BOTH the converge and the idempotence runs, so
+# per-branch request counts double for everything except the no-token
+# branches. The assertions below account for this by checking
+# converge-run counts then deriving idempotence-run counts.
+
+- name: Verify - runner_registration role post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Pull the mock's request log over to the controller for parsing.
+    # delegate_to: localhost because the mock lives on the controller,
+    # not in the managed container.
+    - name: Read controller-side mock request log
+      ansible.builtin.slurp:
+        src: /tmp/runner-registration-mock.log
+      delegate_to: localhost
+      register: mock_log_raw
+
+    - name: Parse mock request log into a list of dicts
+      ansible.builtin.set_fact:
+        mock_requests: >-
+          {{ (mock_log_raw['content'] | b64decode).splitlines()
+             | map('from_json') | list }}
+
+    # runner-healthy:
+    #   converge run -> 1 GET (existence probe finds it -> skip).
+    #   idempotence run -> 1 GET (same outcome).
+    #   total expected: 2 GETs, 0 POSTs to either token endpoint.
+    - name: Healthy runner emitted only existence probes (no token mints)
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'GET')
+              | selectattr('path', 'search', '/repos/example/repo-healthy/actions/runners')
+              | list | length) == 2
+          - >-
+            (mock_requests
+              | selectattr('path', 'search', '/repos/example/repo-healthy/.*token')
+              | list | length) == 0
+
+    # runner-fresh:
+    #   converge run -> 1 GET (absent) + 1 POST registration-token.
+    #   idempotence run -> 1 GET (side_effect made it present) + 0 POSTs.
+    #   total expected: 2 GETs, 1 registration-token POST, 0 remove-token POSTs.
+    - name: Fresh runner minted one registration token across the two runs
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'GET')
+              | selectattr('path', 'search', '/repos/example/repo-fresh/actions/runners')
+              | list | length) == 2
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'POST')
+              | selectattr('path', 'search',
+                            '/repos/example/repo-fresh/actions/runners/registration-token')
+              | list | length) == 1
+          - >-
+            (mock_requests
+              | selectattr('path', 'search',
+                            '/repos/example/repo-fresh/actions/runners/remove-token')
+              | list | length) == 0
+
+    # runner-reregister:
+    #   converge run -> 1 GET + 1 POST remove-token + 1 POST registration-token.
+    #   idempotence run -> 1 GET (side_effect made it present) + 0 POSTs.
+    #   total expected: 2 GETs, 1 of each token POST.
+    - name: Re-register runner minted both tokens once across the two runs
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'GET')
+              | selectattr('path', 'search', '/repos/example/repo-reregister/actions/runners')
+              | list | length) == 2
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'POST')
+              | selectattr('path', 'search',
+                            '/repos/example/repo-reregister/actions/runners/remove-token')
+              | list | length) == 1
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'POST')
+              | selectattr('path', 'search',
+                            '/repos/example/repo-reregister/actions/runners/registration-token')
+              | list | length) == 1
+
+    # Selector negative: the runner_entry_resolve meta dep must drop
+    # the other-host entry on `instance`. If any request for repo-leak
+    # shows up, the selectattr filter let an entry through.
+    - name: Leak entry on other-host never reached the mock
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('path', 'search', '/repos/example/repo-leak')
+              | list | length) == 0
+        fail_msg: >-
+          runner_entry_resolve let an entry for vmName=other-host
+          through; runner-leak reached the GitHub mock.
+
+    # Stub config.sh log: runner-fresh saw one --unattended invocation
+    # (the idempotence pass took the healthy branch and did not call
+    # config.sh again).
+    - name: Read stub config.sh log for runner-fresh
+      ansible.builtin.slurp:
+        src: /var/log/runner-runner-fresh-config.log
+      register: log_fresh_raw
+
+    - name: Parse runner-fresh config.sh log
+      ansible.builtin.set_fact:
+        log_fresh: >-
+          {{ (log_fresh_raw['content'] | b64decode).splitlines()
+             | map('from_json') | list }}
+
+    - name: Runner-fresh config.sh ran once with --unattended and the right flags
+      ansible.builtin.assert:
+        that:
+          - log_fresh | length == 1
+          - log_fresh[0].argv[0] == '--unattended'
+          - "'--url' in log_fresh[0].argv"
+          - "'--token' in log_fresh[0].argv"
+          - "'--name' in log_fresh[0].argv"
+          - "'--labels' in log_fresh[0].argv"
+          - >-
+            log_fresh[0].argv[log_fresh[0].argv.index('--url') + 1]
+            == 'https://github.com/example/repo-fresh'
+          - >-
+            log_fresh[0].argv[log_fresh[0].argv.index('--name') + 1]
+            == 'runner-fresh'
+          - >-
+            log_fresh[0].argv[log_fresh[0].argv.index('--labels') + 1]
+            == 'self-hosted,ubuntu,x64'
+
+    # runner-healthy log must be empty: the role took the skip branch
+    # on both runs.
+    - name: Read stub config.sh log for runner-healthy
+      ansible.builtin.slurp:
+        src: /var/log/runner-runner-healthy-config.log
+      register: log_healthy_raw
+
+    - name: Runner-healthy config.sh was never invoked
+      ansible.builtin.assert:
+        that:
+          - >-
+            (log_healthy_raw['content'] | b64decode | length) == 0
+
+    # runner-reregister: two invocations in order - remove then
+    # --unattended. Idempotence run took the skip branch.
+    - name: Read stub config.sh log for runner-reregister
+      ansible.builtin.slurp:
+        src: /var/log/runner-runner-reregister-config.log
+      register: log_re_raw
+
+    - name: Parse runner-reregister config.sh log
+      ansible.builtin.set_fact:
+        log_re: >-
+          {{ (log_re_raw['content'] | b64decode).splitlines()
+             | map('from_json') | list }}
+
+    - name: Runner-reregister config.sh ran remove then --unattended
+      ansible.builtin.assert:
+        that:
+          - log_re | length == 2
+          - log_re[0].argv[0] == 'remove'
+          - "'--token' in log_re[0].argv"
+          - log_re[1].argv[0] == '--unattended'
+          - "'--url' in log_re[1].argv"
+
+    # .runner marker state after both runs: present for every
+    # reconciled entry. healthy was seeded; fresh + re-register got
+    # one written by the stub config.sh on --unattended.
+    - name: Stat .runner for every reconciled entry
+      ansible.builtin.stat:
+        path: "/opt/runners/{{ item }}/.runner"
+      register: marker_stats
+      loop:
+        - runner-healthy
+        - runner-fresh
+        - runner-reregister
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Every reconciled entry has a .runner marker after converge
+      ansible.builtin.assert:
+        that:
+          - >-
+            (marker_stats.results | map(attribute='stat.exists') | list)
+            == [true, true, true]
+
+    # Negative branch: an empty github_token must trip the role's
+    # input assert before any GitHub call. Truncate the mock log first
+    # so the post-block assertion measures only requests made during
+    # the rescued include.
+    - name: Truncate mock log before the empty-token probe
+      ansible.builtin.copy:
+        dest: /tmp/runner-registration-mock.log
+        content: ""
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: Empty github_token must fast-fail before any GitHub round-trip
+      block:
+        # Stage the empty-token fixture at play scope (not as
+        # include_role.vars) so ansible-lint does not flag the inputs
+        # as role-internal under var-naming[no-role-prefix]. Same
+        # posture the runner_binary unreachable-server block uses.
+        - name: Stage fixture - empty github_token
+          ansible.builtin.set_fact:
+            github_token: ""
+            github_runners_config:
+              - vmName: instance
+                runnerName: runner-fresh
+                runnerUsername: u-runner-shared
+                deployUsername: u-deploy
+                githubUrl: https://github.com/example/repo-fresh
+                runnerLabels: [self-hosted]
+            github_api_base_url: "http://127.0.0.1:18080"
+
+        - name: Re-apply role with empty github_token
+          ansible.builtin.include_role:
+            name: runner_registration
+
+        - name: Reached this point - the assert did not fire as required
+          ansible.builtin.fail:
+            msg: >-
+              runner_registration accepted an empty github_token; the
+              role's input assert is missing or broken.
+      rescue:
+        - name: Confirm the failure came from the input assert
+          ansible.builtin.assert:
+            that:
+              - "'github_token' in (ansible_failed_result.msg | default(''))"
+
+    - name: Read mock log after the empty-token probe
+      ansible.builtin.slurp:
+        src: /tmp/runner-registration-mock.log
+      delegate_to: localhost
+      register: mock_log_after_raw
+
+    - name: Empty-token branch must not have reached the mock
+      ansible.builtin.assert:
+        that:
+          - (mock_log_after_raw['content'] | b64decode | length) == 0
