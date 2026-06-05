@@ -230,66 +230,101 @@ step touches anything. Also the smallest of the three; establishes the
   per entry, `systemctl list-unit-files --type=service --no-pager
   --no-legend 'actions.runner.*{{ item.runnerName }}.service' | awk
   '{print $1}' | head -n1`, `changed_when: false`, `register:
-  unit_probes`. Loops over `vm_runner_entries`. Both directions
-  `include_tasks` this file so the probe lives in one place.
-- `roles/runner_service/tasks/main.yml` (modified) - replace the
-  inline probe with `include_tasks: _probe-unit.yml`. No behaviour
-  change.
+  runner_service_unit_probes`. The role-prefixed register name is what
+  ansible-lint's `var-naming[no-role-prefix]` enforces under the
+  production profile (and matches the existing
+  `runner_service_unit_probes` name in `tasks/main.yml`). Loops over
+  `vm_runner_entries`. Both directions and both call sites within the
+  register direction `include_tasks` this file; the shared register
+  overwrites between calls, so the install branch consumes the
+  pre-install snapshot before the re-probe overwrites it.
+- `roles/runner_service/tasks/main.yml` (modified) - replace both
+  inline probe sites with `include_tasks: _probe-unit.yml`. Downstream
+  consumers read the single `runner_service_unit_probes` register
+  (post-install snapshot for the systemd / is-active tasks; pre-install
+  snapshot for the install branch, which sits between the two
+  includes). No external behaviour change.
 - `roles/runner_service/tasks/remove.yml` (new) - remove direction.
   Per entry:
-  1. `include_tasks: _probe-unit.yml` -> populates `unit_probes`.
+  1. `include_tasks: _probe-unit.yml` -> populates
+     `runner_service_unit_probes`.
   2. **Stop branch** — `ansible.builtin.systemd` with
-     `name: "{{ item.stdout }}"`, `state: stopped`, `enabled: false`,
-     `become: true`. Looped over `unit_probes.results`, guarded by
-     `when: item.stdout != ''`. Already-stopped / already-disabled
-     is a no-op via stock module idempotence.
+     `name: "{{ item.stdout | trim }}"`, `state: stopped`,
+     `enabled: false`, `become: true`. Looped over
+     `runner_service_unit_probes.results`, guarded by
+     `when: (item.stdout | trim) | length > 0`. Already-stopped /
+     already-disabled is a no-op via stock module idempotence.
   3. **Uninstall branch** — `ansible.builtin.command` with
-     `cmd: "sudo ./svc.sh uninstall"`,
+     `cmd: "./svc.sh uninstall"`,
      `chdir: "/opt/runners/{{ item.item.runnerName }}"`, `become:
-     true`. Same `when: item.stdout != ''` guard. svc.sh resolves
-     the runner root via `$(pwd)`, so `chdir` is the contract — same
-     as feature 08's install branch.
+     true`. Same `length > 0` guard. svc.sh resolves the runner root
+     via `$(pwd)`, so `chdir` is the contract — same as feature 08's
+     install branch. No inline `sudo` because `become: true` already
+     provides root; the install branch in main.yml mirrors this shape.
 - `roles/runner_service/README.md` (modified) - add a **Remove
   direction** subsection documenting the new `tasks_from: remove`
   entry point: inputs (`vm_runner_entries`), behaviour (probe ->
   stop -> uninstall), idempotence (absent unit / inactive service
   is a silent no-op).
 - `Tests/molecule/runner_service/remove/` (new) - dedicated scenario.
-  `prepare.yml` runs the role's own `tasks/main.yml` against a
-  pre-seeded `/opt/runners/<name>/` (with a stub `svc.sh` that
-  installs a stub systemd unit, same shape as feature 08's register
-  scenario). Converge invokes the role with `tasks_from: remove`.
-  Verify asserts the unit is absent (`systemctl list-unit-files`
-  returns no match) and inactive. Lives outside `Tests/roles/` for
-  the same reason as the existing register scenarios (ansible-lint's
-  `var-naming[no-role-prefix]` would otherwise scan verify.yml).
+  `prepare.yml` seeds three runner directories with a stub `svc.sh`
+  that implements both `install` (mirrored from the default scenario)
+  and `uninstall` (disable + remove unit file + daemon-reload). The
+  three entries cover the three teardown branches:
+  - `runner-active` - unit pre-installed and started -> stop
+    transitions inactive, uninstall removes the file.
+  - `runner-stopped` - unit pre-installed, never started -> stop is
+    a no-op, uninstall removes the file.
+  - `runner-absent` - probe stdout empty -> both branches skip.
+  A fourth entry (`runner-leak`, `vmName: other-host`) covers the
+  selector-negative case symmetric to the default scenario.
+  Converge invokes the role via `include_role` with
+  `tasks_from: remove` - not `import_role`: `import_role` resolves at
+  parse-time against the syntax-check inventory's roles search path,
+  which does not honour molecule's relative `roles_path` override,
+  so the syntax step fails before converge runs. `include_role`
+  defers resolution to runtime when the override is in effect.
+  The default scenario uses `include_role` for the same reason; the
+  deregister playbook (step 5) uses `import_role` because it runs
+  against the real repo layout where `roles/` sits on the standard
+  search path. Verify asserts:
+  - both previously-installed unit files are absent under
+    `/etc/systemd/system`,
+  - `systemctl is-active` returns a non-active state for both,
+  - `runner-absent` never produced a unit file,
+  - the leak entry's unit did not land on `instance`,
+  - `systemctl list-unit-files 'actions.runner.*'` returns zero
+    matches after the remove.
+  Lives outside `Tests/roles/` for the same reason as the existing
+  register scenarios (ansible-lint's `var-naming[no-role-prefix]`
+  would otherwise scan verify.yml).
 
 **Behaviour (sketch)**
 
 ```yaml
-- name: Probe systemd units for the runners on this host
+- name: Probe for the systemd unit file (per runner)
   ansible.builtin.include_tasks: _probe-unit.yml
 
 - name: Stop and disable the runner service
   ansible.builtin.systemd:
-    name:    "{{ item.stdout }}"
+    name:    "{{ item.stdout | trim }}"
     state:   stopped
     enabled: false
   become: true
-  loop: "{{ unit_probes.results }}"
+  loop: "{{ runner_service_unit_probes.results }}"
   loop_control:
     label: "{{ item.item.runnerName }}"
-  when: item.stdout | length > 0
+  when: (item.stdout | trim) | length > 0
 
 - name: Uninstall the runner systemd unit
   ansible.builtin.command:
-    cmd:   "sudo ./svc.sh uninstall"
+    cmd:   "./svc.sh uninstall"
     chdir: "/opt/runners/{{ item.item.runnerName }}"
   become: true
-  loop: "{{ unit_probes.results }}"
+  loop: "{{ runner_service_unit_probes.results }}"
   loop_control:
     label: "{{ item.item.runnerName }}"
-  when: item.stdout | length > 0
+  when: (item.stdout | trim) | length > 0
   changed_when: true
 ```
 
