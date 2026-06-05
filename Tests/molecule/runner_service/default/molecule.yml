@@ -1,0 +1,59 @@
+---
+# Molecule scenario for the runner_service role.
+#
+# Unlike the binary / registration scenarios, this one needs a real
+# systemd-as-PID-1 inside the container: the role under test calls
+# `systemctl list-unit-files`, `ansible.builtin.systemd`, and
+# `systemctl is-active`, none of which behave usefully against a
+# /bin/sleep entrypoint. ubuntu:24.04 ships /usr/sbin/init (systemd)
+# in its base image, so exec'ing init directly under privileged +
+# cgroup mounts gives a working systemd without a custom image.
+#
+# The privileged + cgroup setup is the same pattern used by every
+# upstream systemd-in-docker recipe (geerlingguy/docker-ubuntu-ansible,
+# the Ansible docs' systemd container example): cgroupns_mode: host
+# so the container shares the host's cgroup namespace, the cgroup
+# tmpfs bind so the container can manipulate its own cgroup, and
+# tmpfs for /run + /run/lock + /tmp so systemd's startup state has
+# a writable home.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: instance
+    image: docker.io/library/ubuntu:24.04
+    pre_build_image: true
+    command: /usr/sbin/init
+    privileged: true
+    cgroupns_mode: host
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Roles live three levels above the scenario; point Ansible at
+      # the repo's roles/ directory so include_role: name=runner_service
+      # resolves the role (and its meta dependency on
+      # runner_entry_resolve) without copying files into the scenario.
+      roles_path: ../../../../roles
+      stdout_callback: yaml
+      callbacks_enabled: profile_tasks
+  inventory:
+    host_vars:
+      instance:
+        ansible_user: root
+
+verifier:
+  name: ansible

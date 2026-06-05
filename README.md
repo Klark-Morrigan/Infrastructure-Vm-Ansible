@@ -487,6 +487,15 @@ each role lands; the create-users playbook orders them
   with `no_log: true` on every token-bearing task; the GitHub PAT
   rides only in `Authorization` headers and never lands in URL query
   strings, argv, or shell history.
+- [`roles/runner_service`](roles/runner_service/README.md) - reconcile
+  the systemd service for each runner. Third (and last) role in the
+  register-runners flow; runs after `runner_registration` (which lays
+  `.runner` on disk - both `config.sh` and `.runner` are required for
+  `svc.sh install` to succeed). Probes for the unit, installs via
+  `svc.sh install <user>` when absent, enables + starts via
+  `ansible.builtin.systemd`, then re-checks `systemctl is-active` per
+  entry with a failure message that names the unit and points at
+  `journalctl -u <unit> --no-pager -n 200`.
 
 ## Feature folders
 
