@@ -72,6 +72,22 @@ if [[ "${NEEDS_GITHUB_RUNNERS:-0}" == "1" ]]; then
     needs_github_runners=1
 fi
 
+# The host file server is its own opt-in on top of NEEDS_GITHUB_RUNNERS.
+# Register sets both (VMs fetch the tarball); deregister sets only the
+# former (nothing is fetched, so spawning the HttpListener would waste a
+# port and add a failure surface the down path does not need). The
+# file-server flag without the runners flag is meaningless - the
+# listener serves the runner tarball and the runner_binary role is
+# only loaded under NEEDS_GITHUB_RUNNERS=1.
+needs_host_file_server=0
+if [[ "${NEEDS_HOST_FILE_SERVER:-0}" == "1" ]]; then
+    if [[ "${needs_github_runners}" -ne 1 ]]; then
+        echo "_run-playbook.sh: NEEDS_HOST_FILE_SERVER=1 requires NEEDS_GITHUB_RUNNERS=1" >&2
+        exit 2
+    fi
+    needs_host_file_server=1
+fi
+
 # ---------------------------------------------------------------------------
 # 2. Per-invocation tmpdir. mktemp -d under $TMPDIR (tmpfs on most
 #    distros, so secrets never reach the disk-backed FS). chmod 700
@@ -81,11 +97,13 @@ fi
 tmpdir="$(mktemp -d -t vm-ansible.XXXXXX)"
 chmod 700 "${tmpdir}"
 
-# Combined cleanup. The host file server (when GitHubRunners opt-in
-# is active) is a long-lived pwsh process the bridge starts before
-# ansible-playbook runs; killing it on every exit path - including
-# signal-induced - is the trap's job, and bundling that with the
-# tmpdir rm keeps a single EXIT handler for the orchestrator.
+# Combined cleanup. The host file server (when the caller opted into
+# it via NEEDS_HOST_FILE_SERVER=1) is a long-lived pwsh process the
+# bridge starts before ansible-playbook runs; killing it on every
+# exit path - including signal-induced - is the trap's job, and
+# bundling that with the tmpdir rm keeps a single EXIT handler for
+# the orchestrator. When the caller did not opt into the file server,
+# host_fs_pid stays empty and the stop call is a silent no-op.
 host_fs_pid=""
 cleanup() {
     if [[ -n "${host_fs_pid}" ]]; then
@@ -164,7 +182,7 @@ hosts_file="${tmpdir}/hosts.json"
 chmod 600 "${hosts_file}"
 
 # ---------------------------------------------------------------------------
-# 5b. Host file server staging (GitHubRunners opt-in only).
+# 5b. Host file server staging (NEEDS_HOST_FILE_SERVER opt-in only).
 #
 #     The whole resolve-tarball-then-listener pipeline lives in its
 #     own helper so this orchestrator stays a thin sequence of
@@ -173,8 +191,13 @@ chmod 600 "${hosts_file}"
 #     parse into locals for use below (extra-vars compose, EXIT
 #     trap). The listener it backgrounds lives until the EXIT trap
 #     hands its pid to _stop-host-file-server.ps1.
+#
+#     The deregister flow leaves NEEDS_HOST_FILE_SERVER unset and so
+#     skips this block entirely: nothing is fetched on the down path,
+#     and host_fs_pid stays empty so the EXIT trap's stop call is a
+#     no-op.
 # ---------------------------------------------------------------------------
-if [[ "${needs_github_runners}" -eq 1 ]]; then
+if [[ "${needs_host_file_server}" -eq 1 ]]; then
     listener_log="${tmpdir}/fileserver.out"
     stage_out="$("${script_dir}/_stage-host-fileserver.sh" \
         --provisioner-config "${provisioner_file}" \
@@ -204,9 +227,17 @@ if [[ -n "${runners_file}" ]]; then
     extra_vars_args+=(
         --runners-config "${runners_file}"
         --github-token   "${github_token}"
-        --host-base-url  "${host_base_url}"
-        --runner-version "${runner_version}"
     )
+    # File-server pair only when the caller opted in: the deregister
+    # entry leaves host_base_url / runner_version empty, and the
+    # extra-vars doc genuinely omits the two keys rather than emitting
+    # empties (absence beats stale URL for the down-direction roles).
+    if [[ "${needs_host_file_server}" -eq 1 ]]; then
+        extra_vars_args+=(
+            --host-base-url  "${host_base_url}"
+            --runner-version "${runner_version}"
+        )
+    fi
 fi
 
 "${script_dir}/_build-extra-vars.sh" "${extra_vars_args[@]}" \

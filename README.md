@@ -319,9 +319,10 @@ entries).
 
 [`ops/register-runners.sh`](ops/register-runners.sh) prompts for the
 GitHub PAT via `read -s` when `GH_TOKEN` is unset, exports it plus
-`NEEDS_GITHUB_RUNNERS=1` (the opt-in flag the
-[bridge](#bridge-contract) keys off for the third vault read and the
-host-file-server staging), and dispatches
+`NEEDS_GITHUB_RUNNERS=1` (the [bridge](#bridge-contract)'s third
+vault-read gate) and `NEEDS_HOST_FILE_SERVER=1` (the bridge's
+host-file-server staging gate; register only, because the down path
+fetches nothing), and dispatches
 [`playbooks/register-runners.yml`](playbooks/register-runners.yml)
 through the bridge. The same operator knobs as the users-side flows
 work unchanged:
@@ -382,22 +383,34 @@ its own external boundary:
   union of helper flags and dispatches to one per-payload-domain
   helper per domain present, then merges their JSON fragments via
   `jq -s add`. Required flags: `--provisioner-config <file>` and
-  `--users-config <file>`. Optional paired flags (register-runners
-  flow): `--runners-config <file>`, `--github-token <value>`,
-  `--host-base-url <url>`, `--runner-version <ver>` — all four
-  arrive together or none, the orchestrator rejects any partial
-  set. The per-domain helpers below own their own validation and
-  bats coverage:
+  `--users-config <file>`. The runners-domain flags split into two
+  paired groups, both optional:
+  - **runners pair**: `--runners-config <file>` + `--github-token
+    <value>` — the GitHubRunners-vault read result. Carries
+    everything either direction (register / deregister) needs.
+  - **file-server pair**: `--host-base-url <url>` + `--runner-version
+    <ver>` — the bridge-resolved tarball download URL the register
+    flow adds on top. The deregister flow omits both keys (its VMs
+    fetch nothing).
+  Within each pair the two flags arrive together or not at all;
+  partial sets are rejected before any helper runs. The file-server
+  pair has no meaning without the runners pair and is rejected if
+  supplied alone. The per-domain helpers below own their own
+  validation and bats coverage:
   - [`ops/_build-extra-vars-inventory.sh`](ops/_build-extra-vars-inventory.sh)
     — emits `vm_provisioner_config`. Always-on; the inventory source
     every payload domain shares.
   - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
     — emits `vm_users_config` for the groups / users / sudoers roles.
   - [`ops/_build-extra-vars-runners.sh`](ops/_build-extra-vars-runners.sh)
-    — emits `github_runners_config`, `github_token`,
-    `host_file_server_base_url`, and `runner_version` for the runner
-    roles. Owns the token-non-empty fast-fail and threads the value
-    through `jq --arg` so shell-special characters land verbatim.
+    — emits `github_runners_config` + `github_token` always, plus
+    `host_file_server_base_url` + `runner_version` when the
+    file-server pair is supplied. Owns the token-non-empty
+    fast-fail and threads the value through `jq --arg` so
+    shell-special characters land verbatim. Genuinely omits the two
+    file-server keys when their pair is absent (the down-direction
+    roles never reference them and an empty string would be a
+    stale-URL trap).
   Config inputs are file paths (not values) so secrets stay out of
   argv. The GitHub token is the lone exception, passed by value
   because the entry script already holds it in a shell variable;
@@ -414,15 +427,22 @@ its own external boundary:
   `VmUsers`) and adds a third (`GitHubRunners`) when the caller
   exports `NEEDS_GITHUB_RUNNERS=1` plus `GH_TOKEN=...` - the
   opt-in gate keeps the create-users / remove-users entry points
-  free of an unused `pwsh.exe` round-trip. When opted in, the
-  bridge delegates the Windows-side staging to
-  `_stage-host-fileserver.sh` and (via the EXIT trap) stops the
-  listener it backgrounded on every exit path. `GH_TOKEN` is
-  cleared from the bridge environment before `ansible-playbook`
-  runs; the downstream play receives the token via the chmod-600
-  extra-vars file only. Any args after the playbook path are
-  forwarded verbatim to `ansible-playbook` (so `--tags`, `--limit`,
-  `--check`, `-v`, etc. all work without changes to the bridge).
+  free of an unused `pwsh.exe` round-trip. A second, independent
+  gate `NEEDS_HOST_FILE_SERVER=1` (set by the register entry
+  alongside `NEEDS_GITHUB_RUNNERS=1`, omitted by the deregister
+  entry) controls the Windows-side staging: when set, the bridge
+  delegates to `_stage-host-fileserver.sh` and (via the EXIT trap)
+  stops the listener it backgrounded on every exit path; when
+  unset, neither the listener nor the corresponding stop call run,
+  and the file-server-pair extra-vars keys are genuinely absent.
+  `NEEDS_HOST_FILE_SERVER=1` without `NEEDS_GITHUB_RUNNERS=1` is
+  rejected fast - the listener has no consumer without the
+  runner_binary role. `GH_TOKEN` is cleared from the bridge
+  environment before `ansible-playbook` runs; the downstream play
+  receives the token via the chmod-600 extra-vars file only. Any
+  args after the playbook path are forwarded verbatim to
+  `ansible-playbook` (so `--tags`, `--limit`, `--check`, `-v`,
+  etc. all work without changes to the bridge).
 - [`ops/_stage-host-fileserver.sh`](ops/_stage-host-fileserver.sh)
   - GitHubRunners opt-in branch. Drives the three pwsh.exe
   round-trips (resolve version, ensure tarball, start listener),
@@ -456,10 +476,13 @@ its own external boundary:
 
 External contract (consumed by feature playbooks): the extra-vars
 document always has the two top-level keys `vm_provisioner_config`
-and `vm_users_config`, and additionally `github_runners_config`,
-`github_token`, `host_file_server_base_url`, and `runner_version`
-when the caller opts into the GitHubRunners vault read. The
-inventory has one group `vm_provisioner_hosts` keyed by `vmName`.
+and `vm_users_config`. Additionally, `github_runners_config` and
+`github_token` are present whenever the caller opts into the
+GitHubRunners vault read (`NEEDS_GITHUB_RUNNERS=1`), and
+`host_file_server_base_url` + `runner_version` are present only
+when the caller also opts into the host file server
+(`NEEDS_HOST_FILE_SERVER=1`, register flow only). The inventory
+has one group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)

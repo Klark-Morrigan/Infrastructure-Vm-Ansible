@@ -246,6 +246,45 @@ teardown() {
       "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" ]
 }
 
+@test "NEEDS_GITHUB_RUNNERS=1 alone skips the host file server (deregister flow shape)" {
+    # The deregister entry sets NEEDS_GITHUB_RUNNERS=1 but not
+    # NEEDS_HOST_FILE_SERVER, because nothing is fetched on the down
+    # path. The third vault read still fires, the staging helper does
+    # not, and the extra-vars helper does not receive the file-server
+    # pair (so the merged document genuinely lacks the two keys).
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+    unset NEEDS_HOST_FILE_SERVER
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"read-vault-config:GitHubRunners:"* ]]
+    [[ "${trace}" != *"stage-host-fileserver:"* ]]
+    [[ "${trace}" != *"--host-base-url"* ]]
+    [[ "${trace}" != *"--runner-version"* ]]
+    [[ "${trace}" != *"stop-host-file-server"* ]]
+}
+
+@test "NEEDS_HOST_FILE_SERVER=1 without NEEDS_GITHUB_RUNNERS fails fast" {
+    # The file-server flag is meaningless on its own: the listener it
+    # would spawn serves the runner tarball, and the runner_binary role
+    # is only loaded under NEEDS_GITHUB_RUNNERS=1. Reject before any
+    # vault read.
+    export NEEDS_HOST_FILE_SERVER=1
+    unset NEEDS_GITHUB_RUNNERS
+    unset GH_TOKEN
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"NEEDS_HOST_FILE_SERVER"* ]]
+    [[ "${output}" == *"NEEDS_GITHUB_RUNNERS"* ]]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" != *"read-vault-config"* ]]
+}
+
 @test "NEEDS_GITHUB_RUNNERS=1 without GH_TOKEN fails fast with a clear message" {
     # The bridge itself never prompts - that is the operator entry's
     # job. Refusing the call here is louder than silently emitting
@@ -283,8 +322,9 @@ STUB
     [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" ]
 }
 
-@test "NEEDS_GITHUB_RUNNERS=1 calls the staging helper with the provisioner config and token" {
+@test "NEEDS_HOST_FILE_SERVER=1 calls the staging helper with the provisioner config and token" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
 
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
@@ -302,8 +342,9 @@ STUB
       "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
 }
 
-@test "NEEDS_GITHUB_RUNNERS=1 threads BASE_URL + runner_version into extra-vars" {
+@test "NEEDS_HOST_FILE_SERVER=1 threads BASE_URL + runner_version into extra-vars" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_VERSION="2.999.0"
     export STAGE_STUB_BASE_URL="http://10.10.0.1:8745"
@@ -318,6 +359,7 @@ STUB
 
 @test "EXIT trap stops the host file server with the captured PID even on a clean exit" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_FS_PID="78901"
 
@@ -335,6 +377,7 @@ STUB
     # operator who hits a play-side error has a stranded HttpListener
     # holding the port until they reboot.
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_FS_PID="65432"
     export ANSIBLE_PLAYBOOK_STUB_EXIT=2
@@ -353,6 +396,7 @@ STUB
 
 @test "staging helper failure aborts the bridge before ansible-playbook runs" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_EXIT=7
 
