@@ -1,0 +1,53 @@
+---
+# Per-entry GitHub existence probe. Included once per `vm_runner_entries`
+# item (loop_var: entry) by both directions:
+#   - tasks/reconcile-entry.yml  (register direction; main.yml)
+#   - tasks/_remove-one.yml      (remove direction;   remove.yml)
+#
+# Three tasks here so the probe surface lives in exactly one place:
+#   1. Split owner/repo out of entry.githubUrl into two role-scoped
+#      facts the URI URL can read without repeating the parse.
+#   2. GET /repos/<owner>/<repo>/actions/runners (controller-side via
+#      delegate_to: localhost, since the managed VM is often behind a
+#      NAT without GitHub egress).
+#   3. Record whether GitHub already knows this entry's runner by name
+#      as the boolean `runner_registration_on_github`. The same fact
+#      name drives the reconcile decision in the register direction and
+#      the skip/remove decision in the remove direction.
+#
+# Auth header is fixed to `token <PAT>` (never URL query string, which
+# would survive in proxy access logs) and every task here is
+# `no_log: true` so neither the PAT nor the runner list ever lands at
+# any verbosity.
+
+- name: Parse owner and repo from githubUrl
+  ansible.builtin.set_fact:
+    runner_registration_entry_owner: >-
+      {{ (entry.githubUrl | urlsplit('path')
+          | regex_replace('^/', '')
+          | regex_replace('\\.git$', '')).split('/')[0] }}
+    runner_registration_entry_repo: >-
+      {{ (entry.githubUrl | urlsplit('path')
+          | regex_replace('^/', '')
+          | regex_replace('\\.git$', '')).split('/')[1] }}
+
+- name: Probe GitHub for existing registration of this runner
+  ansible.builtin.uri:
+    url: >-
+      {{ github_api_base_url }}/repos/{{ runner_registration_entry_owner
+      }}/{{ runner_registration_entry_repo }}/actions/runners?per_page=100
+    headers:
+      Authorization: "token {{ github_token }}"
+      Accept: application/vnd.github+json
+    return_content: true
+  delegate_to: localhost
+  register: runner_registration_runners_resp
+  no_log: true
+
+- name: Record whether GitHub already knows this runner by name
+  ansible.builtin.set_fact:
+    runner_registration_on_github: >-
+      {{ (runner_registration_runners_resp.json.runners
+          | default([])
+          | selectattr('name', 'equalto', entry.runnerName)
+          | list | length) > 0 }}

@@ -1,0 +1,22 @@
+---
+# Shared input gate, included by both tasks/main.yml (register) and
+# tasks/remove.yml (remove). An empty token would universally yield a
+# 401 the role cannot recover from, so a clear local message before
+# the first GitHub round-trip is friendlier than the eventual
+# uri-module error.
+#
+# Empty-string check, not just `is defined`, because the bridge passes
+# an empty string when the operator dismissed the GH_TOKEN prompt
+# before the env-var clear ran (the env var alone would have failed
+# the bridge earlier, but mounting the file as an empty string is a
+# degenerate path worth catching).
+- name: Assert github_token is defined and non-empty
+  ansible.builtin.assert:
+    that:
+      - github_token is defined
+      - github_token | length > 0
+    fail_msg: >-
+      runner_registration requires a non-empty `github_token`
+      extra-var - check ops/register-runners.sh /
+      ops/deregister-runners.sh and the bridge's GitHubRunners opt-in
+      branch.
