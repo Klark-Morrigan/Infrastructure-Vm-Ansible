@@ -68,3 +68,9 @@ Thumbs.db
 # Molecule (role tests) and any Pester output from PowerShell shim tests.
 .molecule/
 TestResults.xml
+
+# ---------------------------------------------------------------------------
+# Skill configuration
+# ---------------------------------------------------------------------------
+# pre-push-lint-and-tests skill config (per-host, declares the local gate set)
+.pre-push.json
