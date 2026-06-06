@@ -6,30 +6,12 @@
 # Role order is significant: groups must reconcile before users (so
 # supplementary group assignments resolve), and users must reconcile
 # before sudoers (so a drop-in references a real account). This
-# playbook is the single source of truth for that ordering. The
-# role meta files intentionally do NOT carry inter-role create-
-# direction deps (sudoers -> users -> groups) - Ansible's meta deps
-# always run the dep's `tasks/main.yml` and ignore the entry role's
-# `tasks_from` selector, so any such dep would silently re-create
-# users mid-teardown when `remove-users.yml` imports `sudoers` /
-# `users` with `tasks_from: remove`. Only the vm_users_entry helper
-# is a meta dep on each role (it is direction-neutral).
+# playbook is the single source of truth for that ordering; see
+# docs/dev/playbook-conventions.md for why role order lives here
+# rather than in role meta deps.
 #
-# any_errors_fatal: false - the bridge's inventory can contain several
-# VMs, and one host being temporarily offline should not strand the
-# rest. Ansible's default already keeps going on per-host failures;
-# making the choice explicit so a later edit does not silently flip it
-# via a play-level error_strategy override.
-#
-# gather_facts: true - ansible.builtin.user reads facts when deciding
-# defaults (notably for shell / home derivation on systems where the
-# config omits them), and the per-host cost is one extra SSH round-trip
-# at play start. Cheap insurance vs. surprising fact-absent failures
-# mid-role.
-#
-# Tags mirror the role names so operators can scope a run with
-# --tags groups, --tags users, or --tags sudoers without having to
-# know the role file layout.
+# Shared posture (hosts, gather_facts, any_errors_fatal, tags) is
+# documented once in docs/dev/playbook-conventions.md.
 
 - name: Reconcile OS groups, users, and sudoers on provisioned VMs
   hosts: vm_provisioner_hosts

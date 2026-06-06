@@ -17,20 +17,9 @@
 #   (non-empty-group skip), and it benefits from running after the
 #   users pass has cleared implicit primary-group membership.
 #
-# Same posture as create-users.yml so the two flows behave identically
-# against a partially offline fleet:
-# - gather_facts: true keeps ansible.builtin.user happy on remove too
-#   (it still consults facts for shell / home derivation before deletion
-#   on some platforms), and the per-host SSH-round-trip cost is small.
-# - any_errors_fatal: false - one transiently offline VM should not
-#   strand the rest of the inventory. Per-host failures still surface
-#   in the recap; the play just does not abort the others.
-#
-# Tags mirror the role names so operators can scope a partial remove
-# (`--tags sudoers`, `--tags users`, `--tags groups`) without having to
-# learn the playbook layout. The roles do not coordinate across tag
-# scopes - skipping `users` while running `groups` will hit the
-# non-empty-group skip path, which is the intended safety net.
+# Shared posture (hosts, gather_facts, any_errors_fatal, tags, why
+# role order lives here rather than in meta deps) is documented once
+# in docs/dev/playbook-conventions.md.
 
 - name: Remove OS sudoers, users, and groups on provisioned VMs
   hosts: vm_provisioner_hosts
