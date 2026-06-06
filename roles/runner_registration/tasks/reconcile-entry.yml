@@ -56,13 +56,17 @@
   ansible.builtin.include_tasks: _mint-remove-token.yml
   when: runner_registration_should_remove_first
 
-# Run `config.sh remove --token <removal>` as the runner service user
-# to clear a stale local registration. become_user (not root) so the
-# files config.sh touches keep the runner-user ownership runner_binary
-# established. argv form (not shell string) so the token never reaches
-# a shell history file. changed_when: true because config.sh has
-# side effects every time we invoke it; suppressing changed would lie
-# about what the role did.
+# Run `config.sh remove --token <removal> --unattended` as the runner
+# service user to clear a stale local registration. `--unattended`
+# matches the production PowerShell flow's
+# `Invoke-RunnerConfigRemove.ps1` argv (every `config.sh remove` in
+# this codebase carries it) so the CLI never tries to prompt under a
+# closed Ansible stdin. become_user (not root) so the files config.sh
+# touches keep the runner-user ownership runner_binary established.
+# argv form (not shell string) so the token never reaches a shell
+# history file. changed_when: true because config.sh has side effects
+# every time we invoke it; suppressing changed would lie about what
+# the role did.
 - name: Run config.sh remove (re-register branch)
   ansible.builtin.command:
     argv:
@@ -70,6 +74,7 @@
       - remove
       - --token
       - "{{ runner_registration_remove_token_resp.json.token }}"
+      - --unattended
     chdir: "/opt/runners/{{ entry.runnerName }}"
   become: true
   become_user: "{{ entry.runnerUsername }}"
