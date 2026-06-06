@@ -25,7 +25,24 @@ driver:
 
 platforms:
   - name: instance
-    image: docker.io/library/ubuntu:24.04
+    # The bare docker.io/library/ubuntu:24.04 image no longer ships
+    # /usr/bin/python3 in its default layer, so the first ansible.builtin
+    # task in prepare.yml fails at `/bin/sh: 1: /usr/bin/python3: not
+    # found` before there is any chance to apt-install it. The shared
+    # Dockerfile at Tests/molecule/runner_binary/Dockerfile bakes
+    # python3 + sudo + tar + gzip on top of the base and is used by
+    # both the default and remove scenarios via the same image tag;
+    # build once via
+    #   docker build \
+    #       -t infrastructure-vm-ansible/runner-binary-base:24.04 \
+    #       -f Tests/molecule/runner_binary/Dockerfile \
+    #       Tests/molecule/runner_binary
+    # `pre_build_image: true` tells the docker driver to consume the
+    # locally-tagged image directly and skip the
+    # community.docker.docker_image build path which on this
+    # workstation tries the Docker Desktop Windows-side credential
+    # helper and fails inside WSL.
+    image: infrastructure-vm-ansible/runner-binary-base:24.04
     pre_build_image: true
     command: /bin/sleep infinity
     tmpfs:
@@ -34,13 +51,20 @@ platforms:
 
 provisioner:
   name: ansible
+  env:
+    # ANSIBLE_ROLES_PATH (env) wins over `config_options.defaults.roles_path`
+    # (ansible.cfg) and crucially supports env-var expansion plus
+    # propagates across every molecule phase. A relative
+    # `roles_path:` in ansible.cfg is resolved against the directory the
+    # cfg lives in - molecule writes that under
+    # /home/<user>/.ansible/tmp/molecule.<id>.<scenario>/, so a relative
+    # path bottoms out somewhere under /home, never under the repo.
+    # MOLECULE_PROJECT_DIRECTORY points at the molecule cwd (the role's
+    # Tests/molecule/runner_binary/ dir per the wsl-task wrapper); three
+    # levels up is the repo root, then `roles/` is the standard path.
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../../roles"
   config_options:
     defaults:
-      # Roles live three levels above the scenario; point Ansible at the
-      # repo's roles/ directory so include_role: name=runner_binary
-      # resolves the role (and its meta dependency on
-      # runner_entry_resolve) without copying files into the scenario.
-      roles_path: ../../../../roles
       stdout_callback: yaml
       callbacks_enabled: profile_tasks
   inventory:
