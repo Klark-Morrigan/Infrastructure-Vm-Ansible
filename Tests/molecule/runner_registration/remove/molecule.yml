@@ -3,10 +3,11 @@
 #
 # Same controller-side-mock shape as the default scenario: the role's
 # GitHub REST calls `delegate_to: localhost`, so the mock GitHub API
-# lives on the controller. The mock script itself is shared with the
-# default scenario (via ../default/mock-github-api.py) so the wire
-# contract for /actions/runners and /actions/runners/remove-token
-# stays locked in one place.
+# lives on the controller. The mock script is the repo-wide shared
+# Tests/mock-github-api.py (single source for both molecule
+# scenarios and the deregister smoke playbook) so the wire contract
+# for /actions/runners, /actions/runners/remove-token, and the
+# force-path DELETE stays locked in one place.
 #
 # Custom test_sequence: idempotence is preceded by `side_effect` which
 # clears the mock's registered-runners file. Without that, the

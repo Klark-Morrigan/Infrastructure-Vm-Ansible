@@ -1,8 +1,9 @@
 ---
 # Two-stage prepare:
-#   1. Controller-side: launch the mock GitHub API (mock-github-api.py)
-#      on 127.0.0.1:<port>. The mock is the assertion surface for the
-#      verify play - it logs every request as a JSON line.
+#   1. Controller-side: launch the shared mock GitHub API
+#      (Tests/mock-github-api.py) on 127.0.0.1:<port>. The mock is the
+#      assertion surface for the verify play - it logs every request
+#      as a JSON line.
 #   2. Container-side: install python3 + sudo, seed two runner service
 #      users, lay out /opt/runners/<name>/ for each entry with a stub
 #      config.sh, and pre-seed .runner markers for the healthy and
@@ -19,7 +20,10 @@
     mock_log: /tmp/runner-registration-mock.log
     mock_registered_file: /tmp/runner-registration-mock-registered.txt
     mock_stderr: /tmp/runner-registration-mock.stderr
-    mock_script: "{{ playbook_dir }}/mock-github-api.py"
+    # Shared mock, single source for both molecule (this scenario
+    # plus ../remove/) and the deregister smoke playbook under
+    # Tests/ansible/. Path is relative to this scenario directory.
+    mock_script: "{{ playbook_dir }}/../../../mock-github-api.py"
   tasks:
     - name: Kill any leftover mock server from a previous run
       ansible.builtin.include_tasks: ../tasks/_kill-mock-pidfile.yml
