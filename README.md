@@ -18,6 +18,7 @@ was extended by the feature step that earned it.
 - [Create users](#create-users)
 - [Remove users](#remove-users)
 - [Register runners](#register-runners)
+- [Deregister runners](#deregister-runners)
 - [Bridge contract](#bridge-contract)
 - [Tests and lint](#tests-and-lint)
 - [Roles](#roles)
@@ -359,6 +360,62 @@ Two contracts worth highlighting before invoking the flow:
   `%LOCALAPPDATA%\Temp\runner-cache\`, and serves it to each VM by
   basename. The listener PID rides in the bridge's `EXIT` trap, so a
   Ctrl+C, a network blip, or a play failure all still tear it down.
+
+## Deregister runners
+
+The reverse flow tears down what `register-runners` reconciled. One
+command stops the systemd service for every declared runner,
+deregisters it from GitHub, and removes the per-runner extract
+directory under `/opt/runners/`:
+
+```
+wsl ./ops/deregister-runners.sh
+```
+
+or double-click [`ops/deregister-runners.bat`](ops/deregister-runners.bat)
+from Explorer (same Git Bash launcher pattern as the register entry).
+
+[`ops/deregister-runners.sh`](ops/deregister-runners.sh) mirrors the
+register entry's prompt-or-`GH_TOKEN` shape and exports
+`NEEDS_GITHUB_RUNNERS=1` so the [bridge](#bridge-contract) reads the
+`GitHubRunners` vault. It deliberately does **not** export
+`NEEDS_HOST_FILE_SERVER`: the down path fetches nothing from the
+Windows side, so spawning the `HttpListener` would be a port and a
+failure surface for no consumer. The wrapper owns one flag of its
+own, `--force`, which it consumes and translates to
+`--extra-vars runners_force_remove=true` for `ansible-playbook`
+(which has no `--force` flag of its own); every other arg is
+forwarded verbatim, so the usual operator knobs work unchanged:
+
+```
+wsl ./ops/deregister-runners.sh --force                    # delete unreachable VMs' runners via the GitHub API
+wsl ./ops/deregister-runners.sh --check                    # dry-run
+wsl ./ops/deregister-runners.sh --tags runner_service      # scope to one role
+wsl ./ops/deregister-runners.sh --limit vm-1,vm-2          # scope to specific VMs
+wsl ./ops/deregister-runners.sh -v                         # verbose play recap
+```
+
+The playbook invokes each role with `tasks_from: remove` in the
+reverse order `runner_service -> runner_registration -> runner_binary`
+(stop the unit first so it cannot hold credentials open, deregister
+on GitHub next while `config.sh` is still on disk, remove the
+extract directory last). There is no confirmation prompt; the
+destructive intent is in the script name and the operator's choice
+to invoke it.
+
+Two contracts worth highlighting before invoking the flow:
+
+- **`--force` runs controller-side via the GitHub REST API.** A
+  reachable VM always deregisters through `config.sh remove`; only
+  entries on **unreachable** VMs reach the force path, where the
+  controller `DELETE`s `.../actions/runners/{id}` directly. Without
+  `--force`, the play surfaces those entries as a single non-zero
+  exit at the end of the run rather than silently leaking stale
+  GitHub-side registrations.
+- **The GitHub PAT is not stored.** Same per-invocation supply as
+  the register flow (prompt or `GH_TOKEN`); same `no_log: true` on
+  every token-bearing task; same clearance from the bridge
+  environment before `ansible-playbook` runs.
 
 ## Bridge contract
 
