@@ -227,13 +227,34 @@ step touches anything. Also the smallest of the three; establishes the
 
 - `roles/runner_service/tasks/_probe-unit.yml` (new) - the unit-name
   probe extracted from `tasks/main.yml`. One `ansible.builtin.shell`
-  per entry, `systemctl list-unit-files --type=service --no-pager
-  --no-legend 'actions.runner.*{{ item.runnerName }}.service' | awk
-  '{print $1}' | head -n1`, `changed_when: false`, `register:
-  runner_service_unit_probes`. The role-prefixed register name is what
-  ansible-lint's `var-naming[no-role-prefix]` enforces under the
-  production profile (and matches the existing
-  `runner_service_unit_probes` name in `tasks/main.yml`). Loops over
+  per entry, `set -o pipefail; { systemctl list-unit-files
+  --type=service --no-pager --no-legend
+  'actions.runner.*{{ item.runnerName }}.service' || true; } | awk
+  'NR==1 { print $1; exit }'`, `args: { executable: /bin/bash }`,
+  `changed_when: false`, `register: runner_service_unit_probes`.
+  Three shell-shape constraints the body has to satisfy:
+  - `executable: /bin/bash`. `/bin/sh` on Debian / Ubuntu is `dash`,
+    which does not understand `set -o pipefail` and would syntax-error.
+  - `awk 'NR==1 { print $1; exit }'` instead of `awk '{print $1}' |
+    head -n1`. `head` closes its stdin after one line; under pipefail
+    that propagates SIGPIPE rc=141 from the upstream `systemctl`.
+    The pure-awk form has the same first-line semantics without the
+    pipe-close.
+  - `{ systemctl ... || true; }`. Modern systemd returns rc=1 when
+    the glob matches no unit files - the legitimate "this entry is
+    not installed" path both directions consume. `|| true` collapses
+    that into rc=0 + empty stdout; pipefail still catches a genuine
+    awk failure.
+  - All continuation lines stay at the base indent of the folded
+    scalar (`>-`). More-indented continuation lines are preserved
+    verbatim under YAML folding semantics, which the bash `-c`
+    parser then sees as real line breaks and fails on (the second
+    `--type=service` token is parsed as a fresh command).
+
+  The role-prefixed register name is what ansible-lint's
+  `var-naming[no-role-prefix]` enforces under the production profile
+  (and matches the existing `runner_service_unit_probes_after` name
+  the role's main.yml used pre-extraction). Loops over
   `vm_runner_entries`. Both directions and both call sites within the
   register direction `include_tasks` this file; the shared register
   overwrites between calls, so the install branch consumes the
@@ -266,11 +287,54 @@ step touches anything. Also the smallest of the three; establishes the
   entry point: inputs (`vm_runner_entries`), behaviour (probe ->
   stop -> uninstall), idempotence (absent unit / inactive service
   is a silent no-op).
-- `Tests/molecule/runner_service/remove/` (new) - dedicated scenario.
+- `Tests/molecule/runner_service/remove/Dockerfile` (new) and
+  `Tests/molecule/runner_service/default/Dockerfile` (new) - shared-shape
+  systemd-in-docker image. The bare `docker.io/library/ubuntu:24.04`
+  base image no longer ships systemd or any `/sbin/init` binary, so
+  `command: /sbin/init` against the bare base fails at container
+  create with `stat /sbin/init: no such file or directory` before
+  molecule's prepare step gets a chance to apt-install anything.
+  The Dockerfile layers `systemd + systemd-sysv + sudo + python3` on
+  top of the base (the bare image also ships without python3 under
+  `--no-install-recommends`, which Ansible needs for the AnsiballZ
+  Python interpreter). `STOPSIGNAL SIGRTMIN+3` is the systemd-as-PID-1
+  contract for clean shutdown. Build once via
+  `docker build -t infrastructure-vm-ansible/runner-service-systemd:24.04
+  -f Tests/molecule/runner_service/<scenario>/Dockerfile <ctx>`; the
+  scenarios consume the tag via `pre_build_image: true`, bypassing
+  the `community.docker.docker_image` build path which on this
+  workstation tries the Docker Desktop Windows-side credential helper
+  and fails inside WSL with `OSError: [Errno 8] Exec format error:
+  '/usr/bin/docker-credential-desktop.exe'`.
+- `Tests/molecule/runner_service/default/molecule.yml` (modified) -
+  switch the platform image to the pre-built tag (same shape as the
+  remove scenario), move `roles_path` from
+  `config_options.defaults.roles_path` to
+  `provisioner.env.ANSIBLE_ROLES_PATH:
+  "${MOLECULE_PROJECT_DIRECTORY}/../../../roles"`. The ansible.cfg
+  relative `roles_path:` is resolved against the directory the cfg
+  lives in - molecule writes that under `/home/<user>/.ansible/tmp/
+  molecule.<id>.<scenario>/`, so the relative path bottoms out under
+  `/home`, never under the repo. The env-var form respects
+  `MOLECULE_PROJECT_DIRECTORY` (the molecule cwd, anchored at the
+  role's `Tests/molecule/<role>/` dir by the `wsl-task` wrapper),
+  three levels up is the repo root, then `roles/` is the standard
+  path. Default-scenario `prepare.yml` also drops the
+  `apt install sudo + systemd` task (both are now baked into the
+  image).
+- `Tests/molecule/runner_service/remove/` (new) - dedicated scenario,
+  same `molecule.yml` shape as the default scenario (pre-built image
+  tag, env-var `ANSIBLE_ROLES_PATH`, privileged + cgroup + tmpfs).
   `prepare.yml` seeds three runner directories with a stub `svc.sh`
   that implements both `install` (mirrored from the default scenario)
-  and `uninstall` (disable + remove unit file + daemon-reload). The
-  three entries cover the three teardown branches:
+  and `uninstall` (unconditional + idempotent: `systemctl disable
+  '${unit}' 2>/dev/null || true; rm -f '/etc/systemd/system/${unit}';
+  systemctl daemon-reload`). Unconditional because the obvious guard
+  form (`if systemctl list-unit-files ... | awk 'NF{exit 0}
+  END{exit 1}'`) has an awk-semantics trap - the main block's
+  `exit 0` still runs the END block, so the END's `exit 1` overrides
+  and the guard is always false. The three entries cover the three
+  teardown branches:
   - `runner-active` - unit pre-installed and started -> stop
     transitions inactive, uninstall removes the file.
   - `runner-stopped` - unit pre-installed, never started -> stop is
@@ -290,14 +354,31 @@ step touches anything. Also the smallest of the three; establishes the
   search path. Verify asserts:
   - both previously-installed unit files are absent under
     `/etc/systemd/system`,
-  - `systemctl is-active` returns a non-active state for both,
+  - `systemctl is-active` returns a non-active state for both (the
+    is-active task itself uses `failed_when: false` because is-active
+    against an absent unit returns rc=3),
   - `runner-absent` never produced a unit file,
   - the leak entry's unit did not land on `instance`,
   - `systemctl list-unit-files 'actions.runner.*'` returns zero
-    matches after the remove.
+    matches after the remove (the task itself uses `failed_when:
+    false` for the same systemd-no-match-returns-rc=1 reason the
+    probe handles via `|| true`).
   Lives outside `Tests/roles/` for the same reason as the existing
   register scenarios (ansible-lint's `var-naming[no-role-prefix]`
   would otherwise scan verify.yml).
+
+**Image build (one-shot, scenario prerequisite)**
+
+```bash
+docker build \
+    -t infrastructure-vm-ansible/runner-service-systemd:24.04 \
+    -f Tests/molecule/runner_service/default/Dockerfile \
+    Tests/molecule/runner_service/default
+```
+
+The remove scenario's `Dockerfile` produces the same image; either
+context works. The tag is shared across both scenarios so a single
+build serves the inner loop for both.
 
 **Behaviour (sketch)**
 
