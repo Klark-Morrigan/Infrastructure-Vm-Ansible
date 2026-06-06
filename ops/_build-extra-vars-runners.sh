@@ -33,6 +33,11 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/_validate-extra-vars-input.sh
+source "${BASH_SOURCE[0]%/*}/_validate-extra-vars-input.sh"
+# shellcheck source=ops/_die-on-unknown-flag.sh
+source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+
 runners_path=""
 token=""
 token_set=0
@@ -71,9 +76,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            echo "_build-extra-vars-runners.sh: unknown argument: $1" >&2
-            usage
-            exit 2
+            _die_on_unknown_flag _build-extra-vars-runners.sh "$1"
             ;;
     esac
 done
@@ -108,15 +111,10 @@ if [[ "${runner_version_set}" -eq 1 && -z "${runner_version}" ]]; then
     exit 2
 fi
 
-if [[ ! -f "${runners_path}" ]]; then
-    echo "_build-extra-vars-runners.sh: --runners-config file not found: ${runners_path}" >&2
-    exit 1
-fi
-
-if ! jq empty "${runners_path}" >/dev/null 2>&1; then
-    echo "_build-extra-vars-runners.sh: --runners-config is not valid JSON: ${runners_path}" >&2
-    exit 1
-fi
+_validate_extra_vars_input \
+    _build-extra-vars-runners.sh \
+    --runners-config \
+    "${runners_path}"
 
 # Build the object in two steps so the file-server pair is genuinely
 # absent (not present-as-empty-string) when the caller omits it.

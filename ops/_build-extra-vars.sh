@@ -31,6 +31,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/_die-on-unknown-flag.sh
+source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+
 provisioner_path=""
 users_path=""
 runners_path=""
@@ -82,9 +85,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            echo "_build-extra-vars.sh: unknown argument: $1" >&2
-            usage
-            exit 2
+            _die_on_unknown_flag _build-extra-vars.sh "$1"
             ;;
     esac
 done

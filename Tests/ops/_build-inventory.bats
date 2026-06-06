@@ -8,8 +8,11 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-inventory.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    BASH_BIN="$(command -v bash)"
+    _bats_resolve_bash
 }
 
 # json_eq <expected-json> <actual-json> - structural JSON equality

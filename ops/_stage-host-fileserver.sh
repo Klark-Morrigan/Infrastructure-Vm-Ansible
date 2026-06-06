@@ -27,6 +27,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/_die-on-unknown-flag.sh
+source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+
 provisioner_path=""
 token=""
 token_set=0
@@ -56,9 +59,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            echo "_stage-host-fileserver.sh: unknown argument: $1" >&2
-            usage
-            exit 2
+            _die_on_unknown_flag _stage-host-fileserver.sh "$1"
             ;;
     esac
 done

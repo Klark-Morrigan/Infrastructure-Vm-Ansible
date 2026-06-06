@@ -8,14 +8,16 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars-runners.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    BASH_BIN="$(command -v bash)"
-    TEST_TMP="$(mktemp -d -t buildExtraVarsRunners.XXXXXX)"
+    _bats_init_temp buildExtraVarsRunners
     RUNNERS="${TEST_TMP}/runners.json"
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "fails with usage when either required flag is missing" {

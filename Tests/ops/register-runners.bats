@@ -13,10 +13,11 @@
 
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 
-setup() {
-    BASH_BIN="$(command -v bash)"
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
 
-    TEST_TMP="$(mktemp -d -t registerRunners.XXXXXX)"
+setup() {
+    _bats_init_temp registerRunners
     TEST_REPO="${TEST_TMP}/repo"
     mkdir -p "${TEST_REPO}/ops" "${TEST_REPO}/playbooks"
 
@@ -41,7 +42,7 @@ STUB
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "GH_TOKEN already set: no prompt, bridge sees opt-in and token" {

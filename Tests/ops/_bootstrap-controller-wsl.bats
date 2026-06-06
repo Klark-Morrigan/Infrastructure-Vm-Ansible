@@ -29,11 +29,14 @@ bats_require_minimum_version 1.5.0
 
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    # Capture bash before scrubbing PATH - some bats images (Alpine)
-    # do not have bash under /bin or /usr/bin, so the absolute path
-    # is the only portable way to invoke the script later.
-    BASH_BIN="$(command -v bash)"
+    # Shared BASH_BIN + TEST_TMP. Some bats images (Alpine) do not have
+    # bash under /bin or /usr/bin, so the absolute path is the only
+    # portable way to invoke the script later.
+    _bats_init_temp bootstrapCtl
     # Capture chmod the same way: the apt-get stub runs with the
     # script's scrubbed PATH (only STUBS), so it cannot resolve
     # `chmod` from the harness PATH. Without the absolute path the
@@ -43,7 +46,6 @@ setup() {
     # Windows git-bash had been used locally.
     CHMOD_BIN="$(command -v chmod)"
 
-    TEST_TMP="$(mktemp -d -t bootstrapCtl.XXXXXX)"
     STUBS="${TEST_TMP}/stubs"
     mkdir -p "${STUBS}"
 
@@ -75,7 +77,7 @@ setup() {
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 # seed_stub <command> - drops a trivial executable shim into STUBS

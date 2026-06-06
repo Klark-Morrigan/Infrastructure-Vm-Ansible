@@ -7,15 +7,17 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_read-vault-config.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
     # Capture bash and jq before overriding PATH - the script under
     # test needs jq (its only non-stub external dep) and the test
     # harness needs an absolute bash path because the Alpine bats
     # image lacks bash under /bin or /usr/bin.
-    BASH_BIN="$(command -v bash)"
+    _bats_init_temp readVaultCfg
     JQ_BIN="$(command -v jq)"
 
-    TEST_TMP="$(mktemp -d -t readVaultCfg.XXXXXX)"
     STUBS="${TEST_TMP}/stubs"
     mkdir -p "${STUBS}"
 
@@ -44,7 +46,7 @@ STUB
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "fails with usage when given fewer than two args" {

@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/_validate-extra-vars-input.sh
+source "${BASH_SOURCE[0]%/*}/_validate-extra-vars-input.sh"
+# shellcheck source=ops/_die-on-unknown-flag.sh
+source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+
 provisioner_path=""
 
 usage() {
@@ -24,9 +29,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            echo "_build-extra-vars-inventory.sh: unknown argument: $1" >&2
-            usage
-            exit 2
+            _die_on_unknown_flag _build-extra-vars-inventory.sh "$1"
             ;;
     esac
 done
@@ -36,15 +39,10 @@ if [[ -z "${provisioner_path}" ]]; then
     exit 2
 fi
 
-if [[ ! -f "${provisioner_path}" ]]; then
-    echo "_build-extra-vars-inventory.sh: --provisioner-config file not found: ${provisioner_path}" >&2
-    exit 1
-fi
-
-if ! jq empty "${provisioner_path}" >/dev/null 2>&1; then
-    echo "_build-extra-vars-inventory.sh: --provisioner-config is not valid JSON: ${provisioner_path}" >&2
-    exit 1
-fi
+_validate_extra_vars_input \
+    _build-extra-vars-inventory.sh \
+    --provisioner-config \
+    "${provisioner_path}"
 
 # --slurpfile loads the document as a one-element array; `$p[0]`
 # extracts the document so it nests directly under the canonical key.

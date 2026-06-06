@@ -13,9 +13,11 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_stage-host-fileserver.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    BASH_BIN="$(command -v bash)"
-    TEST_TMP="$(mktemp -d -t stageHostFs.XXXXXX)"
+    _bats_init_temp stageHostFs
     PROV="${TEST_TMP}/provisioner.json"
     LISTENER_LOG="${TEST_TMP}/fileserver.out"
 
@@ -68,7 +70,7 @@ STUB
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "fails with usage when any required flag is missing" {

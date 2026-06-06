@@ -15,20 +15,21 @@
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 HELPER="${REPO_ROOT}/ops/_ensure-apt-command.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
     # Bash absolute path baked into stub shebangs so they resolve under
     # the scrubbed PATH (git-bash on Windows cannot be symlinked into a
     # tmp dir without losing its shared libraries; see the matching
     # comment in _bootstrap-controller-wsl.bats).
-    BASH_BIN="$(command -v bash)"
-
-    TEST_TMP="$(mktemp -d -t ensureAptCmd.XXXXXX)"
+    _bats_init_temp ensureAptCmd
     STUBS="${TEST_TMP}/stubs"
     mkdir -p "${STUBS}"
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 # seed_stub <name> [exit_code] - drops a no-op executable stub on PATH

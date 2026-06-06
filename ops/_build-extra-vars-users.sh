@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/_validate-extra-vars-input.sh
+source "${BASH_SOURCE[0]%/*}/_validate-extra-vars-input.sh"
+# shellcheck source=ops/_die-on-unknown-flag.sh
+source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+
 users_path=""
 
 usage() {
@@ -23,9 +28,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            echo "_build-extra-vars-users.sh: unknown argument: $1" >&2
-            usage
-            exit 2
+            _die_on_unknown_flag _build-extra-vars-users.sh "$1"
             ;;
     esac
 done
@@ -35,14 +38,9 @@ if [[ -z "${users_path}" ]]; then
     exit 2
 fi
 
-if [[ ! -f "${users_path}" ]]; then
-    echo "_build-extra-vars-users.sh: --users-config file not found: ${users_path}" >&2
-    exit 1
-fi
-
-if ! jq empty "${users_path}" >/dev/null 2>&1; then
-    echo "_build-extra-vars-users.sh: --users-config is not valid JSON: ${users_path}" >&2
-    exit 1
-fi
+_validate_extra_vars_input \
+    _build-extra-vars-users.sh \
+    --users-config \
+    "${users_path}"
 
 jq -n --slurpfile u "${users_path}" '{vm_users_config: $u[0]}'
