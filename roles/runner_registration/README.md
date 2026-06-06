@@ -121,10 +121,23 @@ branches:
 Per-entry implementation lives in
 [`tasks/_remove-one.yml`](tasks/_remove-one.yml), included once per
 entry from [`tasks/remove.yml`](tasks/remove.yml) so each runner's
-probe and token facts stay scoped to that iteration. The probe is
-the shared [`tasks/_probe-github.yml`](tasks/_probe-github.yml); both
-directions pivot on the same `runner_registration_on_github` boolean,
-so a fact-name drift across directions is impossible.
+probe and token facts stay scoped to that iteration. Three small
+shared files keep both directions on the same wire surface:
+
+- [`tasks/_assert-token.yml`](tasks/_assert-token.yml) — the
+  empty-`github_token` fast-fail gate. `main.yml` and `remove.yml`
+  both `include_tasks` it; the same fail_msg points operators at
+  either `ops/register-runners.sh` or `ops/deregister-runners.sh`.
+- [`tasks/_probe-github.yml`](tasks/_probe-github.yml) — the GitHub
+  existence probe + `runner_registration_on_github` fact. The
+  register direction's re-register branch and the remove direction
+  pivot on the same boolean so a fact-name drift across directions
+  is impossible.
+- [`tasks/_mint-remove-token.yml`](tasks/_mint-remove-token.yml) —
+  the removal-token mint. The register direction's re-register
+  branch and the remove direction share the URI body and the
+  `runner_registration_remove_token_resp` fact name; only the
+  guarding `when:` differs.
 
 The on-disk marker files (`.runner`, `.credentials`) are not touched
 by this role on the remove path — they live inside
@@ -151,7 +164,9 @@ iteration. The PAT itself lives only in the chmod-600 tmpfs
 extra-vars file the bash bridge writes (cleaned by the bridge's
 `trap EXIT`).
 
-The two `config.sh` invocations use the `argv` form of
+All three `config.sh` invocations (register's `--unattended`,
+register's re-register-branch `remove`, remove direction's
+`remove --unattended`) use the `argv` form of
 `ansible.builtin.command`, not the shell-string form, so the token
 never lands in a `bash` history file via shell-word expansion.
 
@@ -213,7 +228,12 @@ bound there):
 The mock server records every request to a JSON-lines log file the
 verify play parses with `slurp` + `from_yaml` so the per-branch
 assertions read as set equalities on the captured request list rather
-than fragile substring matches.
+than fragile substring matches. Both scenarios share two task files
+under
+[`Tests/molecule/runner_registration/tasks/`](../../Tests/molecule/runner_registration/tasks/):
+`_kill-mock-pidfile.yml` (the pidfile-kill-with-retry block used by
+prepare + cleanup of each scenario) and `_launch-mock.yml` (the
+`nohup` mock-server launch plus `wait_for`).
 
 [`Tests/molecule/runner_registration/remove/`](../../Tests/molecule/runner_registration/remove/)
 exercises the remove direction against the same mock GitHub API

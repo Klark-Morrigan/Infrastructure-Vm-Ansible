@@ -447,132 +447,155 @@ unit is already stopped before `config.sh remove` touches credentials.
 
 **Files**
 
-- `roles/runner_registration/tasks/remove.yml` (new) - remove direction.
-  Per entry, structured as a per-entry `include_tasks` so the existence
-  fact stays scoped:
-  1. **Existence probe** — `ansible.builtin.uri`, `delegate_to:
-     localhost`, `GET https://api.github.com/repos/{{ owner }}/{{ repo
-     }}/actions/runners?per_page=100`. Auth via `Authorization: token
-     {{ github_token }}` in `headers`. `no_log: true`. Parse JSON, set
-     fact `runner_registered_on_github` per entry. Identical task to
-     the existence probe in `tasks/main.yml` — extracted into
-     `tasks/_probe-github.yml` and `include_tasks`'d from both files
-     to keep the probe in one place.
-  2. **Skip branch** — entry not on GitHub -> the rest of the role is
-     a no-op for that entry. Local marker files (`.runner`,
-     `.credentials`) are cleared by `runner_binary`'s remove
-     direction when it deletes the runner dir, so this role does not
-     need a "remove local credentials but not GitHub" branch.
-  3. **Removal-token mint** — only when registered. `ansible.builtin.uri`,
-     `delegate_to: localhost`, `POST .../actions/runners/remove-token`.
-     `no_log: true`. Fact `runner_removal_token`. Removal token
-     expires in 1 hour — minted immediately before use, matching
-     today's PowerShell behaviour.
-  4. **config.sh remove** — `ansible.builtin.command` with argv-style
-     `cmd: ['./config.sh', 'remove', '--token', '{{ runner_removal_token }}',
-     '--unattended']` and `chdir: "/opt/runners/{{ item.runnerName }}"`,
-     `become: true`, `become_user: "{{ item.runnerUsername }}"`. Argv
-     (not shell-string) so the token never lands in a shell history
-     or in any quoting boundary. `no_log: true`.
-- `roles/runner_registration/tasks/_probe-github.yml` (new) - the
-  existence probe extracted from `tasks/main.yml`. Same task body,
-  same fact name. Both directions `include_tasks` this file.
-- `roles/runner_registration/tasks/main.yml` (modified) - replace
-  the inline existence probe with `include_tasks: _probe-github.yml`.
-  No behaviour change.
-- `roles/runner_registration/README.md` (modified) - add a **Remove
+- `roles/runner_registration/tasks/remove.yml` (new) — entry point
+  for `tasks_from: remove`. Asserts inputs via
+  `include_tasks: _assert-token.yml`, then loops over
+  `vm_runner_entries` calling `include_tasks: _remove-one.yml`. One
+  include per entry keeps the probe + token + command facts scoped
+  to that entry's iteration; the next iteration overwrites them
+  before any downstream task reads them.
+- `roles/runner_registration/tasks/_remove-one.yml` (new) — per-entry
+  body of the remove direction:
+  1. **Existence probe** — `include_tasks: _probe-github.yml` sets
+     the boolean `runner_registration_on_github`.
+  2. **Skip branch** — entry not on GitHub -> no-op. Local marker
+     files (`.runner`, `.credentials`) are cleared by
+     `runner_binary`'s remove direction when it deletes the runner
+     dir, so this role does not need a "remove local credentials but
+     not GitHub" branch.
+  3. **Removal-token mint** — when registered, `include_tasks:
+     _mint-remove-token.yml` populates
+     `runner_registration_remove_token_resp`. Tokens expire in 1
+     hour; the mint sits immediately before the `config.sh` call,
+     matching the production PowerShell
+     `Invoke-RunnerConfigRemove.ps1`.
+  4. **config.sh remove** — `ansible.builtin.command` with argv
+     `[./config.sh, remove, --token, <token>, --unattended]`,
+     `chdir: /opt/runners/<runnerName>`, `become: true`,
+     `become_user: <runnerUsername>`. argv (not shell-string) so the
+     token never lands in a shell history. `--unattended` matches
+     the production deregister flow's invocation. `no_log: true`.
+- `roles/runner_registration/tasks/_probe-github.yml` (new) — shared
+  per-entry existence probe. Parses owner/repo from
+  `entry.githubUrl`, `GET .../actions/runners` controller-side
+  (`delegate_to: localhost`), records the boolean
+  `runner_registration_on_github`. Included by both directions:
+  `reconcile-entry.yml` (register) and `_remove-one.yml` (remove).
+- `roles/runner_registration/tasks/_assert-token.yml` (new) — shared
+  input gate that fast-fails when `github_token` is undefined or
+  empty. Included by both `main.yml` (register) and `remove.yml`
+  (remove); fail_msg names both entry-point scripts.
+- `roles/runner_registration/tasks/_mint-remove-token.yml` (new) —
+  shared `POST .../actions/runners/remove-token` body. Included by
+  the register direction's re-register branch and by the remove
+  direction; each caller guards the include with its own `when:`.
+  `runner_registration_remove_token_resp` is the shared fact name
+  consumed within the per-entry scope.
+- `roles/runner_registration/tasks/main.yml` (modified) — opens
+  with `include_tasks: _assert-token.yml`; the rest of the register
+  flow is unchanged.
+- `roles/runner_registration/tasks/reconcile-entry.yml` (modified) —
+  uses `include_tasks: _probe-github.yml` for the existence probe
+  and `include_tasks: _mint-remove-token.yml` for the re-register
+  branch's removal-token mint.
+- `roles/runner_registration/README.md` (modified) — adds a **Remove
   direction** subsection documenting the two-branch shape (skip when
-  GitHub-side absent; mint removal token + config.sh remove when
-  present), the `no_log` posture, and the "local marker files are
-  owned by runner_binary's remove direction" note.
-- `Tests/molecule/runner_registration/remove/` (new) - dedicated
-  scenario with a mocked GitHub API. `prepare.yml` stands up a tiny
-  python HTTP server returning canned JSON for `GET /runners` and
-  `POST /remove-token`, seeds two pre-configured runners on the
-  target (one whose name is in the mock's registered list, one whose
-  name is not). Converge invokes the role with `tasks_from: remove`.
-  Verify asserts the mock server's request log shows:
-  - one GET to `/runners` (for the host),
-  - one POST to `/remove-token` (only for the registered runner),
-  - one `config.sh remove` invocation on the VM (only for the
-    registered runner),
-  - no `/remove-token` POST or `config.sh remove` for the
-    not-registered runner.
+  GitHub-side absent; mint removal token + `config.sh remove` when
+  present), the `no_log` posture across both directions, and the
+  "local marker files are owned by runner_binary's remove direction"
+  note.
+- `Tests/molecule/runner_registration/remove/` (new) — dedicated
+  scenario with a mocked GitHub API. The mock script is shared with
+  the default (register) scenario via `../default/mock-github-api.py`;
+  the remove scenario binds it on a distinct loopback port (`18081`).
+  `prepare.yml` seeds two runner directories on the target
+  (`runner-removable` and `runner-orphan`, owned by two distinct
+  service users) plus a third selector-negative entry `runner-leak`
+  on `other-host`. Converge invokes the role with `tasks_from:
+  remove`. `side_effect.yml` clears the mock's registered-runners
+  file between converge and idempotence (mirroring what real GitHub
+  does after a successful `config.sh remove`) so the idempotence
+  pass takes the skip branch on every entry.
+- `Tests/molecule/runner_registration/tasks/_kill-mock-pidfile.yml`
+  (new) — shared pidfile-kill-with-retry block. Included by both
+  scenarios from `prepare.yml` (leftover-mock defence) and from
+  `cleanup.yml` (final stop).
+- `Tests/molecule/runner_registration/tasks/_launch-mock.yml` (new) —
+  shared mock launch + `wait_for`. Each scenario sets the per-mock
+  vars (port, pidfile, log, stderr, registered-file, script path) at
+  play-vars level and `include_tasks` this file.
 
-**Behaviour (sketch)**
+**Behaviour (sketch, tasks/remove.yml)**
 
 ```yaml
-- name: Probe GitHub for existing runner registrations
-  ansible.builtin.include_tasks: _probe-github.yml
+- name: Assert role inputs
+  ansible.builtin.include_tasks: _assert-token.yml
 
-- name: Deregister runners that are still on GitHub
+- name: Reconcile declared runners on this host (remove)
   ansible.builtin.include_tasks: _remove-one.yml
   loop: "{{ vm_runner_entries }}"
   loop_control:
-    label: "{{ item.runnerName }}"
-  when: runner_registered_on_github[item.runnerName] | default(false)
+    loop_var: entry
+    label: "{{ entry.runnerName }}"
 ```
 
-`_remove-one.yml` (mints the removal token + runs `config.sh remove`):
+**Behaviour (sketch, tasks/_remove-one.yml)**
 
 ```yaml
-- name: Mint a short-lived removal token
-  ansible.builtin.uri:
-    url: >-
-      https://api.github.com/repos/{{ item.githubUrl
-      | regex_search('github.com/([^/]+/[^/]+)', '\\1') | first
-      }}/actions/runners/remove-token
-    method: POST
-    headers:
-      Authorization: "token {{ github_token }}"
-      Accept:        "application/vnd.github+json"
-    status_code: 201
-    return_content: true
-  delegate_to: localhost
-  register: remove_token_resp
-  no_log: true
+- name: Probe GitHub for existing registration of this runner
+  ansible.builtin.include_tasks: _probe-github.yml
 
-- name: Run config.sh remove as the runner service user
+- name: Mint a removal token when GitHub still knows this runner
+  ansible.builtin.include_tasks: _mint-remove-token.yml
+  when: runner_registration_on_github
+
+- name: Run config.sh remove --unattended as the runner service user
   ansible.builtin.command:
     argv:
-      - "./config.sh"
-      - "remove"
-      - "--token"
-      - "{{ remove_token_resp.json.token }}"
-      - "--unattended"
-    chdir: "/opt/runners/{{ item.runnerName }}"
+      - ./config.sh
+      - remove
+      - --token
+      - "{{ runner_registration_remove_token_resp.json.token }}"
+      - --unattended
+    chdir: "/opt/runners/{{ entry.runnerName }}"
   become: true
-  become_user: "{{ item.runnerUsername }}"
+  become_user: "{{ entry.runnerUsername }}"
+  changed_when: true
   no_log: true
+  when: runner_registration_on_github
 ```
 
 **Tests (Molecule)**
 
-- Entry registered on GitHub -> remove token minted, `config.sh
-  remove --unattended` runs with the token argument the mock
-  generated. Token does not appear in stdout even at `-vvv`.
+- Entry registered on GitHub -> remove-token minted, `config.sh
+  remove --token <T> --unattended` runs with the mock-generated
+  token. The verify play asserts the stub `config.sh` argv shape
+  including the `--unattended` flag.
 - Entry not registered on GitHub -> neither the remove-token POST
-  nor the `config.sh remove` task runs.
+  nor the `config.sh remove` task runs (mock log shows the GET
+  only; stub log is empty).
 - Two entries on the same VM, one registered + one not -> exactly
-  one of each token mint + config.sh remove fires.
-- A play run with `-vvv` -> token values do not appear in stdout
-  (asserted by grep against the captured log).
-- Mock returns 404 for `GET /runners` (repo / token mismatch) ->
-  role surfaces a clear error rather than silently treating every
-  entry as not-registered.
-- Mock returns 401 for `POST /remove-token` -> role surfaces a
-  token-shaped hint.
+  one of each token mint + `config.sh remove` fires.
+- Selector negative entry on a different `vmName` -> never reaches
+  the mock; `runner_entry_resolve` drops it.
+- Empty `github_token` -> shared `_assert-token.yml` fast-fails;
+  no mock requests during the rescued include.
+- Idempotence pass after `side_effect.yml` clears the mock's
+  registered set -> every entry takes the skip branch; role
+  reports `changed: 0`.
 
 **Diagram**
 
 ```mermaid
 flowchart TD
     PB[deregister-runners.yml] -->|import_role tasks_from: remove| RR[roles/runner_registration/tasks/remove.yml]
-    RR --> PG[include_tasks _probe-github.yml<br/>GET /repos/.../runners<br/>delegate_to: localhost<br/>no_log]
+    RR --> AT[include_tasks _assert-token.yml]
+    AT --> RL[loop vm_runner_entries -> include_tasks _remove-one.yml]
+    RL --> PG[include_tasks _probe-github.yml<br/>GET /repos/.../runners<br/>delegate_to: localhost<br/>no_log]
     PG --> SW{registered on GitHub?}
     SW -->|no| OK[skip]
-    SW -->|yes| RT[POST .../remove-token<br/>delegate_to: localhost<br/>no_log]
-    RT --> CFG[config.sh remove --unattended<br/>become_user: runnerUser<br/>chdir runner_dir<br/>no_log]
+    SW -->|yes| RT[include_tasks _mint-remove-token.yml<br/>POST .../remove-token<br/>delegate_to: localhost<br/>no_log]
+    RT --> CFG[config.sh remove --token --unattended<br/>become_user: runnerUser<br/>chdir runner_dir<br/>no_log]
 ```
 
 ---
