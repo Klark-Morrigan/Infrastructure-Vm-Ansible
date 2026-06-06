@@ -1,0 +1,81 @@
+---
+# Prepare the container before converge: seed the runner service user,
+# bring the fixture http server up via the shared
+# `_fixture-fileserver.yml` include, then run the role's REGISTER
+# direction so /opt/runners/<name>/ + the cache files exist going into
+# converge. The converge then drives the role's REMOVE direction
+# against that pre-staged state.
+#
+# Why run the register direction in prepare rather than seeding the
+# directories manually: the contract this scenario asserts is "the
+# remove direction leaves the cache intact while deleting the extract
+# directory". The most direct way to express that contract is to
+# stand the state up with the same role that owns the register
+# direction, then call the remove direction and assert the
+# differential. A hand-rolled fixture could drift from what
+# `tasks/main.yml` actually produces (ownership, mode, file layout
+# inside /opt/runners/<name>/).
+#
+# Fixture http server lives on a distinct port from the default
+# scenario (18746 vs 18745) so a concurrent local run of both
+# scenarios cannot collide.
+
+- name: Prepare - seed user, bring fixture fileserver up, run register direction
+  hosts: all
+  gather_facts: false
+  vars:
+    fixture_port: 18746
+    fixture_stage_dir: /var/lib/runner-fixture/srv
+    fixture_source_dir: /var/lib/runner-fixture/src
+    # Role inputs (github_runners_config / host_file_server_base_url /
+    # runner_version) hoisted to play-level vars rather than passed as
+    # task-level vars on the include_role below. ansible-lint's
+    # `var-naming[no-role-prefix]` rule treats task-level vars on an
+    # include_role as role-scoped and would demand a `runner_binary_`
+    # prefix on three identifiers the role itself declares without
+    # one - rejecting that rename here keeps the role's documented
+    # extra-vars contract intact.
+    #
+    # fixture_version is set equal to runner_version because the
+    # shared fileserver include keys its tarball filename off
+    # fixture_version - they have to match what the role downloads.
+    runner_version: "2.999.0"
+    fixture_version: "{{ runner_version }}"
+    host_file_server_base_url: "http://127.0.0.1:{{ fixture_port }}"
+    github_runners_config:
+      - vmName: instance
+        runnerName: instance-runner-a
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-a
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: instance-runner-b
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-b
+        runnerLabels: [self-hosted, ubuntu, x64]
+  tasks:
+    # python3 + sudo + tar + gzip are baked into the scenario's
+    # Dockerfile so prepare does not need an apt-cache refresh or an
+    # install task here.
+
+    - name: Seed runner service user
+      ansible.builtin.user:
+        name: u-runner-shared
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Bring the fixture http server up
+      ansible.builtin.include_tasks: ../tasks/_fixture-fileserver.yml
+
+    # Stand the /opt/runners/<name>/ + cache state up via the role's
+    # own register direction. `tasks_from` defaults to main.yml when
+    # omitted, so this is the same path ops/register-runners.sh
+    # exercises in production - the remove direction is asserted
+    # against state the production register direction actually
+    # produces, not a hand-rolled approximation.
+    - name: Stand /opt/runners/<name>/ up via the register direction
+      ansible.builtin.include_role:
+        name: runner_binary

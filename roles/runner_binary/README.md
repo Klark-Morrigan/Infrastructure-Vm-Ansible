@@ -10,6 +10,7 @@ so `config.sh` exists on disk when the registration step looks for it.
 
 - [Var contract](#var-contract)
 - [Register direction](#register-direction)
+- [Remove direction](#remove-direction)
 - [Idempotence guarantees](#idempotence-guarantees)
 - [Tests](#tests)
 - [Rationale](#rationale)
@@ -72,6 +73,41 @@ Both phases run with `become: true`. Ownership is the runner service
 user end-to-end so the registration and service roles can act on the
 runner directory tree as that user without per-task fix-ups.
 
+## Remove direction
+
+Entry point: `tasks/remove.yml`, invoked via
+[`playbooks/deregister-runners.yml`](../../playbooks/deregister-runners.yml)
+(once that playbook lands in step 5) as the last of the three remove
+roles - the previous two (`runner_service`, `runner_registration`)
+need `/opt/runners/<name>/` to still exist so `svc.sh` and
+`config.sh` can run from inside it.
+
+Inputs: `vm_runner_entries` (same fact the register direction reads,
+populated by the `runner_entry_resolve` meta dep). No GitHub
+credentials, no file-server URL - the remove direction is
+filesystem-local.
+
+Behaviour: one `ansible.builtin.file` task with `state: absent`,
+looping over `vm_runner_entries` and deleting
+`/opt/runners/<runnerName>/`. Absent directory is a stock-module
+no-op, so the "directory already gone" / "re-run after teardown"
+paths report `changed: 0` without a separate stat probe.
+
+What is **not** removed:
+
+- The tarball cache under `/home/<runnerUsername>/cache/`. Shared
+  across runners on the same VM and reused by the next register run;
+  re-downloading the actions-runner archive on every teardown /
+  setup cycle would defeat the cache.
+- The `runnerUsername` home directory and the runner service user
+  account itself. Owned by the
+  [`users`](../users/README.md) / [`groups`](../groups/README.md)
+  roles' remove direction (feature 03), not this role.
+- Anything outside the per-host slice. An entry whose `vmName` does
+  not match `inventory_hostname` is dropped by `runner_entry_resolve`
+  before the loop sees it, so a stray `/opt/runners/<name>/` on disk
+  that the vault does not declare for this host is left alone.
+
 ## Idempotence guarantees
 
 - Re-running with the same `vm_runner_entries`, `runner_version`, and
@@ -83,9 +119,11 @@ runner directory tree as that user without per-task fix-ups.
 - A fresh `runner_version` triggers a fresh cache download (versioned
   filename) but leaves the previously extracted directories alone -
   the marker stat looks at `config.sh`, not at the tarball name.
-- The role never deletes anything. Replacing or rotating an existing
-  runner extract is the deregister flow's job (feature 09's `remove`
-  direction on this role).
+- Re-running the remove direction against a host where the directories
+  are already absent is a stock no-op (the `file: state=absent` task
+  reports `changed: 0` per entry). Replacing or rotating an existing
+  runner extract is the deregister flow's job
+  ([`tasks/remove.yml`](tasks/remove.yml)).
 
 ## Tests
 
@@ -106,6 +144,25 @@ exercises the register direction (`tasks/main.yml`):
   `get_url` task per affected runner user with a clear error rather
   than silently skipping (a buggy condition would mask the listener
   having died).
+
+[`Tests/molecule/runner_binary/remove/`](../../Tests/molecule/runner_binary/remove/)
+exercises the remove direction (`tasks/remove.yml`). Prepare runs
+the register direction against a fixture tarball so a real
+`/opt/runners/<name>/` exists going into converge; the converge
+includes the role with `tasks_from: remove`; verify asserts:
+
+- Two entries on the same VM, both directories present pre-converge
+  -> both removed; `/opt/runners/<name>/` absent for each.
+- The tarball cache files under `/home/<runnerUsername>/cache/`
+  survive the remove direction (the "do not touch the cache"
+  contract).
+- One entry whose `/opt/runners/<name>/` was never present pre-
+  converge (no register step for it) -> the file-absent task is a
+  no-op and the converge completes without error.
+- Re-converge reports `changed: 0` across the role.
+- A selector-negative entry (`vmName: other-host`) never reaches
+  this host's loop; the `runner_entry_resolve` meta dep filters it
+  out before the remove direction sees it.
 
 A companion scenario,
 [`Tests/molecule/runner_entry_resolve/default/`](../../Tests/molecule/runner_entry_resolve/default/),
