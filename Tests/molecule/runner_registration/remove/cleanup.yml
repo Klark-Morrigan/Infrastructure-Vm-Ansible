@@ -10,10 +10,10 @@
   gather_facts: false
   connection: local
   vars:
-    mock_pidfile: /tmp/runner-registration-mock.pid
-    mock_log: /tmp/runner-registration-mock.log
-    mock_registered_file: /tmp/runner-registration-mock-registered.txt
-    mock_stderr: /tmp/runner-registration-mock.stderr
+    mock_pidfile: /tmp/runner-registration-remove-mock.pid
+    mock_log: /tmp/runner-registration-remove-mock.log
+    mock_registered_file: /tmp/runner-registration-remove-mock-registered.txt
+    mock_stderr: /tmp/runner-registration-remove-mock.stderr
   tasks:
     - name: Kill mock server if its pidfile points at a live process
       ansible.builtin.include_tasks: ../tasks/_kill-mock-pidfile.yml

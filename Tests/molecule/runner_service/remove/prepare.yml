@@ -42,20 +42,10 @@
         user: u-runner-other
         pre_state: none
   tasks:
-    - name: Refresh apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-
-    # systemd is part of ubuntu:24.04 but list defensively (the same
-    # rationale the default scenario uses): some cloud-image flavours
-    # ship systemd-sysv only.
-    - name: Install fixture prerequisites
-      ansible.builtin.apt:
-        name:
-          - sudo
-          - systemd
-        state: present
+    # systemd, systemd-sysv, and sudo are baked into the scenario's
+    # Dockerfile so they are present from container create onward;
+    # prepare only needs to seed users + per-runner directories +
+    # stub svc.sh + the pre-staged teardown state per entry.
 
     - name: Seed runner service users
       ansible.builtin.user:
@@ -119,12 +109,17 @@
               systemctl enable "${unit}"
               ;;
             uninstall)
-              if systemctl list-unit-files --type=service --no-legend \
-                   "${unit}" | awk 'NF{exit 0} END{exit 1}'; then
-                systemctl disable "${unit}" || true
-                rm -f "/etc/systemd/system/${unit}"
-                systemctl daemon-reload
-              fi
+              # Unconditional + idempotent: systemctl disable on an
+              # unknown unit no-ops (suppress the "Failed to disable
+              # unit ... does not exist" stderr with 2>/dev/null), rm -f
+              # is a no-op when the file is absent, daemon-reload always
+              # succeeds. Avoids the subtle awk-exit-vs-END trap an
+              # earlier `if [[ ... | awk 'NF{exit 0} END{exit 1}' ]]`
+              # guard hit (main-block `exit 0` still runs the END block,
+              # so its `exit 1` overrides and the guard is always false).
+              systemctl disable "${unit}" 2>/dev/null || true
+              rm -f "/etc/systemd/system/${unit}"
+              systemctl daemon-reload
               ;;
             *)
               echo "Stub svc.sh only implements install/uninstall (got: ${action})" >&2

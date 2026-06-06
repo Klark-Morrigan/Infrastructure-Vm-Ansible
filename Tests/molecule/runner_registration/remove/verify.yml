@@ -1,0 +1,178 @@
+---
+# Verify the post-converge / post-idempotence state by inspecting two
+# log surfaces:
+#   - the controller-side mock GitHub API's JSON-lines request log
+#     (asserts the right HTTP calls were made for each runner)
+#   - the per-runner stub config.sh logs inside the container
+#     (asserts the right CLI invocations happened for each runner)
+#
+# The mock log spans BOTH the converge and the idempotence runs. The
+# idempotence pass takes the skip branch on every entry (side_effect
+# cleared the registered set), so the asserted counts are:
+#   converge run:     2 GETs (removable + orphan) + 1 POST remove-token
+#                     (removable only).
+#   idempotence run:  2 GETs (both seen as absent) + 0 POSTs.
+#   total:            4 GETs, 1 POST remove-token.
+
+- name: Verify - runner_registration remove direction post-conditions
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Read controller-side mock request log
+      ansible.builtin.slurp:
+        src: /tmp/runner-registration-remove-mock.log
+      delegate_to: localhost
+      register: mock_log_raw
+
+    - name: Parse mock request log into a list of dicts
+      ansible.builtin.set_fact:
+        mock_requests: >-
+          {{ (mock_log_raw['content'] | b64decode).splitlines()
+             | map('from_json') | list }}
+
+    # runner-removable:
+    #   converge   -> 1 GET + 1 POST remove-token.
+    #   idempotence -> 1 GET (mock cleared, skip branch fires) + 0 POSTs.
+    - name: Removable runner saw one GET per pass and one remove-token mint
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'GET')
+              | selectattr('path', 'search', '/repos/example/repo-removable/actions/runners')
+              | list | length) == 2
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'POST')
+              | selectattr('path', 'search',
+                            '/repos/example/repo-removable/actions/runners/remove-token')
+              | list | length) == 1
+          - >-
+            (mock_requests
+              | selectattr('path', 'search',
+                            '/repos/example/repo-removable/actions/runners/registration-token')
+              | list | length) == 0
+
+    # runner-orphan: probe sees it absent on both passes -> 2 GETs,
+    # 0 token-mint POSTs of either kind.
+    - name: Orphan runner saw probes only - no token mints
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('method', 'equalto', 'GET')
+              | selectattr('path', 'search', '/repos/example/repo-orphan/actions/runners')
+              | list | length) == 2
+          - >-
+            (mock_requests
+              | selectattr('path', 'search', '/repos/example/repo-orphan/.*token')
+              | list | length) == 0
+
+    # Selector negative: the runner_entry_resolve meta dep must drop
+    # the other-host entry on `instance`. If any request for repo-leak
+    # shows up, the selectattr filter let an entry through.
+    - name: Leak entry on other-host never reached the mock
+      ansible.builtin.assert:
+        that:
+          - >-
+            (mock_requests
+              | selectattr('path', 'search', '/repos/example/repo-leak')
+              | list | length) == 0
+        fail_msg: >-
+          runner_entry_resolve let an entry for vmName=other-host
+          through; runner-leak reached the GitHub mock.
+
+    # Stub config.sh log: runner-removable saw exactly one `remove`
+    # invocation (converge); the idempotence pass took the skip
+    # branch and did not call config.sh again.
+    - name: Read stub config.sh log for runner-removable
+      ansible.builtin.slurp:
+        src: /var/log/runner-runner-removable-config.log
+      register: log_removable_raw
+
+    - name: Parse runner-removable config.sh log
+      ansible.builtin.set_fact:
+        log_removable: >-
+          {{ (log_removable_raw['content'] | b64decode).splitlines()
+             | map('from_json') | list }}
+
+    - name: Runner-removable config.sh ran once with remove + the right flags
+      ansible.builtin.assert:
+        that:
+          - log_removable | length == 1
+          - log_removable[0].argv[0] == 'remove'
+          - "'--token' in log_removable[0].argv"
+          - "'--unattended' in log_removable[0].argv"
+          - >-
+            log_removable[0].argv[log_removable[0].argv.index('--token') + 1]
+            == 'FAKE_REMOVAL_TOKEN'
+
+    # runner-orphan log must be empty: the role took the skip branch
+    # on both runs.
+    - name: Read stub config.sh log for runner-orphan
+      ansible.builtin.slurp:
+        src: /var/log/runner-runner-orphan-config.log
+      register: log_orphan_raw
+
+    - name: Runner-orphan config.sh was never invoked
+      ansible.builtin.assert:
+        that:
+          - >-
+            (log_orphan_raw['content'] | b64decode | length) == 0
+
+    # Negative branch: an empty github_token must trip the role's
+    # input assert before any GitHub call. Truncate the mock log first
+    # so the post-block assertion measures only requests made during
+    # the rescued include.
+    - name: Truncate mock log before the empty-token probe
+      ansible.builtin.copy:
+        dest: /tmp/runner-registration-remove-mock.log
+        content: ""
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: Empty github_token must fast-fail before any GitHub round-trip
+      block:
+        # Stage the empty-token fixture at play scope (not as
+        # include_role.vars) so ansible-lint does not flag the inputs
+        # as role-internal under var-naming[no-role-prefix]. Same
+        # posture the default scenario uses.
+        - name: Stage fixture - empty github_token
+          ansible.builtin.set_fact:
+            github_token: ""
+            github_runners_config:
+              - vmName: instance
+                runnerName: runner-removable
+                runnerUsername: u-runner-shared
+                deployUsername: u-deploy
+                githubUrl: https://github.com/example/repo-removable
+                runnerLabels: [self-hosted]
+            github_api_base_url: "http://127.0.0.1:18081"
+
+        - name: Re-apply remove direction with empty github_token
+          ansible.builtin.include_role:
+            name: runner_registration
+            tasks_from: remove
+
+        - name: Reached this point - the assert did not fire as required
+          ansible.builtin.fail:
+            msg: >-
+              runner_registration (remove) accepted an empty
+              github_token; the role's input assert is missing or
+              broken.
+      rescue:
+        - name: Confirm the failure came from the input assert
+          ansible.builtin.assert:
+            that:
+              - "'github_token' in (ansible_failed_result.msg | default(''))"
+
+    - name: Read mock log after the empty-token probe
+      ansible.builtin.slurp:
+        src: /tmp/runner-registration-remove-mock.log
+      delegate_to: localhost
+      register: mock_log_after_raw
+
+    - name: Empty-token branch must not have reached the mock
+      ansible.builtin.assert:
+        that:
+          - (mock_log_after_raw['content'] | b64decode | length) == 0

@@ -1,24 +1,21 @@
 ---
-# Molecule scenario for the runner_registration role.
+# Molecule scenario for the runner_registration role - remove direction.
 #
-# Same Docker / Ubuntu 24.04 shape as the runner_binary scenario, with
-# one structural difference: the role's GitHub REST calls run
-# `delegate_to: localhost`, so the mock GitHub API has to live on the
-# controller (where Ansible's localhost connection lands), not inside
-# the managed container. prepare.yml's first play launches the mock
-# on the controller via `connection: local`; converge sets
-# `github_api_base_url` to that loopback URL; cleanup.yml kills the
-# mock pidfile-tracked process.
+# Same controller-side-mock shape as the default scenario: the role's
+# GitHub REST calls `delegate_to: localhost`, so the mock GitHub API
+# lives on the controller. The mock script itself is shared with the
+# default scenario (via ../default/mock-github-api.py) so the wire
+# contract for /actions/runners and /actions/runners/remove-token
+# stays locked in one place.
 #
-# Custom test_sequence: we replace the stock `idempotence` slot with
-# `side_effect -> idempotence` because a static GitHub mock cannot
-# observe `config.sh --unattended` writing a registration the way
-# real GitHub does. side_effect.yml mutates the mock's
-# registered-runners file to reflect the post-converge reality
-# (every fresh / re-register runner is now known to GitHub), then
-# molecule's idempotence step re-converges and asserts 0 changes.
-# Skipping idempotence entirely would lose the natural-state
-# idempotence guarantee the role does honour in production.
+# Custom test_sequence: idempotence is preceded by `side_effect` which
+# clears the mock's registered-runners file. Without that, the
+# converge run would call config.sh remove on the registered entry,
+# but the static mock would still report it registered on the
+# idempotence pass, and the role would re-call config.sh remove and
+# report changed: 2 - a fixture-side artefact, not a real
+# idempotence regression. side_effect mirrors what real GitHub would
+# do after a successful config.sh remove (drop the registration).
 #
 # `lint` is intentionally absent: molecule 26.x removed the
 # `molecule.command.lint` action and dropped `- lint` from the stock
@@ -41,10 +38,9 @@ platforms:
     # Reuse the runner_service scenarios' baked image: it already
     # ships python3 + sudo (the only two prerequisites this scenario
     # needs; systemd / systemd-sysv are unused here because
-    # `command:` is /bin/sleep, not /sbin/init). Bare
-    # docker.io/library/ubuntu:24.04 ships without python3, so any
-    # ansible.builtin.* task would fail with `/usr/bin/python3: not
-    # found` against the unmodified base. Build the image once via
+    # `command:` is /bin/sleep, not /sbin/init). One image, two
+    # scenario directories - cheaper inner loop, one place to update
+    # when the base bumps. Build it once via
     #   docker build -t infrastructure-vm-ansible/runner-service-systemd:24.04
     #       -f Tests/molecule/runner_service/default/Dockerfile
     #       Tests/molecule/runner_service/default

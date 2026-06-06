@@ -27,9 +27,25 @@ driver:
 
 platforms:
   - name: instance
-    image: docker.io/library/ubuntu:24.04
+    # The bare docker.io/library/ubuntu:24.04 base image no longer ships
+    # systemd or any /sbin/init binary, so a `command: /sbin/init`
+    # against it fails at container create with `stat /sbin/init: no
+    # such file or directory`. The Dockerfile in this scenario directory
+    # installs systemd + systemd-sysv + sudo + python3 on top of the
+    # base; build it once via `docker build -t
+    # infrastructure-vm-ansible/runner-service-systemd:24.04
+    # -f Tests/molecule/runner_service/<scenario>/Dockerfile <ctx>`
+    # before running the scenario (see Tests/molecule/runner_service/
+    # README.md or repeat the build inline). `pre_build_image: true`
+    # tells the molecule docker driver to consume the locally-tagged
+    # image directly and skip the community.docker.docker_image build
+    # path, which on this workstation tries the Docker Desktop
+    # Windows-side credential helper and fails inside WSL with
+    # `OSError: [Errno 8] Exec format error:
+    # '/usr/bin/docker-credential-desktop.exe'`.
+    image: infrastructure-vm-ansible/runner-service-systemd:24.04
     pre_build_image: true
-    command: /usr/sbin/init
+    command: /sbin/init
     privileged: true
     cgroupns_mode: host
     tmpfs:
@@ -41,13 +57,19 @@ platforms:
 
 provisioner:
   name: ansible
+  env:
+    # ANSIBLE_ROLES_PATH (env) wins over `config_options.defaults.roles_path`
+    # (ansible.cfg) and crucially supports env-var expansion. A relative
+    # `roles_path:` in ansible.cfg is resolved against the directory the
+    # cfg lives in - molecule writes that under
+    # /home/<user>/.ansible/tmp/molecule.<id>.<scenario>/, so a
+    # relative path bottoms out somewhere under /home, never under the
+    # repo. MOLECULE_PROJECT_DIRECTORY points at the molecule cwd (the
+    # role's Tests/molecule/<role>/ dir per the wsl-task wrapper); three
+    # levels up is the repo root, then `roles/` is the standard path.
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../../roles"
   config_options:
     defaults:
-      # Roles live three levels above the scenario; point Ansible at
-      # the repo's roles/ directory so include_role: name=runner_service
-      # resolves the role (and its meta dependency on
-      # runner_entry_resolve) without copying files into the scenario.
-      roles_path: ../../../../roles
       stdout_callback: yaml
       callbacks_enabled: profile_tasks
   inventory:

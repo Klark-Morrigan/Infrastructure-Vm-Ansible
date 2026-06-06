@@ -1,0 +1,35 @@
+---
+# Kill a controller-side mock server identified by its pidfile, then
+# delete the pidfile. Used in two contexts:
+#   - prepare.yml (belt-and-braces against a leaked process from a
+#     prior `molecule test` that died mid-sequence so the port grab
+#     below it does not race).
+#   - cleanup.yml (the primary stop path at sequence end).
+#
+# Idempotent: missing pidfile, empty pidfile, or already-dead process
+# are no-ops. The 25 * 0.2s loop bounds how long we wait for SIGTERM
+# to take effect; if the process refuses to die within 5s the loop
+# exits and the caller continues - the molecule destroy step that
+# follows tears the container down anyway.
+#
+# Always `rm -f` the pidfile so the path is free for the next mock to
+# claim. The cleanup caller removes the same path again immediately
+# after this include (alongside the other scratch files) and that
+# second removal is a silent no-op.
+- name: Kill mock server if its pidfile points at a live process
+  ansible.builtin.shell: |
+    set -eu
+    if [ -f {{ mock_pidfile }} ]; then
+      pid=$(cat {{ mock_pidfile }} 2>/dev/null || true)
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" || true
+        for _ in $(seq 1 25); do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.2
+        done
+      fi
+      rm -f {{ mock_pidfile }}
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false

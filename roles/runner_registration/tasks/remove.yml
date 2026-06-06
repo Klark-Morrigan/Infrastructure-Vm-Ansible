@@ -1,0 +1,37 @@
+---
+# Remove direction. Imported by playbooks/deregister-runners.yml via
+# `import_role { tasks_from: remove }` for every host in
+# `vm_provisioner_hosts`. Two branches per entry:
+#
+#   GitHub knows this runner     -> mint short-lived removal token
+#                                   (controller-side) + run
+#                                   `config.sh remove --unattended`
+#                                   as the runner service user.
+#   GitHub does not know it      -> no-op for this role. The local
+#                                   marker files (.runner, .credentials)
+#                                   are cleared when runner_binary's
+#                                   remove direction deletes
+#                                   /opt/runners/<name>/, so this role
+#                                   does not need a "GitHub-absent /
+#                                   disk-present" branch.
+#
+# Token hygiene matches the register direction: every uri / command
+# task that touches a token (PAT, removal token) is `no_log: true`,
+# the PAT rides in the Authorization header (never URL query), and
+# `config.sh remove` uses the argv form so the token never reaches
+# any shell history.
+#
+# Shared input gate; same _assert-token.yml the register direction uses.
+- name: Assert role inputs
+  ansible.builtin.include_tasks: _assert-token.yml
+
+# vm_runner_entries is set by roles/runner_entry_resolve (meta dep;
+# runs once per play). One include_tasks per entry so the per-entry
+# probe + remove facts stay scoped to that entry's iteration; the
+# next iteration overwrites them before any consumer reads them.
+- name: Reconcile declared runners on this host (remove)
+  ansible.builtin.include_tasks: _remove-one.yml
+  loop: "{{ vm_runner_entries }}"
+  loop_control:
+    loop_var: entry
+    label: "{{ entry.runnerName }}"
