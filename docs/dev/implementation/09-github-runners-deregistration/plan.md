@@ -505,9 +505,10 @@ unit is already stopped before `config.sh remove` touches credentials.
   "local marker files are owned by runner_binary's remove direction"
   note.
 - `Tests/molecule/runner_registration/remove/` (new) — dedicated
-  scenario with a mocked GitHub API. The mock script is shared with
-  the default (register) scenario via `../default/mock-github-api.py`;
-  the remove scenario binds it on a distinct loopback port (`18081`).
+  scenario against the shared mock GitHub API
+  (`Tests/mock-github-api.py`, the single source the default
+  scenario and the deregister smoke playbook also reference). The
+  remove scenario binds it on a distinct loopback port (`18081`).
   `prepare.yml` seeds two runner directories on the target
   (`runner-removable` and `runner-orphan`, owned by two distinct
   service users) plus a third selector-negative entry `runner-leak`
@@ -682,24 +683,51 @@ end-to-end runnable; only the operator entry script (step 6) remains.
 
 - `playbooks/deregister-runners.yml` (new) - three plays:
   1. **`hosts: localhost`** (reachability split + force fan-out):
-     - `ansible.builtin.wait_for_connection` per VM via a
-       `delegate_to: "{{ item.vmName }}"` loop, `timeout: 10`,
-       `failed_when: false`, `register: reachability`. Hosts whose
-       probe failed are added to a `runners_unreachable` group via
-       `add_host`.
+     - `ansible.builtin.wait_for_connection` per unique vmName via a
+       `delegate_to: "{{ item }}"` loop (the loop iterates
+       `github_runners_config | map(attribute='vmName') | unique`),
+       `timeout: 10`, `ignore_errors: true`, `register:
+       deregister_runners_reachability`. Hosts whose probe failed are
+       added to a `runners_unreachable` group via `add_host` guarded
+       on `item.failed | default(false)`.
+       `ignore_errors` (not `failed_when: false`) is what lets the
+       next task split the inventory: `failed_when: false` flips
+       every iteration's `.failed` to false, indistinguishable from
+       genuine success, so the `Mark unreachable VMs` guard would
+       skip even genuinely-failed iterations. `ignore_errors`
+       suppresses only the play-abort and leaves `.failed: true` on
+       the timed-out iterations as a real signal for the guard.
      - For each entry whose `vmName` is in `runners_unreachable`,
-       `include_tasks: _handle-unreachable-entry.yml` (single source
-       of the GET runners + force-or-error switch).
-     - The included file mints the existence check
-       (`include_tasks: roles/runner_registration/tasks/_probe-github.yml`
-       on `localhost`, so the same probe code runs in both contexts).
+       `include_tasks: tasks/_handle-unreachable-entry.yml` (single
+       source of the GET runners + force-or-error switch). The
+       include lives under `playbooks/tasks/` rather than directly
+       under `playbooks/` so ansible-lint's kind detector classifies
+       it as `tasks` (the kind-by-path heuristic treats every
+       `*.yml` directly under `playbooks/` as a Play and rejects an
+       `include_role` at the file's top level with `not a valid
+       attribute for a Play`).
+     - The included file runs the existence check via
+       `include_role { name: runner_registration, tasks_from:
+       _probe-github }` so the same probe code path runs in both
+       contexts (the role's meta dep on `runner_entry_resolve` runs
+       too but is a harmless no-op on localhost: it sets
+       `vm_runner_entries` to the empty list against `inventory_hostname
+       = localhost`, and the probe consumes only `entry.githubUrl`
+       and `entry.runnerName`, not that fact).
        When the entry is on GitHub:
-       - if `runners_force_remove | default(false)` is true ->
+       - if `runners_force_remove | default(false) | bool` is true ->
          `ansible.builtin.uri` `DELETE
          .../runners/{{ runner_id }}`, `status_code: [200, 204, 404]`,
-         `no_log: true`.
+         `no_log: true`. The runner_id comes from
+         `runner_registration_runners_resp.json.runners`
+         selectattr-by-name; the owner / repo facts the URL needs are
+         already populated by the probe's first `set_fact` task.
        - else -> append `"{{ entry.vmName }}/{{ entry.runnerName }}"`
-         to a `runners_unreachable_errors` list via `set_fact`.
+         to a `runners_unreachable_errors` list via `set_fact`. The
+         list is initialised at play vars (not via `default([])` in
+         the assert) so the per-entry append is unambiguous and
+         play 3 can read it through `hostvars['localhost']` without
+         the empty-default hiding play 1's accumulation.
        When the entry is not on GitHub -> skip silently.
   2. **`hosts: vm_provisioner_hosts`** (per-VM remove path):
      - `any_errors_fatal: false`.
@@ -716,8 +744,11 @@ end-to-end runnable; only the operator entry script (step 6) remains.
        repair the VMs."`. Surfaces the accumulated errors as a single
        non-zero exit code. Preserves today's "process reachable first,
        surface unreachable-with-registration as one exit 1" contract.
-- `playbooks/_handle-unreachable-entry.yml` (new) - included by
-  play 1 to keep the per-entry branching legible. Sets host-scoped
+- `playbooks/tasks/_handle-unreachable-entry.yml` (new) - included
+  by play 1 to keep the per-entry branching legible. Lives under
+  `playbooks/tasks/` (not directly under `playbooks/`) so
+  ansible-lint's kind detector classifies it as tasks rather than
+  rejecting `include_role` at the file's top level. Sets host-scoped
   facts inside `set_fact` so a partial run is debuggable via
   `--diff`.
 - `roles/runner_registration/tasks/_probe-github.yml` (extended
@@ -725,22 +756,67 @@ end-to-end runnable; only the operator entry script (step 6) remains.
   Reused by play 1 with the per-entry `owner` / `repo` derived from
   `item.githubUrl`.
 - `Tests/ansible/test-deregister-runners-playbook.yml` (new) - a
-  controller-only smoke playbook with a stub inventory of one
-  reachable + one unreachable host, run via
-  `ansible-playbook --check --diff` in CI to assert:
-  - the three plays are in the right order,
-  - the assert fires when `runners_force_remove=false` and the mock
-    GitHub API returns the unreachable runner as registered,
-  - the assert passes when `runners_force_remove=true` (the DELETE
-    task runs and the unreachable_errors list stays empty),
-  - the per-VM play is tagged so `--tags runner_binary` etc.
-    isolate it.
-  Mock GitHub responses are served by a tiny localhost HTTP stub
-  (same pattern as the molecule registration scenario, lifted into
-  the test playbook).
-- `README.md` (modified) - mention the new playbook under the
-  "Playbooks" section. Operator-facing documentation lives in
-  step 6.
+  controller-only smoke playbook driving the production playbook as
+  a subprocess (`ansible.builtin.command`) under a `block:` /
+  `always:` teardown guard. `import_playbook` cannot run the target
+  twice with different extra-vars or capture its exit code under
+  failure, which is what the behavioural assertions need.
+  Fixture inventory ([`Tests/ansible/inventory.yml`](Tests/ansible/inventory.yml))
+  carries one reachable host (`ansible_connection=local`) and one
+  unreachable host (`ansible_host=192.0.2.1`, RFC 5737 TEST-NET-1,
+  `ConnectTimeout=2` SSH common args). `vm_provisioner_hosts` is
+  deliberately empty so the per-VM play (play 2) runs against zero
+  hosts; per-role remove behaviour stays under the molecule
+  scenarios, and this smoke test owns only the playbook-level
+  wiring. Asserts:
+  - **Structural** (via one captured `--list-tasks` invocation):
+    three plays appear in the documented order; each per-VM
+    `import_role` carries its own tag (`runner_service`,
+    `runner_registration`, `runner_binary`).
+  - **Behavioural mode A** (`runners_force_remove` unset, both
+    fixture runners seeded as registered): subprocess exits non-zero;
+    stdout contains the assert's fail_msg naming
+    `unreachable-vm/runner-on-unreachable`; mock log has no DELETE.
+  - **Behavioural mode B** (`runners_force_remove=true`): subprocess
+    exits zero; mock log contains a DELETE for the unreachable
+    runner's id (id 2, the second line of the seed file) and **not**
+    the reachable runner's id (id 1, never reaches the force path).
+  Each subprocess invocation runs under an `environment:` block that
+  exports `ANSIBLE_ROLES_PATH` (mirrors `ops/_ansible-env.sh` —
+  ansible.cfg is silently ignored on the /mnt/c drvfs mount) and
+  `ANSIBLE_HOST_KEY_CHECKING=False`.
+- `Tests/mock-github-api.py` (new, single source for both molecule
+  scenarios and this smoke playbook) - localhost stub covering every
+  GitHub Actions runners endpoint the repo's runner-side tests
+  touch: `GET /repos/.../actions/runners` (existence probe, shared),
+  `POST /repos/.../actions/runners/registration-token` and
+  `POST /repos/.../actions/runners/remove-token` (per-VM register /
+  remove path; molecule scenarios), and `DELETE
+  /repos/.../actions/runners/{id}` (controller-side force path;
+  smoke playbook). Records each request as one JSON line; DELETE
+  additionally records the captured `runner_id` so the smoke
+  playbook can assert which runner the force path targeted. Reads
+  the registered-runners set from a file it re-reads on every GET
+  so callers can mutate state mid-test (molecule's `side_effect.yml`
+  / the smoke playbook's per-mode resets) without restarting the
+  server. Consolidating to one mock instead of one per direction
+  trades a smaller per-caller surface for a smaller maintenance
+  surface (the boilerplate — argparse, `_record`, `_send_json`,
+  `do_GET` for `/actions/runners`, HTTPServer bind — was identical
+  across the two; each direction adds only its own verb branch).
+  Callers reference it via relative paths:
+  `Tests/molecule/runner_registration/<scenario>/prepare.yml` uses
+  `{{ playbook_dir }}/../../../mock-github-api.py`; the smoke
+  playbook uses `{{ playbook_dir }}/../mock-github-api.py`.
+- `Tests/ansible/inventory.yml` (new) - fixture inventory for the
+  smoke playbook. Two VM-named hosts so play 1's
+  `wait_for_connection` per-vmName loop resolves both probes; empty
+  `vm_provisioner_hosts` group so play 2 runs against zero hosts
+  (per-role remove behaviour is covered by molecule).
+- `README.md` (modified) - "Tests and lint" section gains a
+  paragraph describing the smoke test and its mock-GitHub-API
+  pattern. Operator-facing documentation for the deregister flow
+  lives in step 6.
 
 **Behaviour (sketch, play 1)**
 
@@ -755,30 +831,30 @@ end-to-end runnable; only the operator entry script (step 6) remains.
     - name: Probe reachability of each VM
       ansible.builtin.wait_for_connection:
         timeout: 10
-      delegate_to: "{{ item.vmName }}"
+      delegate_to: "{{ item }}"
       loop: "{{ github_runners_config | map(attribute='vmName') | unique | list }}"
       loop_control:
-        label: "{{ item.vmName }}"
-      register: reachability
-      failed_when: false
+        label: "{{ item }}"
+      register: deregister_runners_reachability
+      ignore_errors: true
 
     - name: Mark unreachable VMs
       ansible.builtin.add_host:
-        name:   "{{ item.item.vmName }}"
+        name:   "{{ item.item }}"
         groups: runners_unreachable
-      loop: "{{ reachability.results }}"
+      loop: "{{ deregister_runners_reachability.results }}"
       loop_control:
-        label: "{{ item.item.vmName }}"
+        label: "{{ item.item }}"
       when: item.failed | default(false)
       changed_when: false
 
     - name: Decide force-or-error for each entry on an unreachable VM
-      ansible.builtin.include_tasks: _handle-unreachable-entry.yml
-      loop: "{{ github_runners_config }}"
+      ansible.builtin.include_tasks: tasks/_handle-unreachable-entry.yml
+      loop: "{{ github_runners_config | default([]) }}"
       loop_control:
         label: "{{ entry.vmName }}/{{ entry.runnerName }}"
         loop_var: entry
-      when: entry.vmName in groups['runners_unreachable'] | default([])
+      when: entry.vmName in (groups['runners_unreachable'] | default([]))
 ```
 
 **Behaviour (sketch, play 2 — per-VM)**

@@ -237,8 +237,10 @@ prepare + cleanup of each scenario) and `_launch-mock.yml` (the
 
 [`Tests/molecule/runner_registration/remove/`](../../Tests/molecule/runner_registration/remove/)
 exercises the remove direction against the same mock GitHub API
-(shared script: `../default/mock-github-api.py`, run on a dedicated
-loopback port so the two scenarios do not collide). Three entries
+(shared script: [`Tests/mock-github-api.py`](../../Tests/mock-github-api.py),
+single source for both molecule scenarios and the deregister smoke
+playbook; run on a dedicated loopback port so the two scenarios do
+not collide). Three entries
 cover the per-entry branches:
 
 - **remove** - entry in the mock's registered set - mint removal

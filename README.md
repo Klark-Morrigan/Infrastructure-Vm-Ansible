@@ -554,6 +554,24 @@ lands in one place):
 Both shims assume `PowerShell-Common` and `GitHub-Common` are sibling
 checkouts under the same parent directory.
 
+The `playbooks/deregister-runners.yml` controller-side glue (reachability
+split, `--force` fan-out via the GitHub REST API, end-of-run assert) is
+covered by a dedicated smoke playbook,
+[`Tests/ansible/test-deregister-runners-playbook.yml`](Tests/ansible/test-deregister-runners-playbook.yml).
+The smoke test stands up the shared localhost mock of the GitHub runners API
+([`Tests/mock-github-api.py`](Tests/mock-github-api.py), single source for
+both molecule scenarios and this smoke playbook),
+points a fixture inventory at one reachable host (loopback) and one
+deliberately unreachable host (TEST-NET-1 with a 2-second TCP timeout),
+and drives `ansible-playbook playbooks/deregister-runners.yml` twice -
+once without `runners_force_remove` (asserts the play-3 assert fires
+and no `DELETE` was issued) and once with `runners_force_remove=true`
+(asserts the assert passes and the unreachable runner's `DELETE` hit
+the mock). Per-role remove behaviour stays under the molecule
+scenarios; this smoke test owns only the playbook-level wiring.
+Invoke with `wsl ansible-playbook Tests/ansible/test-deregister-runners-playbook.yml -i localhost,`
+inside the repo's venv.
+
 ## Roles
 
 Per-role contracts (var schema, idempotence guarantees, test scope)
