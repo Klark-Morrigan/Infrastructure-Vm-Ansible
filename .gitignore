@@ -74,3 +74,7 @@ TestResults.xml
 # ---------------------------------------------------------------------------
 # pre-push-lint-and-tests skill config (per-host, declares the local gate set)
 .pre-push.json
+
+# graphify knowledge graph artifacts (local; rebuilt by graphify)
+graphify-out/
+supersets-out/
