@@ -116,7 +116,11 @@ staging_dir="$(dirname "${tar_path}")"
 #    Matches the existing Infrastructure-GitHubRunners posture - no
 #    alternate-bind logic in v1.
 # ---------------------------------------------------------------------------
-target_vm_ip="$(jq -r '.[0].ipAddress // empty' "${provisioner_path}")"
+# Skip router VMs when picking a target IP. Routers are network
+# infrastructure (NAT/DNS) and under externalDhcp=true have no
+# ipAddress in the config; the first WORKLOAD is what the host file
+# server's bind algorithm wants to anchor its /24 match on.
+target_vm_ip="$(jq -r '[ .[] | select((.kind // "") != "router") ][0].ipAddress // empty' "${provisioner_path}")"
 if [[ -z "${target_vm_ip}" ]]; then
     echo "_stage-host-fileserver.sh: provisioner config has no VMs with ipAddress - cannot bind host file server" >&2
     exit 1

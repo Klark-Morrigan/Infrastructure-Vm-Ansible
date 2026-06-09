@@ -65,8 +65,16 @@ if ! err="$(printf '%s' "${input}" | jq -r '
     if type != "array" then
         "_build-inventory.sh: input must be a JSON array of VM objects"
     else
-        . as $vms
-        | range(0; length) as $i
+        # Drop router VMs before the required-field check. Routers are
+        # network infrastructure (NAT/DNS for the per-environment
+        # private switch); Ansible never reconciles users / runners /
+        # files on them, so including them would only surface false
+        # "ipAddress missing" failures for DHCP-mode routers whose
+        # upstream IP is discovered at boot and never written back to
+        # the vault. kind == "router" => drop; anything else (kind
+        # unset OR any other value) is a workload and kept.
+        [ .[] | select((.kind // "") != "router") ] as $vms
+        | range(0; $vms | length) as $i
         | $vms[$i] as $vm
         | ["vmName", "ipAddress", "username", "password"]
         | map(
@@ -84,6 +92,12 @@ if [[ -n "${err}" ]]; then
     echo "${err}" >&2
     exit 1
 fi
+
+# Re-apply the router filter to the inventory-building pipeline below.
+# The validation block above filtered into its own jq-local $vms but
+# the next jq invocation reads from $input - reapply so the output
+# excludes the same rows.
+input="$(printf '%s' "${input}" | jq '[ .[] | select((.kind // "") != "router") ]')"
 
 # ---------------------------------------------------------------------------
 # 3. Build the inventory. The `add // {}` tail collapses the per-VM

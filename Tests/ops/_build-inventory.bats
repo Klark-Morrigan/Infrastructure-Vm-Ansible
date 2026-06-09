@@ -93,6 +93,33 @@ json_eq() {
     [[ "${output}" == *"must be a JSON array"* ]]
 }
 
+@test "router VMs are dropped from the inventory" {
+    # Routers are network infrastructure (NAT/DNS for the per-env
+    # private switch) and never get Ansible-reconciled. The DHCP-mode
+    # default has no ipAddress on the router row; without the filter
+    # the required-field check would reject the input. With it, the
+    # workload survives untouched and the router is silently elided.
+    input='[
+        {"vmName":"router","kind":"router","username":"r","password":"rp"},
+        {"vmName":"wl","ipAddress":"10.0.0.10","username":"u","password":"p"}
+    ]'
+    run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts | keys | join(",")')" = "wl" ]
+    [ "$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_host')" = "10.0.0.10" ]
+}
+
+@test "router-only input yields an empty hosts map (no workload to reconcile)" {
+    # The all-router edge case: the operator's config has only a
+    # router. Ansible has nothing to do; the output must still be a
+    # valid Ansible inventory shape (empty hosts map) so downstream
+    # tooling does not blow up on a missing key.
+    input='[{"vmName":"router","kind":"router","username":"r","password":"rp"}]'
+    run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    json_eq '{"all":{"children":{"vm_provisioner_hosts":{"hosts":{}}}}}' "${output}"
+}
+
 @test "empty stdin fails fast" {
     run "${BASH_BIN}" "${SCRIPT}" <<< ''
     [ "${status}" -eq 2 ]
