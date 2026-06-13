@@ -174,8 +174,133 @@ if [[ "${needs_github_runners}" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Router-VM resolution (feature-53 NAT topology)
+#
+#     Workloads on a per-environment private switch are not reachable
+#     from the controller (WSL on the host) directly - the Ansible
+#     bridge must thread its ssh through the router via ProxyCommand.
+#     Find the router row in VmProvisionerConfig (kind == 'router'),
+#     resolve its upstream IPv4 via Hyper-V KVP when externalDhcp=true
+#     leaves ipAddress empty in the vault, and export ROUTER_* env
+#     vars consumed by the downstream helpers:
+#
+#       - _build-inventory.sh    : injects ansible_ssh_common_args
+#                                  per workload (ProxyCommand+sshpass).
+#       - _stage-host-fileserver.sh : binds the listener on the host
+#                                  adapter sharing the router's
+#                                  upstream /24 (Get-VmSwitchHostIp on
+#                                  ROUTER_IP).
+#       - ansible-playbook'd ssh : reads $SSHPASS at sshpass -e time
+#                                  to authenticate to the router
+#                                  without putting the password in
+#                                  argv.
+#
+#     When no router row is present (single-switch topology), the
+#     ROUTER_* vars stay empty and every downstream helper takes its
+#     legacy direct-routing branch.
+# ---------------------------------------------------------------------------
+router_row="$(jq -c '[ .[] | select((.kind // "") == "router") ][0] // empty' "${provisioner_file}")"
+if [[ -n "${router_row}" ]]; then
+    router_vm_name="$(printf '%s' "${router_row}" | jq -r '.vmName // empty')"
+    router_switch="$( printf '%s' "${router_row}" | jq -r '.externalSwitchName // empty')"
+    ROUTER_USERNAME="$(printf '%s' "${router_row}" | jq -r '.username // empty')"
+    ROUTER_PASSWORD="$(printf '%s' "${router_row}" | jq -r '.password // empty')"
+    static_router_ip="$(printf '%s' "${router_row}" | jq -r '.ipAddress // empty')"
+    if [[ -z "${router_vm_name}" || -z "${router_switch}" || -z "${ROUTER_USERNAME}" || -z "${ROUTER_PASSWORD}" ]]; then
+        echo "_run-playbook.sh: router row missing required fields (vmName/externalSwitchName/username/password)" >&2
+        exit 1
+    fi
+
+    if [[ -n "${static_router_ip}" ]]; then
+        ROUTER_IP="${static_router_ip}"
+    else
+        # Get-VmKvpIpAddress polls KVP until the router publishes its
+        # ext0 IPv4; tail -n1 strips any noise pwsh.exe might emit
+        # before the value (status lines, warnings) on slow imports.
+        ROUTER_IP="$(pwsh.exe -NoProfile -NoLogo -Command \
+            "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmKvpIpAddress -VmName '${router_vm_name}' -SwitchName '${router_switch}'" \
+            2>/dev/null | tr -d '\r' | tail -n1)"
+        if [[ -z "${ROUTER_IP}" ]]; then
+            echo "_run-playbook.sh: Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'" >&2
+            exit 1
+        fi
+    fi
+
+    # WSL2-on-Windows portproxy redirect. WSL2 runs as its own
+    # Hyper-V guest with its own NAT and cannot reach the host's
+    # Internal-switch subnet (e.g. 192.168.137.0/24, the ICS-served
+    # network where the router lives) through ICS NAT. The
+    # Vm-Provisioner ensures a host-side netsh portproxy rule
+    # forwarding <listenAddr>:<port> -> <routerIp>:22 at provisioning
+    # time; here we discover that rule from inside WSL (via
+    # pwsh.exe -> netsh) and rewrite ROUTER_IP/ROUTER_PORT to point
+    # at it.
+    #
+    # Reaching the host portproxy from WSL has two cases:
+    #   - WSL mirrored networking mode: 127.0.0.1 from WSL IS the
+    #     host's loopback. Direct hit.
+    #   - WSL NAT mode (default): 127.0.0.1 is WSL's OWN loopback,
+    #     NOT the host's. Must aim at the host's WSL-side gateway IP
+    #     (the IP reported by `ip route show default | awk '{print $3}'`).
+    #     This requires the provisioner's portproxy to listen on
+    #     0.0.0.0 (its default) rather than 127.0.0.1, so the
+    #     listener is reachable from the WSL vEthernet interface.
+    #
+    # We probe 127.0.0.1 first (the mirrored-mode happy path), and
+    # fall back to the WSL gateway IP if the probe fails. nc -z is
+    # the minimal "is something listening?" check; -w1 caps the
+    # wait at one second so a non-listening 127.0.0.1 does not
+    # delay the fallback.
+    #
+    # Listen-port auto-discovery (no hardcoded port): we parse netsh
+    # output for any rule whose ConnectAddress matches the current
+    # ROUTER_IP and use whichever ListenPort the provisioner chose.
+    # The listen address regex accepts both 0.0.0.0 (default) and
+    # 127.0.0.1 (operator-pinned). The provisioner's default is
+    # 2222; operators who override via -ListenPort keep working.
+    #
+    # No-op on non-WSL hosts (Linux CI, Mac, etc. - no netsh, no
+    # ICS NAT to work around) and on WSL hosts without a matching
+    # portproxy rule (ROUTER_IP stays as it was, direct path).
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        portproxy_port="$(pwsh.exe -NoProfile -NoLogo -Command \
+            "& netsh interface portproxy show v4tov4 2>\$null | Where-Object { \$_ -match '^(0\.0\.0\.0|127\.0\.0\.1)\s+(\d+)\s+${ROUTER_IP//./\\.}\s+22' } | ForEach-Object { (\$_ -split '\s+' | Where-Object { \$_ })[1] } | Select-Object -First 1" \
+            2>/dev/null | tr -d '\r' | tail -n1)"
+        if [[ -n "${portproxy_port}" ]]; then
+            # Pick a reachable target. 127.0.0.1 works in mirrored
+            # mode; otherwise the WSL gateway IP works for NAT mode
+            # when the provisioner's portproxy listens on 0.0.0.0.
+            target_ip="127.0.0.1"
+            if ! nc -z -w1 "${target_ip}" "${portproxy_port}" >/dev/null 2>&1; then
+                wsl_gateway="$(ip route show default 2>/dev/null | awk '/^default/ {print $3}' | head -n1)"
+                if [[ -n "${wsl_gateway}" ]]; then
+                    target_ip="${wsl_gateway}"
+                fi
+            fi
+            echo "_run-playbook.sh: WSL detected; routing via host portproxy ${target_ip}:${portproxy_port} -> ${ROUTER_IP}:22"
+            ROUTER_IP="${target_ip}"
+            ROUTER_PORT="${portproxy_port}"
+            export ROUTER_PORT
+        fi
+    fi
+
+    # SSHPASS is the env-based auth channel for sshpass -e: ansible-
+    # playbook's ssh subprocesses inherit it and pass it through to
+    # sshpass inside the ProxyCommand. The password never appears in
+    # argv (no `sshpass -p`), so `ps` listings stay clean.
+    export ROUTER_IP ROUTER_USERNAME
+    export SSHPASS="${ROUTER_PASSWORD}"
+    # Avoid leaving the cleartext in a non-exported var the rest of the
+    # script could accidentally interpolate into a log line. SSHPASS
+    # is the only legitimate consumer from here on.
+    unset ROUTER_PASSWORD
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Inventory generation. Pure stdin -> stdout transform; redirected
-#    file picks up the chmod immediately.
+#    file picks up the chmod immediately. When the router resolution
+#    above exported ROUTER_IP / ROUTER_USERNAME, the inventory builder
+#    injects ansible_ssh_common_args per workload host.
 # ---------------------------------------------------------------------------
 hosts_file="${tmpdir}/hosts.json"
 "${script_dir}/_build-inventory.sh" < "${provisioner_file}" > "${hosts_file}"

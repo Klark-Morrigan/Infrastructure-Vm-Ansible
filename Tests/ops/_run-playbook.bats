@@ -109,14 +109,31 @@ STUB
     cat >"${TEST_TMP}/stubs/pwsh.exe" <<'STUB'
 #!/usr/bin/env bash
 file=""
+cmd=""
 process_id=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -File)      file="$2";       shift 2 ;;
+        -Command)   cmd="$2";        shift 2 ;;
         -ProcessId) process_id="$2"; shift 2 ;;
         *)          shift ;;
     esac
 done
+# -Command path: the router-resolution block dispatches
+# Get-VmKvpIpAddress when ROUTER_IP is not statically set. Override
+# the echoed IP per test via PWSH_STUB_ROUTER_IP.
+if [[ -n "${cmd}" ]]; then
+    case "${cmd}" in
+        *Get-VmKvpIpAddress*)
+            echo "${PWSH_STUB_ROUTER_IP-192.168.1.99}"
+            exit 0
+            ;;
+        *)
+            echo "pwsh-stub: unhandled -Command payload" >&2
+            exit 99
+            ;;
+    esac
+fi
 case "$(basename "${file}")" in
     _stop-host-file-server.ps1)
         echo "stop-host-file-server:${process_id}" >> "${TRACE_FILE}"
@@ -425,4 +442,122 @@ STUB
     [ "${status}" -ne 0 ]
     leftovers="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'vm-ansible.*' -print 2>/dev/null || true)"
     [ -z "${leftovers}" ]
+}
+
+@test "router row absent: ROUTER_IP env stays unset and inventory build sees no router context" {
+    # Regression guard for the legacy single-switch topology. With no
+    # router in VmProvisionerConfig, the resolution block must be a
+    # complete no-op - no pwsh.exe -Command dispatch, no exported
+    # ROUTER_* envs.
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:ROUTER_IP=EMPTY$' "${TRACE_FILE}"
+    # pwsh.exe must NOT have been invoked for KVP discovery
+    # (Get-VmKvpIpAddress) because there is no router to discover for.
+    ! grep -q 'Get-VmKvpIpAddress' "${TRACE_FILE}" 2>/dev/null
+}
+
+@test "router row with static ipAddress: exports ROUTER_IP from the vault, no KVP call" {
+    # Static-mode router (externalDhcp=false equivalent): ipAddress is
+    # already in the vault. The bridge must skip the KVP call and use
+    # the static value directly.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}:ROUTER_USERNAME=${ROUTER_USERNAME:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:ROUTER_IP=192.168.1.5:ROUTER_USERNAME=routeradmin$' "${TRACE_FILE}"
+    ! grep -q 'Get-VmKvpIpAddress' "${TRACE_FILE}" 2>/dev/null
+}
+
+@test "router row with no ipAddress (DHCP mode): discovers via Get-VmKvpIpAddress" {
+    # DHCP-mode router: ipAddress absent from the vault. The bridge
+    # must call Get-VmKvpIpAddress and export the discovered IP.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    # Force the KVP stub to a known value so we can pin the export.
+    export PWSH_STUB_ROUTER_IP="192.168.1.123"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:ROUTER_IP=192.168.1.123$' "${TRACE_FILE}"
+}
+
+@test "router row exports SSHPASS for the inventory ProxyCommand, NOT ROUTER_PASSWORD" {
+    # Security guard: the router password must travel to sshpass via
+    # $SSHPASS at -e time, not as a ROUTER_PASSWORD env var any
+    # process could log. The unset after assignment is what the
+    # bridge owes the rest of the script.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"secret-rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:SSHPASS=${SSHPASS:-EMPTY}:ROUTER_PASSWORD=${ROUTER_PASSWORD:-UNSET}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:SSHPASS=secret-rp:ROUTER_PASSWORD=UNSET$' "${TRACE_FILE}"
 }

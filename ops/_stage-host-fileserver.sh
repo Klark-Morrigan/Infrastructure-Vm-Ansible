@@ -110,20 +110,42 @@ fi
 staging_dir="$(dirname "${tar_path}")"
 
 # ---------------------------------------------------------------------------
-# 3. Pick a target VM IP. The listener's bind algorithm chooses the
-#    host adapter that shares a /24 with this IP, so any VM on the
-#    internal switch works (they all resolve to the same adapter).
-#    Matches the existing Infrastructure-GitHubRunners posture - no
-#    alternate-bind logic in v1.
+# 3. Decide where to bind the listener.
+#
+#    Two paths, picked by the caller's ROUTER_IP environment variable:
+#
+#    a. ROUTER_IP set (feature-53 NAT topology). Workloads sit on a
+#       per-environment private switch the host has no route to, so the
+#       legacy "match the workload's /24" lookup would explode with
+#       "No host adapter found". Resolve the host adapter on the
+#       router's UPSTREAM LAN instead (via Get-VmSwitchHostIp on the
+#       router IP) and pass it through as -HostIp. Workloads then reach
+#       the listener via their default route -> router priv0 -> router
+#       MASQUERADE on ext0 -> host.
+#
+#    b. ROUTER_IP unset (legacy single-switch topology). The first
+#       workload's ipAddress drives Get-VmSwitchHostIp inside
+#       _start-host-file-server.ps1 via the -TargetVmIp parameter.
+#       Routers are filtered out because they have no ipAddress under
+#       externalDhcp=true and would null-out the lookup.
 # ---------------------------------------------------------------------------
-# Skip router VMs when picking a target IP. Routers are network
-# infrastructure (NAT/DNS) and under externalDhcp=true have no
-# ipAddress in the config; the first WORKLOAD is what the host file
-# server's bind algorithm wants to anchor its /24 match on.
-target_vm_ip="$(jq -r '[ .[] | select((.kind // "") != "router") ][0].ipAddress // empty' "${provisioner_path}")"
-if [[ -z "${target_vm_ip}" ]]; then
-    echo "_stage-host-fileserver.sh: provisioner config has no VMs with ipAddress - cannot bind host file server" >&2
-    exit 1
+listener_args=(-StagingDir "${staging_dir}")
+if [[ -n "${ROUTER_IP:-}" ]]; then
+    host_ip="$(pwsh.exe -NoProfile -NoLogo -Command \
+        "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmSwitchHostIp -VmIpAddress '${ROUTER_IP}'" \
+        2>/dev/null | tr -d '\r' | tail -n1)"
+    if [[ -z "${host_ip}" ]]; then
+        echo "_stage-host-fileserver.sh: Get-VmSwitchHostIp returned empty for ROUTER_IP=${ROUTER_IP}" >&2
+        exit 1
+    fi
+    listener_args+=(-HostIp "${host_ip}")
+else
+    target_vm_ip="$(jq -r '[ .[] | select((.kind // "") != "router") ][0].ipAddress // empty' "${provisioner_path}")"
+    if [[ -z "${target_vm_ip}" ]]; then
+        echo "_stage-host-fileserver.sh: provisioner config has no VMs with ipAddress - cannot bind host file server" >&2
+        exit 1
+    fi
+    listener_args+=(-TargetVmIp "${target_vm_ip}")
 fi
 
 # ---------------------------------------------------------------------------
@@ -137,8 +159,7 @@ fi
 : > "${listener_log}"
 pwsh.exe -NoProfile -NoLogo \
     -File "${script_dir}/_start-host-file-server.ps1" \
-    -StagingDir "${staging_dir}" \
-    -TargetVmIp "${target_vm_ip}" \
+    "${listener_args[@]}" \
     > "${listener_log}" 2>&1 &
 listener_bash_pid=$!
 

@@ -120,6 +120,88 @@ json_eq() {
     json_eq '{"all":{"children":{"vm_provisioner_hosts":{"hosts":{}}}}}' "${output}"
 }
 
+@test "ROUTER_IP unset: ansible_ssh_common_args is omitted (legacy direct path)" {
+    # Regression guard: the absence-path must preserve byte-identical
+    # output for pre-feature-53 callers. A workload entry with no
+    # router context must NOT carry ansible_ssh_common_args.
+    input='[{"vmName":"wl","ipAddress":"10.0.0.10","username":"u","password":"p"}]'
+    run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_ssh_common_args // "ABSENT"')" = "ABSENT" ]
+}
+
+@test "ROUTER_IP set: workload entries get ansible_ssh_common_args with ProxyCommand+sshpass" {
+    # When the caller exports ROUTER_IP + ROUTER_USERNAME, every workload
+    # row gains an ansible_ssh_common_args clause that routes its ssh
+    # through the router. The clause must (a) name the router IP and
+    # user, (b) use sshpass -e so the router password is read from
+    # $SSHPASS not argv, (c) disable host-key checks on both legs.
+    input='[{"vmName":"wl","ipAddress":"10.99.0.10","username":"u","password":"p"}]'
+    ROUTER_IP=192.168.1.42 ROUTER_USERNAME=routeradmin \
+        run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    ssh_args="$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_ssh_common_args')"
+    [[ "${ssh_args}" == *"ProxyCommand="* ]]
+    [[ "${ssh_args}" == *"sshpass -e ssh"* ]]
+    [[ "${ssh_args}" == *"routeradmin@192.168.1.42"* ]]
+    [[ "${ssh_args}" == *"StrictHostKeyChecking=no"* ]]
+    [[ "${ssh_args}" == *"UserKnownHostsFile=/dev/null"* ]]
+}
+
+@test "ROUTER_IP set: router password is NOT embedded in ansible_ssh_common_args" {
+    # Security guard: the router password must come from $SSHPASS at
+    # sshpass invocation time, never embedded in the inventory. A
+    # leaked secret would survive in the chmod-600 inventory file
+    # AND in any process listing that observed ansible-playbook's
+    # argv.
+    input='[{"vmName":"wl","ipAddress":"10.99.0.10","username":"u","password":"p"}]'
+    ROUTER_IP=192.168.1.42 ROUTER_USERNAME=routeradmin \
+        run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    ssh_args="$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_ssh_common_args')"
+    [[ "${ssh_args}" != *"sshpass -p"* ]]
+}
+
+@test "ROUTER_PORT set: ProxyCommand injects -p <port> into the inner ssh" {
+    # When the caller routes through a host portproxy (typical of
+    # WSL2-on-Windows where the router is on an Internal switch),
+    # ROUTER_IP=127.0.0.1 + ROUTER_PORT=<listen_port> redirects the
+    # ProxyCommand's inner ssh to the loopback shortcut. The -p
+    # flag must be present so ssh hits the portproxy listener, not
+    # 22 on localhost (which would refuse).
+    input='[{"vmName":"wl","ipAddress":"10.99.0.10","username":"u","password":"p"}]'
+    ROUTER_IP=127.0.0.1 ROUTER_PORT=2222 ROUTER_USERNAME=routeradmin \
+        run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    ssh_args="$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_ssh_common_args')"
+    [[ "${ssh_args}" == *"-p 2222"* ]]
+    [[ "${ssh_args}" == *"routeradmin@127.0.0.1"* ]]
+}
+
+@test "ROUTER_PORT unset: ProxyCommand has no -p flag (defaults to ssh's port 22)" {
+    # Direct-routing operators (Linux CI, bridged-Ethernet hosts)
+    # do not need the portproxy redirect. Absence of ROUTER_PORT
+    # MUST NOT inject an empty -p flag (ssh rejects '-p ' with a
+    # parse error).
+    input='[{"vmName":"wl","ipAddress":"10.99.0.10","username":"u","password":"p"}]'
+    ROUTER_IP=192.168.1.42 ROUTER_USERNAME=routeradmin \
+        run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    ssh_args="$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_ssh_common_args')"
+    [[ "${ssh_args}" != *" -p "* ]]
+}
+
+@test "ROUTER_USERNAME unset: no ProxyCommand injection even if ROUTER_IP is set" {
+    # Partial context is treated as no-context to avoid emitting a
+    # malformed ProxyCommand that ssh would reject with an opaque
+    # parse error.
+    input='[{"vmName":"wl","ipAddress":"10.99.0.10","username":"u","password":"p"}]'
+    ROUTER_IP=192.168.1.42 \
+        run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_ssh_common_args // "ABSENT"')" = "ABSENT" ]
+}
+
 @test "empty stdin fails fast" {
     run "${BASH_BIN}" "${SCRIPT}" <<< ''
     [ "${status}" -eq 2 ]
