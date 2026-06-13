@@ -89,3 +89,12 @@ export ANSIBLE_RETRY_FILES_ENABLED=False
 # preserve Ansible's upstream defaults (connection multiplexing) so
 # we extend rather than replace.
 export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+
+# Mirrors `retries = 3` from ../ansible.cfg [ssh_connection]. Freshly-
+# provisioned VMs are reached over a two-hop proxy (host portproxy ->
+# router -W-> guest); during the early-boot settling window the inner
+# hop can stall at banner exchange, which a one-shot connect (default
+# 0) turns into a fatal UNREACHABLE that aborts the whole run. Three
+# retries absorb that transient without masking a dead host (which
+# fails every attempt). Only connection setup is retried, not tasks.
+export ANSIBLE_SSH_RETRIES=3
