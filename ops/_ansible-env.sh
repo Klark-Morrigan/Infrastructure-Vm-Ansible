@@ -73,6 +73,14 @@ export ANSIBLE_HOST_KEY_CHECKING=False
 # Ubuntu cloud images where auto_silent resolves cleanly.
 export ANSIBLE_PYTHON_INTERPRETER=auto_silent
 
+# Mirrors `timeout = 30` from ../ansible.cfg [defaults]. Becomes the
+# ssh `-o ConnectTimeout=`. The default 10s is tight for the two-hop
+# proxy (host portproxy -> router -W-> guest): a freshly-booted VM can
+# be slow to send its SSH banner while settling, and at 10s a slow-but-
+# alive exchange gets cut off and burns a retry. 30s rides out that
+# latency instead.
+export ANSIBLE_TIMEOUT=30
+
 # Mirrors `retry_files_enabled = False`. Keeps *.retry noise out of
 # the repo root. The .gitignore already excludes them, but disabling
 # generation entirely is cleaner than relying on the ignore.
