@@ -99,6 +99,18 @@ printf 'BASE_URL=%s\n'        "${STAGE_STUB_BASE_URL:-http://10.10.0.1:8745}"
 printf 'PID=%s\n'             "${STAGE_STUB_FS_PID:-12345}"
 STUB
 
+    # Router reachability probe (step 4c) stubbed at the orchestrator
+    # boundary - its nc/ssh internals have their own bats file
+    # (_assert-router-reachable.bats). Records the IP/port it was handed
+    # so the dispatch contract can be asserted; ASSERT_REACHABLE_STUB_EXIT
+    # drives the abort-on-unreachable path. Defaults to reachable so the
+    # router-row tests below proceed to dispatch.
+    cat >"${TEST_REPO}/ops/_assert-router-reachable.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "assert-router-reachable:$*" >> "${TRACE_FILE}"
+exit "${ASSERT_REACHABLE_STUB_EXIT:-0}"
+STUB
+
     chmod +x "${TEST_REPO}/ops/"_*.sh
 
     # pwsh.exe stub - the bridge still invokes pwsh.exe directly for
@@ -126,6 +138,17 @@ if [[ -n "${cmd}" ]]; then
     case "${cmd}" in
         *Get-VmKvpIpAddress*)
             echo "${PWSH_STUB_ROUTER_IP-192.168.1.99}"
+            exit 0
+            ;;
+        *portproxy*)
+            # WSL-detection block's portproxy auto-discovery. Only
+            # reached when bats itself runs under WSL (the wrapper's
+            # native path), where /proc/version matches 'microsoft' and
+            # the bridge probes netsh for a listen port. There is no real
+            # portproxy on the test host, so emit nothing: portproxy_port
+            # stays empty, the bridge keeps the vault ROUTER_IP without a
+            # rewrite, and the router path stays identical to the Linux/CI
+            # run where this block is skipped entirely.
             exit 0
             ;;
         *)
@@ -560,4 +583,41 @@ STUB
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
     [ "${status}" -eq 0 ]
     grep -q '^build-inventory:SSHPASS=secret-rp:ROUTER_PASSWORD=UNSET$' "${TRACE_FILE}"
+}
+
+# A router row routes the bridge through step 4c's reachability probe.
+_write_router_vault() {
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+}
+
+@test "router row drives the reachability probe with the resolved IP and port" {
+    _write_router_vault
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    # ROUTER_PORT is unset on this path (no WSL portproxy rewrite), so the
+    # orchestrator passes the static IP and the default 22.
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"assert-router-reachable:192.168.1.5 22"* ]]
+}
+
+@test "router reachability failure aborts the bridge before ansible-playbook" {
+    _write_router_vault
+    export ASSERT_REACHABLE_STUB_EXIT=1   # probe reports the hop unreachable
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+    # Aborted before dispatch - the ansible-playbook stub never recorded argv.
+    [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}" ]
 }

@@ -294,6 +294,16 @@ if [[ -n "${router_row}" ]]; then
     # script could accidentally interpolate into a log line. SSHPASS
     # is the only legitimate consumer from here on.
     unset ROUTER_PASSWORD
+
+    # -----------------------------------------------------------------------
+    # 4c. Router reachability pre-flight. Delegated to the sibling helper
+    #     so the orchestrator stays thin and the probe is tested against
+    #     just its nc/ssh boundary. A non-zero exit (unreachable) aborts
+    #     the bridge here under set -e - before ansible-playbook spends its
+    #     ~136s per-host connect-retry budget on a hop the helper already
+    #     proved broken. The helper's stderr names the failed segment.
+    # -----------------------------------------------------------------------
+    "${script_dir}/_assert-router-reachable.sh" "${ROUTER_IP}" "${ROUTER_PORT:-22}"
 fi
 
 # ---------------------------------------------------------------------------
