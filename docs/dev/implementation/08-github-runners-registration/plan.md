@@ -861,7 +861,7 @@ end-to-end runnable against a real VM.
   `ansible-playbook` (so `--tags`, `--limit`, `--check`, `-v`
   work unchanged).
 - `ops/register-runners.bat` (new) - Explorer launcher; resolves
-  Git Bash via `GitHub-Common/scripts/_find-bash.bat`, then `exec`s
+  Git Bash via `Common-Automation/scripts/_find-bash.bat`, then `exec`s
   `ops/register-runners.sh`. Mirrors the existing `create-users.bat`
   / `remove-users.bat` find-bash pattern.
 - `ops/setup-runners-secrets.ps1` (new) - thin wrapper. Forwards

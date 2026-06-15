@@ -1,5 +1,5 @@
 # CI for this repo's YAML and Ansible surfaces. Delegates to the
-# reusable workflow in GitHub-Common, which runs four lint jobs in
+# reusable workflow in Common-Automation, which runs four lint jobs in
 # parallel: actionlint, action-validator, yamllint, ansible-lint.
 # Each job auto-skips when its target surface is absent, so this
 # single one-line wiring serves every stage of the repo's growth -
@@ -14,4 +14,4 @@ on:
 
 jobs:
   ci-yaml:
-    uses: VitaliiAndreev/GitHub-Common/.github/workflows/ci-yaml.yml@master
+    uses: VitaliiAndreev/Common-Automation/.github/workflows/ci-yaml.yml@master

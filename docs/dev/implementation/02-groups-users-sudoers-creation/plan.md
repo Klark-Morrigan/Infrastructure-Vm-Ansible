@@ -19,7 +19,7 @@ This plan uses three top-level buckets for executables:
   `_build-extra-vars`.
 - **`scripts/`** - dev/test runners only:
   `run-tests.{ps1,sh,bat}` (delegates to the canonical runners in
-  `PowerShell-Common` and `GitHub-Common`) and
+  `Common-PowerShell` and `Common-Automation`) and
   `fix-permissions.{sh,bat}`. Operator-facing for developers, not
   for VM operators - hence the separate directory from `ops/`.
 
@@ -68,7 +68,7 @@ no feature lands without the lint coverage that will police it.
 - `inventory/.gitkeep` (new) - placeholder so the dir exists.
 - `roles/.gitkeep`, `playbooks/.gitkeep`, `scripts/.gitkeep` (new).
 - `README.md` (new) - one-paragraph stub describing the repo's purpose and pointing at this feature folder. Each subsequent step extends the section it earns; there is no terminal docs pass.
-- `.github/workflows/ci-yaml.yml` (new) - single-job reusable-workflow caller of [GitHub-Common's `ci-yaml.yml`](../../../../GitHub-Common/.github/workflows/ci-yaml.yml). Four lint jobs run against this repo from day one: `actionlint`, `action-validator`, `yamllint`, `ansible-lint`. `actionlint` and `action-validator` exercise the new `ci.yml` itself; `yamllint` covers `requirements.yml`, `ansible.cfg`, and every YAML file added in later steps; `ansible-lint` auto-skips this commit (no `playbooks/` content yet) and starts gating from step 8 onward when the first role lands.
+- `.github/workflows/ci-yaml.yml` (new) - single-job reusable-workflow caller of [Common-Automation's `ci-yaml.yml`](../../../../Common-Automation/.github/workflows/ci-yaml.yml). Four lint jobs run against this repo from day one: `actionlint`, `action-validator`, `yamllint`, `ansible-lint`. `actionlint` and `action-validator` exercise the new `ci.yml` itself; `yamllint` covers `requirements.yml`, `ansible.cfg`, and every YAML file added in later steps; `ansible-lint` auto-skips this commit (no `playbooks/` content yet) and starts gating from step 8 onward when the first role lands.
 
 **Behaviour**
 
@@ -96,7 +96,7 @@ runs from Windows; everything else runs inside WSL.
 **Decisions locked**
 
 - WSL detection and install is delegated to `Assert-Wsl2Ready` from
-  `PowerShell.Common` (PSGallery). No reimplementation here. The
+  `Common.PowerShell` (PSGallery). No reimplementation here. The
   `Wsl2NotReady:` catch contract documented in that cmdlet's help is
   used verbatim.
 - The Python venv lives at the repo root as `.venv/` (gitignored, see
@@ -109,14 +109,14 @@ runs from Windows; everything else runs inside WSL.
 
 **Files**
 
-- `ops/bootstrap-controller.ps1` (new). Imports `PowerShell.Common`, calls `Assert-Wsl2Ready` inside a try/catch with the `Wsl2NotReady:` message-prefix branch documented in that cmdlet, then invokes `wsl -- ./ops/_bootstrap-controller-wsl.sh` from the repo root. Exits with the bash script's exit code.
+- `ops/bootstrap-controller.ps1` (new). Imports `Common.PowerShell`, calls `Assert-Wsl2Ready` inside a try/catch with the `Wsl2NotReady:` message-prefix branch documented in that cmdlet, then invokes `wsl -- ./ops/_bootstrap-controller-wsl.sh` from the repo root. Exits with the bash script's exit code.
 - `ops/_bootstrap-controller-wsl.sh` (new). Idempotent. Verifies `python3` available, creates `.venv` if absent, runs `pip install -r requirements.txt`, runs `ansible-galaxy collection install -r requirements.yml`, runs `which pwsh.exe` and fails with a clear message if absent (the bridge depends on it).
 - `ops/bootstrap-controller.bat` (new). Thin Explorer-double-click launcher; invokes `pwsh` against the `.ps1` with `-ExecutionPolicy Bypass` and holds the window open with `pause`. Mirrors the `Infrastructure-E2E/agent/setup-secrets.bat` pattern.
 - `Tests/ops/Bootstrap-Controller.Tests.ps1` (new, Pester) - unit tests for the PS side: mocked `Assert-Wsl2Ready`, asserts the try/catch shape and exit code propagation.
 
 **Behaviour (bootstrap-controller.ps1)**
 
-1. `Import-Module PowerShell.Common`.
+1. `Import-Module Common.PowerShell`.
 2. Try `Assert-Wsl2Ready`; catch `Wsl2NotReady:`-prefixed errors, print the reboot message in yellow, exit 0.
 3. Invoke `wsl -- ./ops/_bootstrap-controller-wsl.sh`.
 4. Exit with `$LASTEXITCODE`.
@@ -207,7 +207,7 @@ All four bridge scripts live under `ops/` with a leading `_` per the directory-l
 **Behaviour (read-vault-config.sh)**
 
 1. Argument count check; fail with usage on fewer than two args.
-2. `out=$(pwsh.exe -NoProfile -NonInteractive -Command "Import-Module Infrastructure.Secrets; Use-MicrosoftPowerShellSecretStoreProvider; Get-InfrastructureSecret -VaultName '$1' -SecretName '$2' | Out-String")` — single subshell, capture stderr too. `Infrastructure.Secrets` declares `PowerShell.Common` as a `RequiredModules` dependency in its psd1, so PS auto-loads Common when Secrets is imported; no explicit `Import-Module PowerShell.Common` needed here.
+2. `out=$(pwsh.exe -NoProfile -NonInteractive -Command "Import-Module Infrastructure.Secrets; Use-MicrosoftPowerShellSecretStoreProvider; Get-InfrastructureSecret -VaultName '$1' -SecretName '$2' | Out-String")` — single subshell, capture stderr too. `Infrastructure.Secrets` declares `Common.PowerShell` as a `RequiredModules` dependency in its psd1, so PS auto-loads Common when Secrets is imported; no explicit `Import-Module Common.PowerShell` needed here.
 3. Strip CR (pwsh emits CRLF), strip leading UTF-8 BOM, trim trailing newlines.
 4. Empty payload → non-zero exit, message names vault/secret.
 5. `printf '%s' "$out" | jq empty` → invalid JSON → non-zero exit, message names vault/secret.
@@ -402,7 +402,7 @@ flowchart TD
 
 **Reason:** The `pwsh.exe` install branch this step originally called
 for is unreachable. `bootstrap-controller.ps1` does
-`Import-Module PowerShell.Common` (step 2) and
+`Import-Module Common.PowerShell` (step 2) and
 `Invoke-ModuleInstall -ModuleName Infrastructure.Secrets` (step 7);
 both modules pin `PowerShellVersion = '7.0'` and
 `CompatiblePSEditions = @('Core')` in their psd1, so any host that
@@ -465,7 +465,7 @@ flowchart LR
     RM -->|installs once| PWSH[pwsh 7+ on Windows]
     PWSH -->|launches| BAT[ops/bootstrap-controller.bat]
     BAT -->|invokes| PS[ops/bootstrap-controller.ps1]
-    PS -->|Import-Module| Common[PowerShell.Common requires PS7]
+    PS -->|Import-Module| Common[Common.PowerShell requires PS7]
     PS -->|Invoke-ModuleInstall| Sec[Infrastructure.Secrets requires PS7]
 ```
 
@@ -484,12 +484,12 @@ install step per dep, slotted after the step that surfaced the need).
 
 **Decisions locked**
 
-- **Install via `Invoke-ModuleInstall`** (from `PowerShell.Common`,
+- **Install via `Invoke-ModuleInstall`** (from `Common.PowerShell`,
   already loaded earlier in the same bootstrap). The cmdlet is
   idempotent and retry-wrapped for PSGallery blips; no extra branching
   needed at the call site.
-- **`PowerShell.Common` is not separately installed by this step.**
-  `Infrastructure.Secrets`'s psd1 declares `PowerShell.Common` as a
+- **`Common.PowerShell` is not separately installed by this step.**
+  `Infrastructure.Secrets`'s psd1 declares `Common.PowerShell` as a
   `RequiredModules` dependency, so PowerShell auto-imports Common when
   Secrets is imported. The bootstrap still installs Common explicitly
   one block earlier (for its own use of `Assert-Wsl2Ready` /
@@ -503,12 +503,12 @@ install step per dep, slotted after the step that surfaced the need).
 
 **Files**
 
-- `ops/bootstrap-controller.ps1` (modified) - after the existing `Import-Module PowerShell.Common` block, call `Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'`.
+- `ops/bootstrap-controller.ps1` (modified) - after the existing `Import-Module Common.PowerShell` block, call `Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'`.
 - `Tests/ops/Bootstrap-Controller.Tests.ps1` (modified) - cases for the new install call.
 
 **Behaviour**
 
-1. After the existing `Import-Module PowerShell.Common` line, before `Assert-Wsl2Ready`:
+1. After the existing `Import-Module Common.PowerShell` line, before `Assert-Wsl2Ready`:
    `Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets'`
 2. No further branching. The cmdlet handles present-check, install,
    import, version pinning, and retry on PSGallery transients.
@@ -525,7 +525,7 @@ install step per dep, slotted after the step that surfaced the need).
 
 ```mermaid
 flowchart TD
-    A[bootstrap-controller.ps1 starts] --> B[Install + Import PowerShell.Common]
+    A[bootstrap-controller.ps1 starts] --> B[Install + Import Common.PowerShell]
     B --> C[Invoke-ModuleInstall -ModuleName Infrastructure.Secrets]
     C --> D[Assert-Wsl2Ready]
     D --> E[wsl -- ops/_bootstrap-controller-wsl.sh]
@@ -720,7 +720,7 @@ by an operator.
 
 - `playbooks/create-users.yml` (new) - one play targeting `vm_provisioner_hosts`, importing `roles/groups`, `roles/users`, `roles/sudoers` in order; tags `groups`, `users`, `sudoers` on each.
 - `ops/create-users.sh` (new) - one-line operator wrapper invoking `./ops/_run-playbook.sh playbooks/create-users.yml "$@"` (the orchestrator lives alongside as an underscored sibling per the layout convention). The `"$@"` lets operators pass `--tags`, `--limit`, `--check`, etc., without modifying the wrapper.
-- `ops/create-users.bat` (new) - Explorer launcher; resolves Git Bash via `GitHub-Common/scripts/_find-bash.bat`, then `exec`s `ops/create-users.sh`. Mirrors `scripts/run-tests.bat`'s sibling-find pattern.
+- `ops/create-users.bat` (new) - Explorer launcher; resolves Git Bash via `Common-Automation/scripts/_find-bash.bat`, then `exec`s `ops/create-users.sh`. Mirrors `scripts/run-tests.bat`'s sibling-find pattern.
 
 **Behaviour (playbook)**
 

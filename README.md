@@ -37,10 +37,10 @@ or double-click
 from Explorer (thin launcher: invokes `pwsh` against the `.ps1` and
 holds the window open).
 
-The PowerShell stage installs `PowerShell.Common` and
+The PowerShell stage installs `Common.PowerShell` and
 `Infrastructure.Secrets` from PSGallery (idempotent — `Invoke-ModuleInstall`
 no-ops when current), ensures WSL2 is installed (delegating to
-`Assert-Wsl2Ready` from `PowerShell.Common`), verifies the default WSL
+`Assert-Wsl2Ready` from `Common.PowerShell`), verifies the default WSL
 distro actually has `bash` (delegating to `Assert-WslHasBash`), and
 then invokes
 [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
@@ -185,7 +185,7 @@ of `ops/`) without that cost.
 The wrapper expects `Infrastructure-Vm-Users` as a sibling checkout
 under the same parent directory as this repo - same convention used
 by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
-`PowerShell-Common`. A follow-up feature replaces the wrapper with a
+`Common-PowerShell`. A follow-up feature replaces the wrapper with a
 first-class implementation when the vault contract diverges (or
 Vm-Users is archived).
 
@@ -229,7 +229,7 @@ wsl ./ops/create-users.sh
 or double-click [`ops/create-users.bat`](ops/create-users.bat) from
 Explorer (Git Bash launcher; mirrors the
 [`scripts/run-tests.bat`](scripts/run-tests.bat) sibling-find pattern
-and reuses [`GitHub-Common/scripts/_find-bash.bat`](../GitHub-Common/scripts/_find-bash.bat)).
+and reuses [`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
 
 [`ops/create-users.sh`](ops/create-users.sh) is a one-line wrapper
 that dispatches [`playbooks/create-users.yml`](playbooks/create-users.yml)
@@ -564,13 +564,13 @@ real VM is captured in the feature plan.
 CI is wired to two reusable workflows; nothing is copied per-repo:
 
 - [`.github/workflows/ci-powershell.yml`](.github/workflows/ci-powershell.yml)
-  -> `PowerShell-Common/.github/workflows/ci-powershell.yml@master`
+  -> `Common-PowerShell/.github/workflows/ci-powershell.yml@master`
   (Pester unit tests + `lint-no-bare-return-empty-array`).
 - [`.github/workflows/ci-bash.yml`](.github/workflows/ci-bash.yml)
-  -> `GitHub-Common/.github/workflows/ci-bash.yml@master` (shellcheck
+  -> `Common-Automation/.github/workflows/ci-bash.yml@master` (shellcheck
   on production / runner bash + `*.bats` suites + `+x` bit check).
 - [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml)
-  -> `GitHub-Common/.github/workflows/ci-yaml.yml@master` (yamllint,
+  -> `Common-Automation/.github/workflows/ci-yaml.yml@master` (yamllint,
   actionlint, action-validator, ansible-lint).
 - [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
   -> `Infrastructure-E2E/.github/workflows/e2e.yml@master`. Required PR
@@ -595,20 +595,20 @@ canonical runners in the sibling repos (so a fix to the CI logic
 lands in one place):
 
 - [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) -> calls
-  `PowerShell-Common/.github/actions/run-unit-tests/Run-Tests.ps1`.
+  `Common-PowerShell/.github/actions/run-unit-tests/Run-Tests.ps1`.
 - [`scripts/run-tests.sh`](scripts/run-tests.sh) -> calls
-  `GitHub-Common/scripts/run-tests.sh` with
-  `GHCOMMON_TARGET_REPO` pointed at this repo.
+  `Common-Automation/scripts/run-tests.sh` with
+  `COMMON_AUTOMATION_TARGET_REPO` pointed at this repo.
 - [`scripts/run-tests.bat`](scripts/run-tests.bat) -> Explorer-click
-  launcher; forwards to `GitHub-Common/scripts/run-tests.bat` with
-  `GHCOMMON_TARGET_REPO` set.
+  launcher; forwards to `Common-Automation/scripts/run-tests.bat` with
+  `COMMON_AUTOMATION_TARGET_REPO` set.
 - [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) /
   [`scripts/fix-permissions.bat`](scripts/fix-permissions.bat) ->
-  forward to `GitHub-Common/scripts/fix-permissions.{sh,bat}` to
+  forward to `Common-Automation/scripts/fix-permissions.{sh,bat}` to
   re-stage `+x` on tracked `*.sh` files that lost it (heals what the
   `check-sh-executable` CI gate flags).
 
-Both shims assume `PowerShell-Common` and `GitHub-Common` are sibling
+Both shims assume `Common-PowerShell` and `Common-Automation` are sibling
 checkouts under the same parent directory.
 
 The `playbooks/deregister-runners.yml` controller-side glue (reachability

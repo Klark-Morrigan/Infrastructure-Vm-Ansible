@@ -7,7 +7,7 @@
     handles the parts that cannot be done from inside WSL:
 
       1. Ensures WSL2 is installed and a distro is registered via
-         Assert-Wsl2Ready from PowerShell.Common. The `Wsl2NotReady:`
+         Assert-Wsl2Ready from Common.PowerShell. The `Wsl2NotReady:`
          message-prefix contract is the agreed handoff for the
          reboot-required path.
       2. Invokes the second-stage bash bootstrap inside WSL, which
@@ -29,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 
 # Set-WslAutomountMetadata lives in its own file so its logic and its
 # Pester suite can be edited without churning this entry point. Kept
-# in-repo (not promoted to PowerShell.Common) because the bootstrap is
+# in-repo (not promoted to Common.PowerShell) because the bootstrap is
 # its only known consumer; promote when a second one appears.
 . "$PSScriptRoot\_set-wsl-automount-metadata.ps1"
 
@@ -48,7 +48,7 @@ function Invoke-BootstrapController {
         [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot)
     )
 
-    # Ensure PowerShell.Common >= 6.2.0 is available before importing.
+    # Ensure Common.PowerShell >= 6.2.0 is available before importing.
     # Installed on demand so a fresh host needs only this script (no
     # separate setup). Guarded with Get-Module to keep reruns fast.
     #
@@ -59,13 +59,13 @@ function Invoke-BootstrapController {
     # `The term 'Assert-WslHasBash' is not recognized` halfway through
     # bootstrap.
     $requiredCommonVersion = [Version]'6.2.0'
-    $commonModule = Get-Module -ListAvailable -Name PowerShell.Common |
+    $commonModule = Get-Module -ListAvailable -Name Common.PowerShell |
         Sort-Object Version -Descending | Select-Object -First 1
     if (-not $commonModule -or $commonModule.Version -lt $requiredCommonVersion) {
-        Install-Module PowerShell.Common -MinimumVersion $requiredCommonVersion `
+        Install-Module Common.PowerShell -MinimumVersion $requiredCommonVersion `
             -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
     }
-    Import-Module PowerShell.Common -MinimumVersion $requiredCommonVersion `
+    Import-Module Common.PowerShell -MinimumVersion $requiredCommonVersion `
         -ErrorAction Stop
 
     # Infrastructure.Secrets is the wrapper the bash bridge's
@@ -74,7 +74,7 @@ function Invoke-BootstrapController {
     # install-if-missing dance per-invocation would be slow and chatty;
     # lift the install into the bootstrap instead. Invoke-ModuleInstall
     # is itself idempotent and retry-wrapped for PSGallery blips, so no
-    # extra branching is needed at this call site. PowerShell.Common is
+    # extra branching is needed at this call site. Common.PowerShell is
     # auto-loaded as Infrastructure.Secrets's RequiredModules dep;
     # SecretManagement and SecretStore bootstrap themselves on first
     # call to Use-MicrosoftPowerShellSecretStoreProvider.

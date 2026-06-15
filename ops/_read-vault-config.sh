@@ -36,7 +36,7 @@ readonly SECRET_NAME="$2"
 #    wrapper (Get-InfrastructureSecret) per problem.md - the bridge
 #    does not call Get-Secret directly, so a future provider swap
 #    touches only that one wrapper. Import-Module pulls in
-#    Infrastructure.Secrets (and auto-loads PowerShell.Common, declared
+#    Infrastructure.Secrets (and auto-loads Common.PowerShell, declared
 #    in its RequiredModules); Use-MicrosoftPowerShellSecretStoreProvider
 #    bootstraps SecretManagement + SecretStore on first call and is
 #    idempotent on subsequent ones. The bootstrap (step 7) has already

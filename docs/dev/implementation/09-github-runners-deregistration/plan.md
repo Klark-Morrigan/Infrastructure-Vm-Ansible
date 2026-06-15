@@ -938,7 +938,7 @@ and the absence of `NEEDS_HOST_FILE_SERVER=1`.
   `NEEDS_HOST_FILE_SERVER`. `exec`s `./ops/_run-playbook.sh
   playbooks/deregister-runners.yml "${forwarded[@]}"`.
 - `ops/deregister-runners.bat` (new) - Explorer launcher; resolves
-  Git Bash via `GitHub-Common/scripts/_find-bash.bat`, then `exec`s
+  Git Bash via `Common-Automation/scripts/_find-bash.bat`, then `exec`s
   `ops/deregister-runners.sh`. A `--force` arg passed at invocation
   is forwarded verbatim. Mirrors `ops/register-runners.bat`.
 - `README.md` (modified) - new section "Deregister runners" after

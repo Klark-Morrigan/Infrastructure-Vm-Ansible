@@ -1,5 +1,5 @@
 BeforeAll {
-    # Stub PowerShell.Common surface used by the script under test so
+    # Stub Common.PowerShell surface used by the script under test so
     # the tests do not need the real module installed. The script
     # dot-source path goes through Get-Module / Install-Module / Import-
     # Module / Invoke-ModuleInstall / Assert-Wsl2Ready / Assert-WslHasBash
@@ -18,15 +18,15 @@ BeforeAll {
 Describe 'Invoke-BootstrapController' {
 
     BeforeEach {
-        # Pretend PowerShell.Common >= the required floor (6.2.0) is
+        # Pretend Common.PowerShell >= the required floor (6.2.0) is
         # already installed so the install branch never runs in tests.
         # The script only installs when Get-Module -ListAvailable returns
         # nothing or a version below the floor; stubbing 6.2.0 puts the
         # mock at the boundary so a future floor bump fails this test
         # loudly rather than letting it silently pass.
         Mock Get-Module {
-            [PSCustomObject]@{ Name = 'PowerShell.Common'; Version = '6.2.0' }
-        } -ParameterFilter { $ListAvailable -and $Name -eq 'PowerShell.Common' }
+            [PSCustomObject]@{ Name = 'Common.PowerShell'; Version = '6.2.0' }
+        } -ParameterFilter { $ListAvailable -and $Name -eq 'Common.PowerShell' }
 
         # Set-WslAutomountMetadata is the in-repo helper dot-sourced by
         # the script under test. The bootstrap suite asserts wiring
@@ -104,7 +104,7 @@ Describe 'Invoke-BootstrapController' {
     # Infrastructure.Secrets inside its pwsh.exe call but does not
     # install it; the bootstrap is the single place that ensures the
     # module is on the host. Delegated to Invoke-ModuleInstall from
-    # PowerShell.Common, which is itself idempotent and retry-wrapped.
+    # Common.PowerShell, which is itself idempotent and retry-wrapped.
 
         It 'calls Invoke-ModuleInstall once with ModuleName = Infrastructure.Secrets' {
             Mock Assert-Wsl2Ready { }
