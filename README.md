@@ -228,8 +228,9 @@ wsl ./ops/create-users.sh
 
 or double-click [`ops/create-users.bat`](ops/create-users.bat) from
 Explorer (Git Bash launcher; mirrors the
-[`scripts/run-tests.bat`](scripts/run-tests.bat) sibling-find pattern
-and reuses [`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
+[`scripts/run-ci-yaml-and-bash.bat`](scripts/run-ci-yaml-and-bash.bat)
+sibling-find pattern and reuses
+[`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
 
 [`ops/create-users.sh`](ops/create-users.sh) is a one-line wrapper
 that dispatches [`playbooks/create-users.yml`](playbooks/create-users.yml)
@@ -596,19 +597,25 @@ lands in one place):
 
 - [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) -> calls
   `Common-PowerShell/.github/actions/run-unit-tests/Run-Tests.ps1`.
-- [`scripts/run-tests.sh`](scripts/run-tests.sh) -> calls
-  `Common-Automation/scripts/run-tests.sh` with
-  `COMMON_AUTOMATION_TARGET_REPO` pointed at this repo.
-- [`scripts/run-tests.bat`](scripts/run-tests.bat) -> Explorer-click
-  launcher; forwards to `Common-Automation/scripts/run-tests.bat` with
-  `COMMON_AUTOMATION_TARGET_REPO` set.
+- [`scripts/run-ci-yaml-and-bash.sh`](scripts/run-ci-yaml-and-bash.sh)
+  (with its [`.bat`](scripts/run-ci-yaml-and-bash.bat) Explorer launcher)
+  is the MAIN entry -> delegates to Common-Automation's orchestrator to run
+  BOTH the lint suite AND the bats tests in one go, the full local
+  equivalent of `ci-yaml.yml` + `ci-bash.yml`.
+- [`scripts/run-lint-yaml-and-bash.sh`](scripts/run-lint-yaml-and-bash.sh)
+  (with its [`.bat`](scripts/run-lint-yaml-and-bash.bat) launcher) ->
+  delegates to Common-Automation to run the lint half only (shellcheck,
+  actionlint, action-validator, yamllint, ansible-lint); no bats.
+- [`scripts/run-tests-bash.sh`](scripts/run-tests-bash.sh)
+  (with its [`.bat`](scripts/run-tests-bash.bat) launcher) -> delegates to
+  Common-Automation to run the bats tests only.
 - [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) /
   [`scripts/fix-permissions.bat`](scripts/fix-permissions.bat) ->
   forward to `Common-Automation/scripts/fix-permissions.{sh,bat}` to
   re-stage `+x` on tracked `*.sh` files that lost it (heals what the
   `check-sh-executable` CI gate flags).
 
-Both shims assume `Common-PowerShell` and `Common-Automation` are sibling
+These shims assume `Common-PowerShell` and `Common-Automation` are sibling
 checkouts under the same parent directory.
 
 The `playbooks/deregister-runners.yml` controller-side glue (reachability
