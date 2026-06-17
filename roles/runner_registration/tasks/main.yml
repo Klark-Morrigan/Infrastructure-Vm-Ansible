@@ -19,23 +19,11 @@
 # header so it never lands in URL query strings (which would survive
 # in any proxy log along the way).
 
-# Fast-fail before any GitHub round-trip: an empty token would
-# universally yield a 401 we cannot recover from, so a clear local
-# message at the top of the role is friendlier than the eventual
-# uri-module error. Empty-string check, not just `is defined`,
-# because the bridge passes an empty string when the operator
-# dismissed the GH_TOKEN prompt before the env-var clear ran (the
-# env var alone would have failed the bridge earlier, but mounting
-# the file as an empty string is a degenerate path worth catching).
-- name: Assert github_token is defined and non-empty
-  ansible.builtin.assert:
-    that:
-      - github_token is defined
-      - github_token | length > 0
-    fail_msg: >-
-      runner_registration requires a non-empty `github_token` extra-var
-      - check ops/register-runners.sh and the bridge's GitHubRunners
-      opt-in branch.
+# Fast-fail before any GitHub round-trip via the shared input gate.
+# Both directions consume the same github_token, so the assert lives
+# in _assert-token.yml and is include_tasks'd from both entry points.
+- name: Assert role inputs
+  ansible.builtin.include_tasks: _assert-token.yml
 
 # vm_runner_entries is set by roles/runner_entry_resolve (pulled in via
 # meta dep; runs once per play). One include_tasks per entry so each

@@ -15,9 +15,11 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    BASH_BIN="$(command -v bash)"
-    TEST_TMP="$(mktemp -d -t buildExtraVars.XXXXXX)"
+    _bats_init_temp buildExtraVars
     PROV="${TEST_TMP}/provisioner.json"
     USERS="${TEST_TMP}/users.json"
     RUNNERS="${TEST_TMP}/runners.json"
@@ -30,7 +32,7 @@ setup() {
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "fails with usage when a required flag is missing" {
@@ -79,27 +81,47 @@ teardown() {
     [ "$(printf '%s' "${output}" | jq -r '.runner_version')" = "2.999.0" ]
 }
 
-@test "partial runners flags are rejected before dispatch" {
-    # All four runners flags must arrive together; any subset is a
-    # contract violation the orchestrator surfaces before any helper
-    # runs, so the error names the dispatcher-level rule.
-    # --runners-config alone
+@test "runners-pair-only emits four keys (down-direction extra-vars shape)" {
+    # The deregister flow lands here: GitHubRunners vault read on,
+    # host file server off. The runners helper drops the two
+    # file-server keys, so the merged doc has exactly four runners-side
+    # keys plus the two always-on ones.
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --users-config "${USERS}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example"
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config,vm_users_config" ]
+    [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
+    [ "$(printf '%s' "${output}" | jq -r 'has("host_file_server_base_url")')" = "false" ]
+    [ "$(printf '%s' "${output}" | jq -r 'has("runner_version")')" = "false" ]
+}
+
+@test "partial runners pair is rejected before dispatch" {
+    # The runners pair (--runners-config + --github-token) must arrive
+    # together. Either half alone is a contract violation the
+    # orchestrator surfaces before any helper runs.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --users-config "${USERS}" \
         --runners-config "${RUNNERS}"
     [ "${status}" -eq 2 ]
+    [[ "${output}" == *"--runners-config and --github-token"* ]]
     [[ "${output}" == *"must be supplied together"* ]]
 
-    # --github-token alone
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --users-config "${USERS}" \
         --github-token "ghp_example"
     [ "${status}" -eq 2 ]
-    [[ "${output}" == *"must be supplied together"* ]]
+    [[ "${output}" == *"--runners-config and --github-token"* ]]
+}
 
-    # Three of four (missing --runner-version)
+@test "partial file-server pair is rejected before dispatch" {
+    # The file-server pair (--host-base-url + --runner-version) is
+    # optional but must arrive as a pair: one without the other
+    # silently drops half the runner_binary download URL.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --users-config "${USERS}" \
@@ -107,7 +129,32 @@ teardown() {
         --github-token "ghp_example" \
         --host-base-url "http://10.10.0.1:8745"
     [ "${status}" -eq 2 ]
+    [[ "${output}" == *"--host-base-url and --runner-version"* ]]
     [[ "${output}" == *"must be supplied together"* ]]
+
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --users-config "${USERS}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example" \
+        --runner-version "2.999.0"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"--host-base-url and --runner-version"* ]]
+}
+
+@test "file-server pair without the runners pair is rejected" {
+    # The file-server URL has no consumer without the runners config
+    # (the runner_binary role is only loaded under that gate). Reject
+    # so a misconfigured caller does not produce extra-vars that
+    # carries an unreachable URL.
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --users-config "${USERS}" \
+        --host-base-url "http://10.10.0.1:8745" \
+        --runner-version "2.999.0"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"require"* ]]
+    [[ "${output}" == *"--runners-config"* ]]
 }
 
 @test "helper failures surface to the orchestrator's exit code" {

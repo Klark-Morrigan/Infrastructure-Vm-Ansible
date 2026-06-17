@@ -1,0 +1,60 @@
+---
+# Converge - apply the runner_binary role with `tasks_from: remove`
+# against four declared entries:
+#
+#   instance-runner-a / instance-runner-b on `instance` -
+#                       /opt/runners/<name>/ was stood up by prepare's
+#                       register pass; both must be deleted.
+#   instance-runner-c on `instance` -
+#                       declared in the config but never registered by
+#                       prepare; /opt/runners/<name>/ does not exist
+#                       going in. file: state=absent on a missing path
+#                       is a no-op (the "dir already absent" case from
+#                       the plan).
+#   runner-leak on `other-host` -
+#                       selector negative; the runner_entry_resolve
+#                       filter must drop it on `instance` so the
+#                       remove direction never sees it.
+#
+# `include_role` (not `import_role`) is used for the same reason as
+# the default scenario: `import_role` resolves at parse time against
+# the syntax-check inventory's roles search path, which does not
+# honour the molecule.yml `roles_path` override. `include_role`
+# defers resolution to runtime. The production deregister playbook
+# uses `import_role` because it runs against the real repo layout
+# where `roles/` is on the standard path.
+
+- name: Converge - apply runner_binary role, remove direction
+  hosts: all
+  gather_facts: false
+  vars:
+    github_runners_config:
+      - vmName: instance
+        runnerName: instance-runner-a
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-a
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: instance-runner-b
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-b
+        runnerLabels: [self-hosted, ubuntu, x64]
+      - vmName: instance
+        runnerName: instance-runner-c
+        runnerUsername: u-runner-shared
+        deployUsername: u-deploy
+        githubUrl: https://github.com/example/repo-c
+        runnerLabels: [self-hosted, ubuntu]
+      - vmName: other-host
+        runnerName: runner-leak
+        runnerUsername: u-leak
+        deployUsername: u-deploy-leak
+        githubUrl: https://github.com/example/repo-leak
+        runnerLabels: [self-hosted]
+  tasks:
+    - name: Include the role under test (remove direction)
+      ansible.builtin.include_role:
+        name: runner_binary
+        tasks_from: remove

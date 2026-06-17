@@ -1,18 +1,27 @@
 # Role: runner_registration
 
 Reconciles a self-hosted GitHub Actions runner's registration state
-against the GitHub repo and the on-disk `.runner` marker. Second role
-applied by
-[`playbooks/register-runners.yml`](../../playbooks/register-runners.yml)
-(once that playbook lands in step 6); runs after
-[`runner_binary`](../runner_binary/README.md) (which lays `config.sh`
-on disk) and before `runner_service` (which needs the runner to be
-registered before `svc.sh install` can succeed).
+against the GitHub repo and the on-disk `.runner` marker. Drives two
+directions:
+
+- **Register.** Second role applied by
+  [`playbooks/register-runners.yml`](../../playbooks/register-runners.yml);
+  runs after [`runner_binary`](../runner_binary/README.md) (which lays
+  `config.sh` on disk) and before
+  [`runner_service`](../runner_service/README.md) (which needs the
+  runner to be registered before `svc.sh install` can succeed).
+- **Remove.** Second role applied by
+  [`playbooks/deregister-runners.yml`](../../playbooks/deregister-runners.yml)
+  via `tasks_from: remove`; runs after
+  [`runner_service`](../runner_service/README.md) (which quiesces the
+  unit) and before [`runner_binary`](../runner_binary/README.md)
+  (which deletes the on-disk extract).
 
 ## Index
 
 - [Var contract](#var-contract)
 - [Register direction](#register-direction)
+- [Remove direction](#remove-direction)
 - [Token hygiene](#token-hygiene)
 - [Idempotence guarantees](#idempotence-guarantees)
 - [Tests](#tests)
@@ -84,7 +93,58 @@ a nested `when` tree. Implementation lives in
 [`tasks/reconcile-entry.yml`](tasks/reconcile-entry.yml), included
 once per entry from
 [`tasks/main.yml`](tasks/main.yml) so each runner's facts stay scoped
-to its own iteration.
+to its own iteration. The existence probe itself lives in
+[`tasks/_probe-github.yml`](tasks/_probe-github.yml) so the remove
+direction shares the same owner/repo parse, the same URI shape, and
+the same `runner_registration_on_github` fact name.
+
+## Remove direction
+
+Selected by [`playbooks/deregister-runners.yml`](../../playbooks/deregister-runners.yml)
+via `import_role { name: runner_registration, tasks_from: remove }`.
+Runs second in the remove order: after
+[`runner_service`](../runner_service/README.md) (which quiesces the
+unit so `.credentials` is no longer held open) and before
+[`runner_binary`](../runner_binary/README.md) (which deletes
+`/opt/runners/<name>/` — `config.sh remove` reads `.credentials` from
+that directory, so the dir has to still exist while this role runs).
+
+For every entry in `vm_runner_entries`, the role evaluates the same
+existence probe the register direction uses and picks one of two
+branches:
+
+| Branch                       | GitHub registration | Action                                                                            |
+|------------------------------|---------------------|-----------------------------------------------------------------------------------|
+| **skip**                     | absent              | no-op — no token mint, no `config.sh`                                             |
+| **remove**                   | present             | mint removal token, run `config.sh remove --token <removal> --unattended` as user |
+
+Per-entry implementation lives in
+[`tasks/_remove-one.yml`](tasks/_remove-one.yml), included once per
+entry from [`tasks/remove.yml`](tasks/remove.yml) so each runner's
+probe and token facts stay scoped to that iteration. Three small
+shared files keep both directions on the same wire surface:
+
+- [`tasks/_assert-token.yml`](tasks/_assert-token.yml) — the
+  empty-`github_token` fast-fail gate. `main.yml` and `remove.yml`
+  both `include_tasks` it; the same fail_msg points operators at
+  either `ops/register-runners.sh` or `ops/deregister-runners.sh`.
+- [`tasks/_probe-github.yml`](tasks/_probe-github.yml) — the GitHub
+  existence probe + `runner_registration_on_github` fact. The
+  register direction's re-register branch and the remove direction
+  pivot on the same boolean so a fact-name drift across directions
+  is impossible.
+- [`tasks/_mint-remove-token.yml`](tasks/_mint-remove-token.yml) —
+  the removal-token mint. The register direction's re-register
+  branch and the remove direction share the URI body and the
+  `runner_registration_remove_token_resp` fact name; only the
+  guarding `when:` differs.
+
+The on-disk marker files (`.runner`, `.credentials`) are not touched
+by this role on the remove path — they live inside
+`/opt/runners/<name>/` and disappear when `runner_binary`'s remove
+direction deletes the directory. A "GitHub-absent but disk-present"
+branch is therefore unnecessary here: the on-disk teardown happens
+unconditionally one role later.
 
 ## Token hygiene
 
@@ -104,26 +164,39 @@ iteration. The PAT itself lives only in the chmod-600 tmpfs
 extra-vars file the bash bridge writes (cleaned by the bridge's
 `trap EXIT`).
 
-The two `config.sh` invocations use the `argv` form of
+All three `config.sh` invocations (register's `--unattended`,
+register's re-register-branch `remove`, remove direction's
+`remove --unattended`) use the `argv` form of
 `ansible.builtin.command`, not the shell-string form, so the token
 never lands in a `bash` history file via shell-word expansion.
 
 ## Idempotence guarantees
 
-- Re-running with the same `vm_runner_entries` and a healthy fleet
-  (every entry registered on GitHub and on disk) reports
-  `changed: 0` across the role - both `config.sh` tasks are guarded
-  off by the reconcile facts, the only API call is the read-only
-  existence probe (which Ansible scores as `ok`, not `changed`).
-- The role never decides to deregister a runner from GitHub. The
-  re-register branch's `config.sh remove` clears the on-disk
-  registration only; if the matching GitHub record had been present
-  the role would have taken the healthy branch instead. Deletion of
-  active GitHub records is the deregister flow's job (feature 09's
-  `remove` direction on this role).
-- Adding a new entry to `vm_runner_entries` between runs reconciles
-  only the new entry; existing healthy entries skip both `config.sh`
-  tasks unchanged.
+- **Register direction.** Re-running with the same `vm_runner_entries`
+  and a healthy fleet (every entry registered on GitHub and on disk)
+  reports `changed: 0` across the role — both `config.sh` tasks are
+  guarded off by the reconcile facts, the only API call is the
+  read-only existence probe (which Ansible scores as `ok`, not
+  `changed`).
+- **Register direction.** Adding a new entry to `vm_runner_entries`
+  between runs reconciles only the new entry; existing healthy
+  entries skip both `config.sh` tasks unchanged.
+- **Register direction.** The register direction never decides to
+  deregister a runner from GitHub. The re-register branch's
+  `config.sh remove` clears the on-disk registration only; if the
+  matching GitHub record had been present the role would have taken
+  the healthy branch instead. Removal of active GitHub records is
+  the remove direction's job.
+- **Remove direction.** Re-running after a successful remove reports
+  `changed: 0` — the existence probe finds every entry absent on
+  GitHub, both guarded tasks (remove-token mint, `config.sh remove`)
+  skip on the `runner_registration_on_github` boolean.
+- **Remove direction.** An entry whose GitHub record was already
+  removed out-of-band (manual UI delete, separate teardown) is a
+  silent no-op: the probe sees it absent, the skip branch fires.
+  No "GitHub-absent / disk-present" branch is needed because
+  `runner_binary`'s remove direction deletes the dir unconditionally
+  one role later.
 
 ## Tests
 
@@ -155,7 +228,40 @@ bound there):
 The mock server records every request to a JSON-lines log file the
 verify play parses with `slurp` + `from_yaml` so the per-branch
 assertions read as set equalities on the captured request list rather
-than fragile substring matches.
+than fragile substring matches. Both scenarios share two task files
+under
+[`Tests/molecule/runner_registration/tasks/`](../../Tests/molecule/runner_registration/tasks/):
+`_kill-mock-pidfile.yml` (the pidfile-kill-with-retry block used by
+prepare + cleanup of each scenario) and `_launch-mock.yml` (the
+`nohup` mock-server launch plus `wait_for`).
+
+[`Tests/molecule/runner_registration/remove/`](../../Tests/molecule/runner_registration/remove/)
+exercises the remove direction against the same mock GitHub API
+(shared script: [`Tests/mock-github-api.py`](../../Tests/mock-github-api.py),
+single source for both molecule scenarios and the deregister smoke
+playbook; run on a dedicated loopback port so the two scenarios do
+not collide). Three entries
+cover the per-entry branches:
+
+- **remove** - entry in the mock's registered set - mint removal
+  token, run `config.sh remove --token <FAKE_REMOVAL_TOKEN>
+  --unattended`; the mock records one `GET /runners` per pass plus
+  one `POST /remove-token` on the converge run; the stub `config.sh`
+  log captures the expected argv.
+- **skip** - entry absent from the mock's registered set - no token
+  mint, no `config.sh` call; the mock records the GET only.
+- **Selector** - an entry on a different `vmName` is dropped by
+  `runner_entry_resolve`; the mock never sees its repo path.
+- **Empty `github_token`** - the role's input assert fails fast
+  before any HTTP round-trip; the mock records zero requests
+  during the rescued include.
+
+A `side_effect.yml` clears the mock's registered set between the
+converge and idempotence passes (real GitHub drops the registration
+after a successful `config.sh remove`; the static mock does not, so
+the side_effect mirrors that for the idempotence assertion). On the
+idempotence pass every entry takes the skip branch and the role
+reports `changed: 0`.
 
 ## Rationale
 

@@ -54,7 +54,7 @@ if (-not (Test-Path -LiteralPath $ConfigFile -PathType Leaf)) {
 
 # Sibling checkout convention: Infrastructure-Vm-Users lives next to
 # this repo under the same parent directory. Same lookup pattern as
-# scripts/Run-Tests.ps1 uses for PowerShell-Common.
+# scripts/Run-Tests.ps1 uses for Common-PowerShell.
 $repoRoot   = Split-Path -Parent $PSScriptRoot
 $vmUsersPs1 = [IO.Path]::Combine(
     $repoRoot, '..',

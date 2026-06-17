@@ -1,8 +1,9 @@
 ---
 # Two-stage prepare:
-#   1. Controller-side: launch the mock GitHub API (mock-github-api.py)
-#      on 127.0.0.1:<port>. The mock is the assertion surface for the
-#      verify play - it logs every request as a JSON line.
+#   1. Controller-side: launch the shared mock GitHub API
+#      (Tests/mock-github-api.py) on 127.0.0.1:<port>. The mock is the
+#      assertion surface for the verify play - it logs every request
+#      as a JSON line.
 #   2. Container-side: install python3 + sudo, seed two runner service
 #      users, lay out /opt/runners/<name>/ for each entry with a stub
 #      config.sh, and pre-seed .runner markers for the healthy and
@@ -18,28 +19,14 @@
     mock_pidfile: /tmp/runner-registration-mock.pid
     mock_log: /tmp/runner-registration-mock.log
     mock_registered_file: /tmp/runner-registration-mock-registered.txt
+    mock_stderr: /tmp/runner-registration-mock.stderr
+    # Shared mock, single source for both molecule (this scenario
+    # plus ../remove/) and the deregister smoke playbook under
+    # Tests/ansible/. Path is relative to this scenario directory.
+    mock_script: "{{ playbook_dir }}/../../../mock-github-api.py"
   tasks:
-    # Belt-and-braces against a leaked process from a prior `molecule
-    # test` that died mid-sequence. cleanup.yml is the primary stop
-    # path, but defending here keeps a wedged previous run from
-    # blocking the port grab below.
     - name: Kill any leftover mock server from a previous run
-      ansible.builtin.shell: |
-        set -eu
-        if [ -f {{ mock_pidfile }} ]; then
-          pid=$(cat {{ mock_pidfile }} 2>/dev/null || true)
-          if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" || true
-            for _ in $(seq 1 25); do
-              kill -0 "$pid" 2>/dev/null || break
-              sleep 0.2
-            done
-          fi
-          rm -f {{ mock_pidfile }}
-        fi
-      args:
-        executable: /bin/bash
-      changed_when: false
+      ansible.builtin.include_tasks: ../tasks/_kill-mock-pidfile.yml
 
     # Initial registered set is just runner-healthy: the runner that
     # mirrors a fully-converged state on disk + on GitHub. The mock
@@ -52,31 +39,8 @@
           runner-healthy
         mode: "0644"
 
-    # nohup + & detaches the listener so prepare can complete. stderr
-    # is redirected to a separate file so a startup error (port busy,
-    # python missing) is recoverable from the controller filesystem
-    # without re-running the whole scenario.
-    - name: Launch mock GitHub API
-      ansible.builtin.shell: |
-        set -eu
-        nohup python3 {{ playbook_dir }}/mock-github-api.py \
-          --port {{ mock_port }} \
-          --log {{ mock_log }} \
-          --registered-file {{ mock_registered_file }} \
-          >/tmp/runner-registration-mock.stderr 2>&1 &
-        echo $! > {{ mock_pidfile }}
-      args:
-        executable: /bin/bash
-      changed_when: true
-
-    # Tight wait-for so a mock that died at startup fails the prepare
-    # phase loudly rather than letting converge hit a connection-
-    # refused uri call and obscure the root cause.
-    - name: Wait for mock to accept connections
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: "{{ mock_port }}"
-        timeout: 10
+    - name: Launch mock + wait for it to accept connections
+      ansible.builtin.include_tasks: ../tasks/_launch-mock.yml
 
 - name: Prepare container - users, runner directories, stub config.sh
   hosts: all
@@ -98,22 +62,10 @@
         user: u-runner-other
         has_marker: true
   tasks:
-    - name: Refresh apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-
-    # sudo: required so the role's become_user can switch to the
-    # runner service user. python3: required for the stub config.sh
-    # (the ubuntu:24.04 minimal image includes it but listing it
-    # defensively guards against image-flavour drift).
-    - name: Install fixture prerequisites
-      ansible.builtin.apt:
-        name:
-          - python3
-          - sudo
-        state: present
-
+    # python3 + sudo are baked into the shared molecule image (see
+    # Tests/molecule/runner_service/default/Dockerfile); no apt
+    # round-trip needed here.
+    #
     # Two users so the scenario also exercises the per-user become_user
     # boundary the role's config.sh tasks rely on (u-runner-shared
     # owns runner-healthy + runner-fresh; u-runner-other owns
@@ -198,9 +150,15 @@
 
     # Empty per-runner config.sh logs up front so the verify play can
     # `slurp` them unconditionally without a "file not found" branch.
+    # Owner is the matching runner service user because the stub
+    # config.sh runs under `become_user: <runnerUsername>` and would
+    # otherwise hit `PermissionError: [Errno 13]` appending to a
+    # root-owned log file.
     - name: Initialise per-runner config.sh logs as empty files
       ansible.builtin.copy:
         dest: "/var/log/runner-{{ item.name }}-config.log"
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
         content: ""
         mode: "0644"
         force: true

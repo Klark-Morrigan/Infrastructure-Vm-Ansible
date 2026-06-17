@@ -68,3 +68,7 @@ Thumbs.db
 # Molecule (role tests) and any Pester output from PowerShell shim tests.
 .molecule/
 TestResults.xml
+
+# graphify knowledge graph artifacts (local; rebuilt by graphify)
+graphify-out/
+supersets-out/

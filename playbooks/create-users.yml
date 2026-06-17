@@ -6,35 +6,40 @@
 # Role order is significant: groups must reconcile before users (so
 # supplementary group assignments resolve), and users must reconcile
 # before sudoers (so a drop-in references a real account). This
-# playbook is the single source of truth for that ordering. The
-# role meta files intentionally do NOT carry inter-role create-
-# direction deps (sudoers -> users -> groups) - Ansible's meta deps
-# always run the dep's `tasks/main.yml` and ignore the entry role's
-# `tasks_from` selector, so any such dep would silently re-create
-# users mid-teardown when `remove-users.yml` imports `sudoers` /
-# `users` with `tasks_from: remove`. Only the vm_users_entry helper
-# is a meta dep on each role (it is direction-neutral).
+# playbook is the single source of truth for that ordering; see
+# docs/dev/playbook-conventions.md for why role order lives here
+# rather than in role meta deps.
 #
-# any_errors_fatal: false - the bridge's inventory can contain several
-# VMs, and one host being temporarily offline should not strand the
-# rest. Ansible's default already keeps going on per-host failures;
-# making the choice explicit so a later edit does not silently flip it
-# via a play-level error_strategy override.
-#
-# gather_facts: true - ansible.builtin.user reads facts when deciding
-# defaults (notably for shell / home derivation on systems where the
-# config omits them), and the per-host cost is one extra SSH round-trip
-# at play start. Cheap insurance vs. surprising fact-absent failures
-# mid-role.
-#
-# Tags mirror the role names so operators can scope a run with
-# --tags groups, --tags users, or --tags sudoers without having to
-# know the role file layout.
+# Shared posture (hosts, gather_facts, any_errors_fatal, tags) is
+# documented once in docs/dev/playbook-conventions.md.
 
 - name: Reconcile OS groups, users, and sudoers on provisioned VMs
   hosts: vm_provisioner_hosts
-  gather_facts: true
+  # gather_facts is deferred into pre_tasks (below) so the play's first
+  # contact with each VM is a retrying wait_for_connection probe rather
+  # than a one-shot Gathering Facts. Freshly-provisioned VMs are reached
+  # over a two-hop proxy whose inner hop can stall at banner exchange
+  # during early boot; a one-shot gather turns that transient into a
+  # fatal UNREACHABLE. The probe retries until the connection settles.
+  gather_facts: false
   any_errors_fatal: false
+  pre_tasks:
+    # Resilient reachability gate. wait_for_connection retries the
+    # connection on its own cadence until `timeout`, absorbing the
+    # banner-exchange stall the two-hop proxy exhibits while the VM is
+    # still settling. Kept here (not in a separate localhost play like
+    # deregister-runners.yml) because create-users targets the workload
+    # hosts directly and needs no reachability split.
+    - name: Wait for SSH to settle before gathering facts
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+
+    # Restore the fact gathering gather_facts: true used to do, now that
+    # the connection is established. Done explicitly so the play keeps
+    # whatever facts downstream tooling may rely on without re-enabling
+    # the unprotected pre-play gather.
+    - name: Gather facts over the established connection
+      ansible.builtin.setup:
   roles:
     - role: groups
       tags: groups

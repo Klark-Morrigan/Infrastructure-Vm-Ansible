@@ -175,6 +175,7 @@
           - log_re | length == 2
           - log_re[0].argv[0] == 'remove'
           - "'--token' in log_re[0].argv"
+          - "'--unattended' in log_re[0].argv"
           - log_re[1].argv[0] == '--unattended'
           - "'--url' in log_re[1].argv"
 

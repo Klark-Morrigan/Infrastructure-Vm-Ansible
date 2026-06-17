@@ -19,6 +19,14 @@
 # molecule's idempotence step re-converges and asserts 0 changes.
 # Skipping idempotence entirely would lose the natural-state
 # idempotence guarantee the role does honour in production.
+#
+# `lint` is intentionally absent: molecule 26.x removed the
+# `molecule.command.lint` action and dropped `- lint` from the stock
+# scenario template. ansible-lint runs out-of-band via
+# `scripts/run-tests.sh` / the `lint-ansible` skill / CI, matching
+# modern molecule's "lint outside the test sequence" posture. Adding
+# it back to test_sequence fails container create with
+# `ModuleNotFoundError: No module named 'molecule.command.lint'`.
 
 dependency:
   name: galaxy
@@ -30,7 +38,23 @@ driver:
 
 platforms:
   - name: instance
-    image: docker.io/library/ubuntu:24.04
+    # Reuse the runner_service scenarios' baked image: it already
+    # ships python3 + sudo (the only two prerequisites this scenario
+    # needs; systemd / systemd-sysv are unused here because
+    # `command:` is /bin/sleep, not /sbin/init). Bare
+    # docker.io/library/ubuntu:24.04 ships without python3, so any
+    # ansible.builtin.* task would fail with `/usr/bin/python3: not
+    # found` against the unmodified base. Build the image once via
+    #   docker build -t infrastructure-vm-ansible/runner-service-systemd:24.04
+    #       -f Tests/molecule/runner_service/default/Dockerfile
+    #       Tests/molecule/runner_service/default
+    # before running the scenario. `pre_build_image: true` consumes
+    # the locally-tagged image directly and skips the
+    # community.docker.docker_image build path which on this
+    # workstation tries the Docker Desktop Windows-side credential
+    # helper and fails inside WSL with `OSError: [Errno 8] Exec
+    # format error: '/usr/bin/docker-credential-desktop.exe'`.
+    image: infrastructure-vm-ansible/runner-service-systemd:24.04
     pre_build_image: true
     command: /bin/sleep infinity
     tmpfs:
@@ -39,13 +63,19 @@ platforms:
 
 provisioner:
   name: ansible
+  env:
+    # ANSIBLE_ROLES_PATH (env) wins over `config_options.defaults.roles_path`
+    # (ansible.cfg) and crucially supports env-var expansion. A relative
+    # `roles_path:` in ansible.cfg is resolved against the directory the
+    # cfg lives in - molecule writes that under
+    # /home/<user>/.ansible/tmp/molecule.<id>.<scenario>/, so a
+    # relative path bottoms out somewhere under /home, never under the
+    # repo. MOLECULE_PROJECT_DIRECTORY points at the molecule cwd (the
+    # role's Tests/molecule/<role>/ dir per the wsl-task wrapper); three
+    # levels up is the repo root, then `roles/` is the standard path.
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../../roles"
   config_options:
     defaults:
-      # Roles live three levels above the scenario; point Ansible at
-      # the repo's roles/ directory so include_role: name=runner_registration
-      # resolves the role (and its meta dependency on runner_entry_resolve)
-      # without copying files into the scenario.
-      roles_path: ../../../../roles
       stdout_callback: yaml
       callbacks_enabled: profile_tasks
   inventory:
@@ -59,7 +89,6 @@ verifier:
 scenario:
   test_sequence:
     - dependency
-    - lint
     - cleanup
     - destroy
     - syntax

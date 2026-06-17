@@ -8,17 +8,21 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars-runners.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    BASH_BIN="$(command -v bash)"
-    TEST_TMP="$(mktemp -d -t buildExtraVarsRunners.XXXXXX)"
+    _bats_init_temp buildExtraVarsRunners
     RUNNERS="${TEST_TMP}/runners.json"
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
-@test "fails with usage when any required flag is missing" {
+@test "fails with usage when either required flag is missing" {
+    # --runners-config and --github-token are mandatory; the
+    # file-server pair below is optional.
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"usage:"* ]]
@@ -30,14 +34,26 @@ teardown() {
     run "${BASH_BIN}" "${SCRIPT}" --github-token "ghp_example"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"usage:"* ]]
+}
 
-    # Missing --runner-version - the helper rejects any partial set.
+@test "rejects --host-base-url without --runner-version" {
+    printf '%s' '[]' > "${RUNNERS}"
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${RUNNERS}" \
         --github-token "ghp_example" \
         --host-base-url "http://10.10.0.1:8745"
     [ "${status}" -eq 2 ]
-    [[ "${output}" == *"usage:"* ]]
+    [[ "${output}" == *"must be supplied together"* ]]
+}
+
+@test "rejects --runner-version without --host-base-url" {
+    printf '%s' '[]' > "${RUNNERS}"
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example" \
+        --runner-version "2.999.0"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"must be supplied together"* ]]
 }
 
 @test "fails with usage on unknown flag" {
@@ -107,7 +123,7 @@ teardown() {
     [[ "${output}" == *"not valid JSON"* ]]
 }
 
-@test "valid inputs emit a four-key object with the runners-domain keys" {
+@test "valid inputs emit a four-key object when the file-server pair is supplied" {
     printf '%s' '[{"vmName":"a","runnerName":"r1"}]' > "${RUNNERS}"
     run "${BASH_BIN}" "${SCRIPT}" \
         --runners-config "${RUNNERS}" \
@@ -121,6 +137,24 @@ teardown() {
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
     [ "$(printf '%s' "${output}" | jq -r '.host_file_server_base_url')" = "http://10.10.0.1:8745" ]
     [ "$(printf '%s' "${output}" | jq -r '.runner_version')" = "2.999.0" ]
+}
+
+@test "valid inputs emit a two-key object when the file-server pair is omitted" {
+    # The deregister flow takes this path: nothing fetched, so the
+    # extra-vars doc must genuinely lack the two file-server keys
+    # rather than carry empty strings the down-direction roles would
+    # have to special-case.
+    printf '%s' '[{"vmName":"a","runnerName":"r1"}]' > "${RUNNERS}"
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --runners-config "${RUNNERS}" \
+        --github-token "ghp_example"
+    [ "${status}" -eq 0 ]
+
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token" ]
+    [ "$(printf '%s' "${output}" | jq -r '.github_runners_config[0].runnerName')" = "r1" ]
+    [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
+    [ "$(printf '%s' "${output}" | jq -r 'has("host_file_server_base_url")')" = "false" ]
+    [ "$(printf '%s' "${output}" | jq -r 'has("runner_version")')" = "false" ]
 }
 
 @test "github-token with shell-special characters is emitted verbatim" {

@@ -15,10 +15,11 @@
 
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 
-setup() {
-    BASH_BIN="$(command -v bash)"
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
 
-    TEST_TMP="$(mktemp -d -t runPlaybook.XXXXXX)"
+setup() {
+    _bats_init_temp runPlaybook
     TEST_REPO="${TEST_TMP}/repo"
     mkdir -p "${TEST_REPO}/ops" \
              "${TEST_REPO}/playbooks" \
@@ -98,6 +99,18 @@ printf 'BASE_URL=%s\n'        "${STAGE_STUB_BASE_URL:-http://10.10.0.1:8745}"
 printf 'PID=%s\n'             "${STAGE_STUB_FS_PID:-12345}"
 STUB
 
+    # Router reachability probe (step 4c) stubbed at the orchestrator
+    # boundary - its nc/ssh internals have their own bats file
+    # (_assert-router-reachable.bats). Records the IP/port it was handed
+    # so the dispatch contract can be asserted; ASSERT_REACHABLE_STUB_EXIT
+    # drives the abort-on-unreachable path. Defaults to reachable so the
+    # router-row tests below proceed to dispatch.
+    cat >"${TEST_REPO}/ops/_assert-router-reachable.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "assert-router-reachable:$*" >> "${TRACE_FILE}"
+exit "${ASSERT_REACHABLE_STUB_EXIT:-0}"
+STUB
+
     chmod +x "${TEST_REPO}/ops/"_*.sh
 
     # pwsh.exe stub - the bridge still invokes pwsh.exe directly for
@@ -108,14 +121,42 @@ STUB
     cat >"${TEST_TMP}/stubs/pwsh.exe" <<'STUB'
 #!/usr/bin/env bash
 file=""
+cmd=""
 process_id=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -File)      file="$2";       shift 2 ;;
+        -Command)   cmd="$2";        shift 2 ;;
         -ProcessId) process_id="$2"; shift 2 ;;
         *)          shift ;;
     esac
 done
+# -Command path: the router-resolution block dispatches
+# Get-VmKvpIpAddress when ROUTER_IP is not statically set. Override
+# the echoed IP per test via PWSH_STUB_ROUTER_IP.
+if [[ -n "${cmd}" ]]; then
+    case "${cmd}" in
+        *Get-VmKvpIpAddress*)
+            echo "${PWSH_STUB_ROUTER_IP-192.168.1.99}"
+            exit 0
+            ;;
+        *portproxy*)
+            # WSL-detection block's portproxy auto-discovery. Only
+            # reached when bats itself runs under WSL (the wrapper's
+            # native path), where /proc/version matches 'microsoft' and
+            # the bridge probes netsh for a listen port. There is no real
+            # portproxy on the test host, so emit nothing: portproxy_port
+            # stays empty, the bridge keeps the vault ROUTER_IP without a
+            # rewrite, and the router path stays identical to the Linux/CI
+            # run where this block is skipped entirely.
+            exit 0
+            ;;
+        *)
+            echo "pwsh-stub: unhandled -Command payload" >&2
+            exit 99
+            ;;
+    esac
+fi
 case "$(basename "${file}")" in
     _stop-host-file-server.ps1)
         echo "stop-host-file-server:${process_id}" >> "${TRACE_FILE}"
@@ -148,7 +189,7 @@ STUB
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "fails with usage when invoked without a playbook arg" {
@@ -246,6 +287,45 @@ teardown() {
       "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" ]
 }
 
+@test "NEEDS_GITHUB_RUNNERS=1 alone skips the host file server (deregister flow shape)" {
+    # The deregister entry sets NEEDS_GITHUB_RUNNERS=1 but not
+    # NEEDS_HOST_FILE_SERVER, because nothing is fetched on the down
+    # path. The third vault read still fires, the staging helper does
+    # not, and the extra-vars helper does not receive the file-server
+    # pair (so the merged document genuinely lacks the two keys).
+    export NEEDS_GITHUB_RUNNERS=1
+    export GH_TOKEN="ghp_example"
+    unset NEEDS_HOST_FILE_SERVER
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"read-vault-config:GitHubRunners:"* ]]
+    [[ "${trace}" != *"stage-host-fileserver:"* ]]
+    [[ "${trace}" != *"--host-base-url"* ]]
+    [[ "${trace}" != *"--runner-version"* ]]
+    [[ "${trace}" != *"stop-host-file-server"* ]]
+}
+
+@test "NEEDS_HOST_FILE_SERVER=1 without NEEDS_GITHUB_RUNNERS fails fast" {
+    # The file-server flag is meaningless on its own: the listener it
+    # would spawn serves the runner tarball, and the runner_binary role
+    # is only loaded under NEEDS_GITHUB_RUNNERS=1. Reject before any
+    # vault read.
+    export NEEDS_HOST_FILE_SERVER=1
+    unset NEEDS_GITHUB_RUNNERS
+    unset GH_TOKEN
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"NEEDS_HOST_FILE_SERVER"* ]]
+    [[ "${output}" == *"NEEDS_GITHUB_RUNNERS"* ]]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" != *"read-vault-config"* ]]
+}
+
 @test "NEEDS_GITHUB_RUNNERS=1 without GH_TOKEN fails fast with a clear message" {
     # The bridge itself never prompts - that is the operator entry's
     # job. Refusing the call here is louder than silently emitting
@@ -283,8 +363,9 @@ STUB
     [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" ]
 }
 
-@test "NEEDS_GITHUB_RUNNERS=1 calls the staging helper with the provisioner config and token" {
+@test "NEEDS_HOST_FILE_SERVER=1 calls the staging helper with the provisioner config and token" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
 
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
@@ -302,8 +383,9 @@ STUB
       "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
 }
 
-@test "NEEDS_GITHUB_RUNNERS=1 threads BASE_URL + runner_version into extra-vars" {
+@test "NEEDS_HOST_FILE_SERVER=1 threads BASE_URL + runner_version into extra-vars" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_VERSION="2.999.0"
     export STAGE_STUB_BASE_URL="http://10.10.0.1:8745"
@@ -318,6 +400,7 @@ STUB
 
 @test "EXIT trap stops the host file server with the captured PID even on a clean exit" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_FS_PID="78901"
 
@@ -335,6 +418,7 @@ STUB
     # operator who hits a play-side error has a stranded HttpListener
     # holding the port until they reboot.
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_FS_PID="65432"
     export ANSIBLE_PLAYBOOK_STUB_EXIT=2
@@ -353,6 +437,7 @@ STUB
 
 @test "staging helper failure aborts the bridge before ansible-playbook runs" {
     export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
     export STAGE_STUB_EXIT=7
 
@@ -380,4 +465,159 @@ STUB
     [ "${status}" -ne 0 ]
     leftovers="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'vm-ansible.*' -print 2>/dev/null || true)"
     [ -z "${leftovers}" ]
+}
+
+@test "router row absent: ROUTER_IP env stays unset and inventory build sees no router context" {
+    # Regression guard for the legacy single-switch topology. With no
+    # router in VmProvisionerConfig, the resolution block must be a
+    # complete no-op - no pwsh.exe -Command dispatch, no exported
+    # ROUTER_* envs.
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:ROUTER_IP=EMPTY$' "${TRACE_FILE}"
+    # pwsh.exe must NOT have been invoked for KVP discovery
+    # (Get-VmKvpIpAddress) because there is no router to discover for.
+    ! grep -q 'Get-VmKvpIpAddress' "${TRACE_FILE}" 2>/dev/null
+}
+
+@test "router row with static ipAddress: exports ROUTER_IP from the vault, no KVP call" {
+    # Static-mode router (externalDhcp=false equivalent): ipAddress is
+    # already in the vault. The bridge must skip the KVP call and use
+    # the static value directly.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}:ROUTER_USERNAME=${ROUTER_USERNAME:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:ROUTER_IP=192.168.1.5:ROUTER_USERNAME=routeradmin$' "${TRACE_FILE}"
+    ! grep -q 'Get-VmKvpIpAddress' "${TRACE_FILE}" 2>/dev/null
+}
+
+@test "router row with no ipAddress (DHCP mode): discovers via Get-VmKvpIpAddress" {
+    # DHCP-mode router: ipAddress absent from the vault. The bridge
+    # must call Get-VmKvpIpAddress and export the discovered IP.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    # Force the KVP stub to a known value so we can pin the export.
+    export PWSH_STUB_ROUTER_IP="192.168.1.123"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:ROUTER_IP=192.168.1.123$' "${TRACE_FILE}"
+}
+
+@test "router row exports SSHPASS for the inventory ProxyCommand, NOT ROUTER_PASSWORD" {
+    # Security guard: the router password must travel to sshpass via
+    # $SSHPASS at -e time, not as a ROUTER_PASSWORD env var any
+    # process could log. The unset after assignment is what the
+    # bridge owes the rest of the script.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"secret-rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:SSHPASS=${SSHPASS:-EMPTY}:ROUTER_PASSWORD=${ROUTER_PASSWORD:-UNSET}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    grep -q '^build-inventory:SSHPASS=secret-rp:ROUTER_PASSWORD=UNSET$' "${TRACE_FILE}"
+}
+
+# A router row routes the bridge through step 4c's reachability probe.
+_write_router_vault() {
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.99.0.10","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+}
+
+@test "router row drives the reachability probe with the resolved IP and port" {
+    _write_router_vault
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+    # ROUTER_PORT is unset on this path (no WSL portproxy rewrite), so the
+    # orchestrator passes the static IP and the default 22.
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"assert-router-reachable:192.168.1.5 22"* ]]
+}
+
+@test "router reachability failure aborts the bridge before ansible-playbook" {
+    _write_router_vault
+    export ASSERT_REACHABLE_STUB_EXIT=1   # probe reports the hop unreachable
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -ne 0 ]
+    # Aborted before dispatch - the ansible-playbook stub never recorded argv.
+    [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}" ]
 }

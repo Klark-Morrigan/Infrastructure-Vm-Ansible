@@ -18,6 +18,7 @@ was extended by the feature step that earned it.
 - [Create users](#create-users)
 - [Remove users](#remove-users)
 - [Register runners](#register-runners)
+- [Deregister runners](#deregister-runners)
 - [Bridge contract](#bridge-contract)
 - [Tests and lint](#tests-and-lint)
 - [Roles](#roles)
@@ -36,10 +37,10 @@ or double-click
 from Explorer (thin launcher: invokes `pwsh` against the `.ps1` and
 holds the window open).
 
-The PowerShell stage installs `PowerShell.Common` and
+The PowerShell stage installs `Common.PowerShell` and
 `Infrastructure.Secrets` from PSGallery (idempotent — `Invoke-ModuleInstall`
 no-ops when current), ensures WSL2 is installed (delegating to
-`Assert-Wsl2Ready` from `PowerShell.Common`), verifies the default WSL
+`Assert-Wsl2Ready` from `Common.PowerShell`), verifies the default WSL
 distro actually has `bash` (delegating to `Assert-WslHasBash`), and
 then invokes
 [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
@@ -184,7 +185,7 @@ of `ops/`) without that cost.
 The wrapper expects `Infrastructure-Vm-Users` as a sibling checkout
 under the same parent directory as this repo - same convention used
 by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
-`PowerShell-Common`. A follow-up feature replaces the wrapper with a
+`Common-PowerShell`. A follow-up feature replaces the wrapper with a
 first-class implementation when the vault contract diverges (or
 Vm-Users is archived).
 
@@ -227,8 +228,9 @@ wsl ./ops/create-users.sh
 
 or double-click [`ops/create-users.bat`](ops/create-users.bat) from
 Explorer (Git Bash launcher; mirrors the
-[`scripts/run-tests.bat`](scripts/run-tests.bat) sibling-find pattern
-and reuses [`GitHub-Common/scripts/_find-bash.bat`](../GitHub-Common/scripts/_find-bash.bat)).
+[`scripts/run-ci-yaml-and-bash.bat`](scripts/run-ci-yaml-and-bash.bat)
+sibling-find pattern and reuses
+[`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
 
 [`ops/create-users.sh`](ops/create-users.sh) is a one-line wrapper
 that dispatches [`playbooks/create-users.yml`](playbooks/create-users.yml)
@@ -319,9 +321,10 @@ entries).
 
 [`ops/register-runners.sh`](ops/register-runners.sh) prompts for the
 GitHub PAT via `read -s` when `GH_TOKEN` is unset, exports it plus
-`NEEDS_GITHUB_RUNNERS=1` (the opt-in flag the
-[bridge](#bridge-contract) keys off for the third vault read and the
-host-file-server staging), and dispatches
+`NEEDS_GITHUB_RUNNERS=1` (the [bridge](#bridge-contract)'s third
+vault-read gate) and `NEEDS_HOST_FILE_SERVER=1` (the bridge's
+host-file-server staging gate; register only, because the down path
+fetches nothing), and dispatches
 [`playbooks/register-runners.yml`](playbooks/register-runners.yml)
 through the bridge. The same operator knobs as the users-side flows
 work unchanged:
@@ -359,6 +362,62 @@ Two contracts worth highlighting before invoking the flow:
   basename. The listener PID rides in the bridge's `EXIT` trap, so a
   Ctrl+C, a network blip, or a play failure all still tear it down.
 
+## Deregister runners
+
+The reverse flow tears down what `register-runners` reconciled. One
+command stops the systemd service for every declared runner,
+deregisters it from GitHub, and removes the per-runner extract
+directory under `/opt/runners/`:
+
+```
+wsl ./ops/deregister-runners.sh
+```
+
+or double-click [`ops/deregister-runners.bat`](ops/deregister-runners.bat)
+from Explorer (same Git Bash launcher pattern as the register entry).
+
+[`ops/deregister-runners.sh`](ops/deregister-runners.sh) mirrors the
+register entry's prompt-or-`GH_TOKEN` shape and exports
+`NEEDS_GITHUB_RUNNERS=1` so the [bridge](#bridge-contract) reads the
+`GitHubRunners` vault. It deliberately does **not** export
+`NEEDS_HOST_FILE_SERVER`: the down path fetches nothing from the
+Windows side, so spawning the `HttpListener` would be a port and a
+failure surface for no consumer. The wrapper owns one flag of its
+own, `--force`, which it consumes and translates to
+`--extra-vars runners_force_remove=true` for `ansible-playbook`
+(which has no `--force` flag of its own); every other arg is
+forwarded verbatim, so the usual operator knobs work unchanged:
+
+```
+wsl ./ops/deregister-runners.sh --force                    # delete unreachable VMs' runners via the GitHub API
+wsl ./ops/deregister-runners.sh --check                    # dry-run
+wsl ./ops/deregister-runners.sh --tags runner_service      # scope to one role
+wsl ./ops/deregister-runners.sh --limit vm-1,vm-2          # scope to specific VMs
+wsl ./ops/deregister-runners.sh -v                         # verbose play recap
+```
+
+The playbook invokes each role with `tasks_from: remove` in the
+reverse order `runner_service -> runner_registration -> runner_binary`
+(stop the unit first so it cannot hold credentials open, deregister
+on GitHub next while `config.sh` is still on disk, remove the
+extract directory last). There is no confirmation prompt; the
+destructive intent is in the script name and the operator's choice
+to invoke it.
+
+Two contracts worth highlighting before invoking the flow:
+
+- **`--force` runs controller-side via the GitHub REST API.** A
+  reachable VM always deregisters through `config.sh remove`; only
+  entries on **unreachable** VMs reach the force path, where the
+  controller `DELETE`s `.../actions/runners/{id}` directly. Without
+  `--force`, the play surfaces those entries as a single non-zero
+  exit at the end of the run rather than silently leaking stale
+  GitHub-side registrations.
+- **The GitHub PAT is not stored.** Same per-invocation supply as
+  the register flow (prompt or `GH_TOKEN`); same `no_log: true` on
+  every token-bearing task; same clearance from the bridge
+  environment before `ansible-playbook` runs.
+
 ## Bridge contract
 
 The bash bridge between operator scripts under `ops/` and
@@ -382,22 +441,34 @@ its own external boundary:
   union of helper flags and dispatches to one per-payload-domain
   helper per domain present, then merges their JSON fragments via
   `jq -s add`. Required flags: `--provisioner-config <file>` and
-  `--users-config <file>`. Optional paired flags (register-runners
-  flow): `--runners-config <file>`, `--github-token <value>`,
-  `--host-base-url <url>`, `--runner-version <ver>` — all four
-  arrive together or none, the orchestrator rejects any partial
-  set. The per-domain helpers below own their own validation and
-  bats coverage:
+  `--users-config <file>`. The runners-domain flags split into two
+  paired groups, both optional:
+  - **runners pair**: `--runners-config <file>` + `--github-token
+    <value>` — the GitHubRunners-vault read result. Carries
+    everything either direction (register / deregister) needs.
+  - **file-server pair**: `--host-base-url <url>` + `--runner-version
+    <ver>` — the bridge-resolved tarball download URL the register
+    flow adds on top. The deregister flow omits both keys (its VMs
+    fetch nothing).
+  Within each pair the two flags arrive together or not at all;
+  partial sets are rejected before any helper runs. The file-server
+  pair has no meaning without the runners pair and is rejected if
+  supplied alone. The per-domain helpers below own their own
+  validation and bats coverage:
   - [`ops/_build-extra-vars-inventory.sh`](ops/_build-extra-vars-inventory.sh)
     — emits `vm_provisioner_config`. Always-on; the inventory source
     every payload domain shares.
   - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
     — emits `vm_users_config` for the groups / users / sudoers roles.
   - [`ops/_build-extra-vars-runners.sh`](ops/_build-extra-vars-runners.sh)
-    — emits `github_runners_config`, `github_token`,
-    `host_file_server_base_url`, and `runner_version` for the runner
-    roles. Owns the token-non-empty fast-fail and threads the value
-    through `jq --arg` so shell-special characters land verbatim.
+    — emits `github_runners_config` + `github_token` always, plus
+    `host_file_server_base_url` + `runner_version` when the
+    file-server pair is supplied. Owns the token-non-empty
+    fast-fail and threads the value through `jq --arg` so
+    shell-special characters land verbatim. Genuinely omits the two
+    file-server keys when their pair is absent (the down-direction
+    roles never reference them and an empty string would be a
+    stale-URL trap).
   Config inputs are file paths (not values) so secrets stay out of
   argv. The GitHub token is the lone exception, passed by value
   because the entry script already holds it in a shell variable;
@@ -414,15 +485,22 @@ its own external boundary:
   `VmUsers`) and adds a third (`GitHubRunners`) when the caller
   exports `NEEDS_GITHUB_RUNNERS=1` plus `GH_TOKEN=...` - the
   opt-in gate keeps the create-users / remove-users entry points
-  free of an unused `pwsh.exe` round-trip. When opted in, the
-  bridge delegates the Windows-side staging to
-  `_stage-host-fileserver.sh` and (via the EXIT trap) stops the
-  listener it backgrounded on every exit path. `GH_TOKEN` is
-  cleared from the bridge environment before `ansible-playbook`
-  runs; the downstream play receives the token via the chmod-600
-  extra-vars file only. Any args after the playbook path are
-  forwarded verbatim to `ansible-playbook` (so `--tags`, `--limit`,
-  `--check`, `-v`, etc. all work without changes to the bridge).
+  free of an unused `pwsh.exe` round-trip. A second, independent
+  gate `NEEDS_HOST_FILE_SERVER=1` (set by the register entry
+  alongside `NEEDS_GITHUB_RUNNERS=1`, omitted by the deregister
+  entry) controls the Windows-side staging: when set, the bridge
+  delegates to `_stage-host-fileserver.sh` and (via the EXIT trap)
+  stops the listener it backgrounded on every exit path; when
+  unset, neither the listener nor the corresponding stop call run,
+  and the file-server-pair extra-vars keys are genuinely absent.
+  `NEEDS_HOST_FILE_SERVER=1` without `NEEDS_GITHUB_RUNNERS=1` is
+  rejected fast - the listener has no consumer without the
+  runner_binary role. `GH_TOKEN` is cleared from the bridge
+  environment before `ansible-playbook` runs; the downstream play
+  receives the token via the chmod-600 extra-vars file only. Any
+  args after the playbook path are forwarded verbatim to
+  `ansible-playbook` (so `--tags`, `--limit`, `--check`, `-v`,
+  etc. all work without changes to the bridge).
 - [`ops/_stage-host-fileserver.sh`](ops/_stage-host-fileserver.sh)
   - GitHubRunners opt-in branch. Drives the three pwsh.exe
   round-trips (resolve version, ensure tarball, start listener),
@@ -456,10 +534,13 @@ its own external boundary:
 
 External contract (consumed by feature playbooks): the extra-vars
 document always has the two top-level keys `vm_provisioner_config`
-and `vm_users_config`, and additionally `github_runners_config`,
-`github_token`, `host_file_server_base_url`, and `runner_version`
-when the caller opts into the GitHubRunners vault read. The
-inventory has one group `vm_provisioner_hosts` keyed by `vmName`.
+and `vm_users_config`. Additionally, `github_runners_config` and
+`github_token` are present whenever the caller opts into the
+GitHubRunners vault read (`NEEDS_GITHUB_RUNNERS=1`), and
+`host_file_server_base_url` + `runner_version` are present only
+when the caller also opts into the host file server
+(`NEEDS_HOST_FILE_SERVER=1`, register flow only). The inventory
+has one group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)
@@ -484,13 +565,13 @@ real VM is captured in the feature plan.
 CI is wired to two reusable workflows; nothing is copied per-repo:
 
 - [`.github/workflows/ci-powershell.yml`](.github/workflows/ci-powershell.yml)
-  -> `PowerShell-Common/.github/workflows/ci-powershell.yml@master`
+  -> `Common-PowerShell/.github/workflows/ci-powershell.yml@master`
   (Pester unit tests + `lint-no-bare-return-empty-array`).
 - [`.github/workflows/ci-bash.yml`](.github/workflows/ci-bash.yml)
-  -> `GitHub-Common/.github/workflows/ci-bash.yml@master` (shellcheck
+  -> `Common-Automation/.github/workflows/ci-bash.yml@master` (shellcheck
   on production / runner bash + `*.bats` suites + `+x` bit check).
 - [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml)
-  -> `GitHub-Common/.github/workflows/ci-yaml.yml@master` (yamllint,
+  -> `Common-Automation/.github/workflows/ci-yaml.yml@master` (yamllint,
   actionlint, action-validator, ansible-lint).
 - [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
   -> `Infrastructure-E2E/.github/workflows/e2e.yml@master`. Required PR
@@ -515,21 +596,45 @@ canonical runners in the sibling repos (so a fix to the CI logic
 lands in one place):
 
 - [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) -> calls
-  `PowerShell-Common/.github/actions/run-unit-tests/Run-Tests.ps1`.
-- [`scripts/run-tests.sh`](scripts/run-tests.sh) -> calls
-  `GitHub-Common/scripts/run-tests.sh` with
-  `GHCOMMON_TARGET_REPO` pointed at this repo.
-- [`scripts/run-tests.bat`](scripts/run-tests.bat) -> Explorer-click
-  launcher; forwards to `GitHub-Common/scripts/run-tests.bat` with
-  `GHCOMMON_TARGET_REPO` set.
+  `Common-PowerShell/.github/actions/run-unit-tests/Run-Tests.ps1`.
+- [`scripts/run-ci-yaml-and-bash.sh`](scripts/run-ci-yaml-and-bash.sh)
+  (with its [`.bat`](scripts/run-ci-yaml-and-bash.bat) Explorer launcher)
+  is the MAIN entry -> delegates to Common-Automation's orchestrator to run
+  BOTH the lint suite AND the bats tests in one go, the full local
+  equivalent of `ci-yaml.yml` + `ci-bash.yml`.
+- [`scripts/run-lint-yaml-and-bash.sh`](scripts/run-lint-yaml-and-bash.sh)
+  (with its [`.bat`](scripts/run-lint-yaml-and-bash.bat) launcher) ->
+  delegates to Common-Automation to run the lint half only (shellcheck,
+  actionlint, action-validator, yamllint, ansible-lint); no bats.
+- [`scripts/run-tests-bash.sh`](scripts/run-tests-bash.sh)
+  (with its [`.bat`](scripts/run-tests-bash.bat) launcher) -> delegates to
+  Common-Automation to run the bats tests only.
 - [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) /
   [`scripts/fix-permissions.bat`](scripts/fix-permissions.bat) ->
-  forward to `GitHub-Common/scripts/fix-permissions.{sh,bat}` to
+  forward to `Common-Automation/scripts/fix-permissions.{sh,bat}` to
   re-stage `+x` on tracked `*.sh` files that lost it (heals what the
   `check-sh-executable` CI gate flags).
 
-Both shims assume `PowerShell-Common` and `GitHub-Common` are sibling
+These shims assume `Common-PowerShell` and `Common-Automation` are sibling
 checkouts under the same parent directory.
+
+The `playbooks/deregister-runners.yml` controller-side glue (reachability
+split, `--force` fan-out via the GitHub REST API, end-of-run assert) is
+covered by a dedicated smoke playbook,
+[`Tests/ansible/test-deregister-runners-playbook.yml`](Tests/ansible/test-deregister-runners-playbook.yml).
+The smoke test stands up the shared localhost mock of the GitHub runners API
+([`Tests/mock-github-api.py`](Tests/mock-github-api.py), single source for
+both molecule scenarios and this smoke playbook),
+points a fixture inventory at one reachable host (loopback) and one
+deliberately unreachable host (TEST-NET-1 with a 2-second TCP timeout),
+and drives `ansible-playbook playbooks/deregister-runners.yml` twice -
+once without `runners_force_remove` (asserts the play-3 assert fires
+and no `DELETE` was issued) and once with `runners_force_remove=true`
+(asserts the assert passes and the unreachable runner's `DELETE` hit
+the mock). Per-role remove behaviour stays under the molecule
+scenarios; this smoke test owns only the playbook-level wiring.
+Invoke with `wsl ansible-playbook Tests/ansible/test-deregister-runners-playbook.yml -i localhost,`
+inside the repo's venv.
 
 ## Roles
 

@@ -5,7 +5,7 @@
 .DESCRIPTION
     Extracted from bootstrap-controller.ps1 so the gate logic has its
     own file and its own dedicated Pester suite. Kept inside ops/
-    rather than promoted to PowerShell.Common because the only known
+    rather than promoted to Common.PowerShell because the only known
     consumer is the bootstrap on this repo; promoting it module-side
     would require a version bump on every consumer and a permanent
     public-API surface. Re-evaluate the promotion when a second

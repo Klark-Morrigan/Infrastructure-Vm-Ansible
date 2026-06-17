@@ -1,0 +1,23 @@
+---
+# side_effect runs between converge and idempotence. Clear the mock's
+# registered-runners file to reflect post-converge reality: real
+# GitHub drops the registration after a successful config.sh remove,
+# so the next existence probe must observe runner-removable as absent.
+#
+# Without this step the idempotence run would re-take the remove
+# branch on runner-removable (the static mock would still report it
+# registered) and report changed: 2 - a fixture-side artefact, not a
+# real role idempotence regression.
+
+- name: Side effect - clear mock to reflect post-converge GitHub state
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    mock_registered_file: /tmp/runner-registration-remove-mock-registered.txt
+  tasks:
+    - name: Empty the registered-runners file after the remove pass
+      ansible.builtin.copy:
+        dest: "{{ mock_registered_file }}"
+        content: ""
+        mode: "0644"

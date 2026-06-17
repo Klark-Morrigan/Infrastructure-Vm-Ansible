@@ -1,0 +1,44 @@
+---
+# Launch the controller-side mock GitHub API and wait for it to
+# accept connections. Both scenarios call this with their own
+# `mock_*` play vars:
+#   - mock_script           - filesystem path to the shared
+#                             Tests/mock-github-api.py (both
+#                             scenarios point at the same script via
+#                             ../../../mock-github-api.py).
+#   - mock_port             - loopback port to bind. Distinct per
+#                             scenario so a wedged previous run on
+#                             one scenario does not block the other.
+#   - mock_log              - JSON-lines request log the verify play
+#                             slurps and parses.
+#   - mock_registered_file  - text file with one already-registered
+#                             runner name per line, re-read on every
+#                             GET so side_effect.yml can mutate state
+#                             between converge and idempotence.
+#   - mock_stderr           - stderr capture so a startup error (port
+#                             busy, python missing) is recoverable
+#                             from the controller filesystem without
+#                             re-running the whole scenario.
+#
+# nohup + & detaches the listener so prepare can complete. The tight
+# wait-for catches a mock that died at startup loudly here rather
+# than letting converge hit a connection-refused uri call and
+# obscure the root cause.
+- name: Launch mock GitHub API
+  ansible.builtin.shell: |
+    set -eu
+    nohup python3 {{ mock_script }} \
+      --port {{ mock_port }} \
+      --log {{ mock_log }} \
+      --registered-file {{ mock_registered_file }} \
+      >{{ mock_stderr }} 2>&1 &
+    echo $! > {{ mock_pidfile }}
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Wait for mock to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ mock_port }}"
+    timeout: 10

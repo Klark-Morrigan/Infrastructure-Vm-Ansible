@@ -1,0 +1,45 @@
+---
+# Per-entry remove path, included once per `vm_runner_entries` item
+# from tasks/remove.yml. Shape mirrors reconcile-entry.yml's per-entry
+# include in the register direction: probe first, then guarded action
+# tasks read the probe's facts.
+#
+# The skip branch (entry not on GitHub) is silent: every guarded task
+# below uses the same `when` and falls through cleanly. runner_binary's
+# remove direction owns the on-disk teardown; this role does not touch
+# /opt/runners files outside of the `config.sh remove` invocation
+# below (and `config.sh remove` only runs when the GitHub-side record
+# exists in the first place).
+- name: Probe GitHub for existing registration of this runner
+  ansible.builtin.include_tasks: _probe-github.yml
+
+# Mint the removal token via the shared _mint-remove-token.yml so the
+# URI contract stays locked together with the register direction's
+# re-register branch (the other caller). The included file sets
+# `runner_registration_remove_token_resp` in this entry's scope; the
+# `when:` here is the only branch this caller adds.
+- name: Mint a removal token when GitHub still knows this runner
+  ansible.builtin.include_tasks: _mint-remove-token.yml
+  when: runner_registration_on_github
+
+# Run `config.sh remove --token <removal> --unattended` as the runner
+# service user. become_user (not root) so the files config.sh touches
+# keep the runner-user ownership runner_binary established. argv form
+# (not shell string) so the token never lands in a shell history; the
+# whole task is no_log so it does not land in Ansible's output either.
+# changed_when: true because config.sh has side effects every time we
+# invoke it; suppressing changed would lie about what the role did.
+- name: Run config.sh remove --unattended as the runner service user
+  ansible.builtin.command:
+    argv:
+      - ./config.sh
+      - remove
+      - --token
+      - "{{ runner_registration_remove_token_resp.json.token }}"
+      - --unattended
+    chdir: "/opt/runners/{{ entry.runnerName }}"
+  become: true
+  become_user: "{{ entry.runnerUsername }}"
+  changed_when: true
+  no_log: true
+  when: runner_registration_on_github

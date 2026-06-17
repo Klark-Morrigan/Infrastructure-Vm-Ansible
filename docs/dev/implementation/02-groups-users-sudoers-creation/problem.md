@@ -65,17 +65,17 @@ boundary:
 
 | Script | Lang | Runs from | Purpose |
 |--------|------|-----------|---------|
-| `ops/bootstrap-controller.ps1` | PowerShell | Windows | Calls `Assert-Wsl2Ready` from `PowerShell.Common` to ensure WSL2 is installed and a distro is registered, then invokes the inside-WSL setup. WSL detection and install logic is **not** reimplemented here — `Assert-Wsl2Ready` already handles install-if-missing + reboot-required messaging + the `Wsl2NotReady:` catch contract used elsewhere in the org's repos. |
+| `ops/bootstrap-controller.ps1` | PowerShell | Windows | Calls `Assert-Wsl2Ready` from `Common.PowerShell` to ensure WSL2 is installed and a distro is registered, then invokes the inside-WSL setup. WSL detection and install logic is **not** reimplemented here — `Assert-Wsl2Ready` already handles install-if-missing + reboot-required messaging + the `Wsl2NotReady:` catch contract used elsewhere in the org's repos. |
 | `ops/_bootstrap-controller-wsl.sh` | bash | inside WSL | Creates the repo-local Python venv, installs Ansible, installs Galaxy collections. Operators can run this directly if WSL is already known to be present. |
 
 | Decision | Value |
 |----------|-------|
-| WSL install policy | Install if not found, skip if found — delegated to [`Assert-Wsl2Ready`](https://github.com/VitaliiAndreev/PowerShell-Common/blob/master/PowerShell.Common/Public/Assert-Wsl2Ready.ps1) in `PowerShell.Common`. That function runs `wsl --install` unconditionally when WSL is not ready (idempotent on Windows 11) and throws a `Wsl2NotReady:` error the operator catches with a reboot prompt. `bootstrap-controller.ps1` uses the standard try/catch pattern documented in `Assert-Wsl2Ready`'s example. |
+| WSL install policy | Install if not found, skip if found — delegated to [`Assert-Wsl2Ready`](https://github.com/VitaliiAndreev/Common-PowerShell/blob/master/Common.PowerShell/Public/Assert-Wsl2Ready.ps1) in `Common.PowerShell`. That function runs `wsl --install` unconditionally when WSL is not ready (idempotent on Windows 11) and throws a `Wsl2NotReady:` error the operator catches with a reboot prompt. `bootstrap-controller.ps1` uses the standard try/catch pattern documented in `Assert-Wsl2Ready`'s example. |
 | Where Ansible runs | Inside WSL2 (Ubuntu). Windows is not an Ansible controller. |
 | Python | A repo-local `.venv/` (gitignored) with pinned `ansible-core` and deps from `requirements.txt`. No system-wide Ansible install. |
 | Galaxy collections | Installed from `requirements.yml` (`ansible.posix`, `community.general` as needed). Pinned by version. |
 | Idempotence | Both scripts are re-run safe. `Assert-Wsl2Ready` short-circuits on already-ready WSL; the bash setup detects existing venv + collections and skips. |
-| `pwsh.exe` as a prerequisite | PowerShell 7+ on the Windows host is a hard operator prerequisite, documented in the README alongside WSL2. The bootstrap does **not** detect or install it — `Import-Module PowerShell.Common` and `Infrastructure.Secrets` both require PS7, so any host that can launch `bootstrap-controller.ps1` already has it. The bash bridge's `pwsh.exe` invocation relies on the same prerequisite. |
+| `pwsh.exe` as a prerequisite | PowerShell 7+ on the Windows host is a hard operator prerequisite, documented in the README alongside WSL2. The bootstrap does **not** detect or install it — `Import-Module Common.PowerShell` and `Infrastructure.Secrets` both require PS7, so any host that can launch `bootstrap-controller.ps1` already has it. The bash bridge's `pwsh.exe` invocation relies on the same prerequisite. |
 
 #### Bash bridge: vault to extra-vars to ansible-playbook
 
@@ -125,7 +125,7 @@ all:
 #### CI: YAML and Ansible lint gate
 
 A single reusable-workflow caller (`.github/workflows/ci-yaml.yml`) wires
-the repo into [GitHub-Common's `ci-yaml.yml`](https://github.com/VitaliiAndreev/GitHub-Common/blob/master/.github/workflows/ci-yaml.yml)
+the repo into [Common-Automation's `ci-yaml.yml`](https://github.com/VitaliiAndreev/Common-Automation/blob/master/.github/workflows/ci-yaml.yml)
 so every PR runs the four shared lint jobs: `actionlint`,
 `action-validator`, `yamllint`, `ansible-lint`. The substrate this
 feature ships (YAML inventory, requirements files, playbooks, roles)
@@ -134,7 +134,7 @@ feature as the substrate keeps the bar synchronised from day one.
 
 | Decision | Value |
 |----------|-------|
-| Where the linters live | Centralised in `GitHub-Common`. This repo holds only the one-line caller, so version bumps and rule changes propagate org-wide via a single source. |
+| Where the linters live | Centralised in `Common-Automation`. This repo holds only the one-line caller, so version bumps and rule changes propagate org-wide via a single source. |
 | Auto-skip semantics | `ansible-lint` skips with a `::notice::` when `ansible.cfg` / `playbooks/` / `roles/` are absent; the other three jobs lint their respective surfaces unconditionally. The first commit of step 1 ships `ansible.cfg`, so `ansible-lint` runs but has no playbooks to lint until step 5. |
 | Repo-local lint config | None. The shared bar is the bar; per-repo `.yamllint` / `.ansible-lint` files only land if a real finding forces a documented relaxation. |
 | Failure surface | A red CI run blocks merge. No bypass, no per-feature suppression. |

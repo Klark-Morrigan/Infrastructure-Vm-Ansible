@@ -9,7 +9,7 @@ BeforeAll {
     #
     # The fake delegate is a tiny .ps1 that records its bound parameters
     # to a file (path supplied via env) so the wrapper's arg-forwarding
-    # contract can be asserted without installing PowerShell.Common /
+    # contract can be asserted without installing Common.PowerShell /
     # Infrastructure.Secrets.
 
     function New-FakeRepoLayout {

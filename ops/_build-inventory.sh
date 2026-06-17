@@ -65,8 +65,16 @@ if ! err="$(printf '%s' "${input}" | jq -r '
     if type != "array" then
         "_build-inventory.sh: input must be a JSON array of VM objects"
     else
-        . as $vms
-        | range(0; length) as $i
+        # Drop router VMs before the required-field check. Routers are
+        # network infrastructure (NAT/DNS for the per-environment
+        # private switch); Ansible never reconciles users / runners /
+        # files on them, so including them would only surface false
+        # "ipAddress missing" failures for DHCP-mode routers whose
+        # upstream IP is discovered at boot and never written back to
+        # the vault. kind == "router" => drop; anything else (kind
+        # unset OR any other value) is a workload and kept.
+        [ .[] | select((.kind // "") != "router") ] as $vms
+        | range(0; $vms | length) as $i
         | $vms[$i] as $vm
         | ["vmName", "ipAddress", "username", "password"]
         | map(
@@ -85,27 +93,66 @@ if [[ -n "${err}" ]]; then
     exit 1
 fi
 
+# Re-apply the router filter to the inventory-building pipeline below.
+# The validation block above filtered into its own jq-local $vms but
+# the next jq invocation reads from $input - reapply so the output
+# excludes the same rows.
+input="$(printf '%s' "${input}" | jq '[ .[] | select((.kind // "") != "router") ]')"
+
 # ---------------------------------------------------------------------------
 # 3. Build the inventory. The `add // {}` tail collapses the per-VM
 #    objects into a single map and handles the empty-array case
 #    (`add` on `[]` is null - `// {}` falls back to an empty hosts
 #    map, which Ansible accepts and reports as "no hosts").
+#
+#    When the caller exports ROUTER_IP + ROUTER_USERNAME (the
+#    feature-53 NAT topology), every workload gets an
+#    ansible_ssh_common_args clause that routes its ssh through the
+#    router via ProxyCommand + sshpass. The router's password is
+#    fetched by sshpass from $SSHPASS at run time, NOT from argv,
+#    so it never appears in `ps`. Workloads' own host keys and the
+#    router's host key are both ignored (StrictHostKeyChecking=no +
+#    UserKnownHostsFile=/dev/null) - same posture every other SSH
+#    path in this stack takes against a private test LAN. When
+#    ROUTER_IP is empty the legacy direct-routing path is preserved
+#    and ansible_ssh_common_args is omitted entirely.
+#
+#    Optional ROUTER_PORT env var: when set, injects `-p ${ROUTER_PORT}`
+#    into the inner ssh. Used when the caller routes through a host
+#    portproxy (e.g. WSL2 -> 127.0.0.1:2222 -> 192.168.137.10:22)
+#    because WSL2 cannot reach the host's Internal-switch subnet
+#    through ICS NAT. Defaults to "" (let ssh use port 22) so the
+#    direct-routing path stays unaffected.
 # ---------------------------------------------------------------------------
-printf '%s' "${input}" | jq '
-    {
+printf '%s' "${input}" | jq \
+    --arg router_ip   "${ROUTER_IP:-}" \
+    --arg router_port "${ROUTER_PORT:-}" \
+    --arg router_user "${ROUTER_USERNAME:-}" \
+'
+    ($router_ip != "" and $router_user != "") as $jump
+    | (if $router_port != "" then " -p " + $router_port else "" end) as $port_flag
+    | (
+        if $jump then
+            "-o ProxyCommand='\''sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" + $port_flag + " " + $router_user + "@" + $router_ip + " -W %h:%p'\'' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        else "" end
+    ) as $jump_args
+    | {
         all: {
             children: {
                 vm_provisioner_hosts: {
                     hosts: (
                         map({
-                            (.vmName): {
-                                ansible_host:          .ipAddress,
-                                ansible_user:          .username,
-                                ansible_password:      .password,
-                                ansible_become:        true,
-                                ansible_become_method: "sudo",
-                                ansible_become_pass:   .password
-                            }
+                            (.vmName): (
+                                {
+                                    ansible_host:          .ipAddress,
+                                    ansible_user:          .username,
+                                    ansible_password:      .password,
+                                    ansible_become:        true,
+                                    ansible_become_method: "sudo",
+                                    ansible_become_pass:   .password
+                                }
+                                + (if $jump then { ansible_ssh_common_args: $jump_args } else {} end)
+                            )
                         })
                         | add // {}
                     )

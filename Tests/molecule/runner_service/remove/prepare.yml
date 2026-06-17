@@ -1,0 +1,159 @@
+---
+# Prepare the container before converge: install tooling, seed runner
+# service users + /opt/runners/<name>/ directories, install a stub
+# svc.sh per directory (supporting both `install` and `uninstall`),
+# and pre-stage three distinct teardown branches for the converge:
+#
+#   runner-active   - unit pre-installed AND started. The role's stop
+#                     task transitions inactive when active, the
+#                     uninstall task removes the unit file.
+#   runner-stopped  - unit pre-installed, never started. The role's
+#                     stop task is a no-op (stock systemd idempotence),
+#                     the uninstall task removes the unit file.
+#   runner-absent   - directory present, no unit ever installed. Probe
+#                     stdout is empty; the role's `length > 0` guard
+#                     skips both stop and uninstall branches.
+#
+# A fourth entry (runner-leak, vmName != instance) is declared in
+# converge.yml and asserted absent in verify.yml - covers the
+# selector negative case the same way the default scenario does.
+#
+# Stub svc.sh implements two actions:
+#   install <user> - composes a Type=oneshot RemainAfterExit=yes unit
+#                    under /etc/systemd/system, daemon-reload, enable.
+#   uninstall      - disable the unit (if present), remove the unit
+#                    file, daemon-reload. svc.sh self-locates via
+#                    $(pwd) and reconstructs the unit name the same
+#                    way `install` did, so the role's `chdir` contract
+#                    is what wires the two actions together.
+
+- name: Prepare - tooling, runner directories, pre-staged teardown state
+  hosts: all
+  gather_facts: false
+  vars:
+    runner_dirs:
+      - name: runner-active
+        user: u-runner-shared
+        pre_state: started
+      - name: runner-stopped
+        user: u-runner-shared
+        pre_state: stopped
+      - name: runner-absent
+        user: u-runner-other
+        pre_state: none
+  tasks:
+    # systemd, systemd-sysv, and sudo are baked into the scenario's
+    # Dockerfile so they are present from container create onward;
+    # prepare only needs to seed users + per-runner directories +
+    # stub svc.sh + the pre-staged teardown state per entry.
+
+    - name: Seed runner service users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop:
+        - u-runner-shared
+        - u-runner-other
+
+    - name: Create per-runner extract directory
+      ansible.builtin.file:
+        path: "/opt/runners/{{ item.name }}"
+        state: directory
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: "0755"
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Stub svc.sh - mirrors the default scenario's stub plus an
+    # uninstall action. Unit name follows the actions/runner
+    # convention; owner/repo are fixed strings because the role's
+    # probe filters by the runnerName suffix only.
+    - name: Install stub svc.sh in each runner directory
+      ansible.builtin.copy:
+        dest: "/opt/runners/{{ item.name }}/svc.sh"
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          action="${1:-}"
+          svc_user="${2:-}"
+          here="$(cd "$(dirname "$0")" && pwd)"
+          name="$(basename "$here")"
+          unit="actions.runner.example-repo.${name}.service"
+          case "$action" in
+            install)
+              [[ -n "$svc_user" ]] || {
+                echo "Usage: $0 install <user>" >&2
+                exit 2
+              }
+              cat > "/etc/systemd/system/${unit}" <<EOF
+          [Unit]
+          Description=Stub GitHub Actions runner (${name}) for molecule scenario
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/bin/true
+          User=${svc_user}
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+              systemctl daemon-reload
+              systemctl enable "${unit}"
+              ;;
+            uninstall)
+              # Unconditional + idempotent: systemctl disable on an
+              # unknown unit no-ops (suppress the "Failed to disable
+              # unit ... does not exist" stderr with 2>/dev/null), rm -f
+              # is a no-op when the file is absent, daemon-reload always
+              # succeeds. Avoids the subtle awk-exit-vs-END trap an
+              # earlier `if [[ ... | awk 'NF{exit 0} END{exit 1}' ]]`
+              # guard hit (main-block `exit 0` still runs the END block,
+              # so its `exit 1` overrides and the guard is always false).
+              systemctl disable "${unit}" 2>/dev/null || true
+              rm -f "/etc/systemd/system/${unit}"
+              systemctl daemon-reload
+              ;;
+            *)
+              echo "Stub svc.sh only implements install/uninstall (got: ${action})" >&2
+              exit 2
+              ;;
+          esac
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Pre-install the unit for runner-active and runner-stopped (the
+    # only path that yields an installed-but-stopped or
+    # installed-and-started state). runner-absent gets no install,
+    # leaving its probe stdout empty in converge.
+    - name: Pre-install the unit for entries the converge should tear down
+      ansible.builtin.command:
+        cmd: "./svc.sh install {{ item.user }}"
+        chdir: "/opt/runners/{{ item.name }}"
+      become: true
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.pre_state in ['started', 'stopped']
+      changed_when: true
+
+    # Start runner-active so converge observes an active unit. systemd
+    # reports `changed: true` on the inactive -> active transition; the
+    # converge's stop+disable task is what reverses that transition.
+    - name: Pre-start the unit for runner-active
+      ansible.builtin.systemd:
+        name: "actions.runner.example-repo.{{ item.name }}.service"
+        state: started
+      become: true
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.pre_state == 'started'

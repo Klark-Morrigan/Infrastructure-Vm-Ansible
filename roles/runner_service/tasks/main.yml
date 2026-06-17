@@ -27,28 +27,18 @@
 # by the runnerName suffix because owner/repo would require parsing
 # githubUrl in three places; the runnerName is unique enough on a host
 # that the glob has at most one match.
+#
+# The probe body is shared with the remove direction via _probe-unit.yml,
+# so both directions read the same systemctl output through the same
+# parser. The shared register name (`runner_service_unit_probes`) is overwritten by the
+# re-probe below; the install branch consumes the pre-install snapshot
+# before that overwrite happens.
 
 # vm_runner_entries is set by roles/runner_entry_resolve (pulled in via
 # meta dep; runs once per play). Consumer tasks read it directly.
 
-# Unit-file probe. `systemctl list-unit-files` accepts glob patterns and
-# returns one line per match plus a trailing summary; --no-legend strips
-# the summary so awk + head can pull the unit name cleanly when present
-# and yield empty stdout when absent. shell (not command) because the
-# pipe to awk/head is part of the contract.
 - name: Probe for the systemd unit file (per runner)
-  ansible.builtin.shell: >-
-    set -o pipefail;
-    systemctl list-unit-files
-      --type=service --no-pager --no-legend
-      'actions.runner.*{{ item.runnerName }}.service'
-    | awk '{print $1}' | head -n1
-  loop: "{{ vm_runner_entries }}"
-  loop_control:
-    label: "{{ item.runnerName }}"
-  register: runner_service_unit_probes
-  changed_when: false
-  # noqa command-instead-of-shell - pipe to awk + head is the contract
+  ansible.builtin.include_tasks: _probe-unit.yml
 
 # Install branch. svc.sh install writes the systemd unit file and
 # enables it for the specified user. become: true (root) because the
@@ -69,21 +59,9 @@
 
 # Re-probe after the install branch so the systemd task below has the
 # unit name on both code paths (already-installed and just-installed).
-# Same shape as the first probe; a second loop is cheaper than threading
-# install-branch state through Jinja conditionals.
+# Overwrites `runner_service_unit_probes` with the post-install snapshot.
 - name: Re-probe the systemd unit file after potential install
-  ansible.builtin.shell: >-
-    set -o pipefail;
-    systemctl list-unit-files
-      --type=service --no-pager --no-legend
-      'actions.runner.*{{ item.runnerName }}.service'
-    | awk '{print $1}' | head -n1
-  loop: "{{ vm_runner_entries }}"
-  loop_control:
-    label: "{{ item.runnerName }}"
-  register: runner_service_unit_probes_after
-  changed_when: false
-  # noqa command-instead-of-shell - pipe to awk + head is the contract
+  ansible.builtin.include_tasks: _probe-unit.yml
 
 # Defensive assert before the systemd task: if svc.sh install succeeded
 # but no matching unit landed, the systemd task below would receive an
@@ -99,7 +77,7 @@
       'actions.runner.*{{ item.item.runnerName }}.service' after the
       install branch ran. Check that svc.sh install completed without
       error and that /etc/systemd/system contains the expected unit.
-  loop: "{{ runner_service_unit_probes_after.results }}"
+  loop: "{{ runner_service_unit_probes.results }}"
   loop_control:
     label: "{{ item.item.runnerName }}"
 
@@ -113,7 +91,7 @@
     state: started
     enabled: true
   become: true
-  loop: "{{ runner_service_unit_probes_after.results }}"
+  loop: "{{ runner_service_unit_probes.results }}"
   loop_control:
     label: "{{ item.item.runnerName }}"
 
@@ -130,7 +108,7 @@
 - name: Capture systemctl is-active for each runner service  # noqa command-instead-of-module
   ansible.builtin.command:
     cmd: "systemctl is-active {{ item.stdout | trim }}"
-  loop: "{{ runner_service_unit_probes_after.results }}"
+  loop: "{{ runner_service_unit_probes.results }}"
   loop_control:
     label: "{{ item.item.runnerName }}"
   register: runner_service_active_checks

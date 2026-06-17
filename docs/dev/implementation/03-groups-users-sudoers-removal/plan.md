@@ -337,7 +337,7 @@ remove flow is end-to-end runnable.
   `ops/create-users.sh`. Forwarded args let operators pass `--tags`,
   `--limit`, `--check`, etc.
 - `ops/remove-users.bat` (new) - Explorer launcher; resolves Git Bash
-  via `GitHub-Common/scripts/_find-bash.bat`, then `exec`s
+  via `Common-Automation/scripts/_find-bash.bat`, then `exec`s
   `ops/remove-users.sh`. Mirrors `ops/create-users.bat`.
 - `README.md` (modified) - add `ops/remove-users.sh` /
   `ops/remove-users.bat` to the operator surface table immediately

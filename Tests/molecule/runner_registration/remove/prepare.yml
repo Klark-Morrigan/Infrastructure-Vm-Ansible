@@ -1,0 +1,131 @@
+---
+# Two-stage prepare, mirroring the default (register) scenario:
+#   1. Controller-side: launch the shared mock GitHub API
+#      (Tests/mock-github-api.py, the single source for both
+#      molecule scenarios and the deregister smoke playbook) on
+#      127.0.0.1:<port>. The mock is the assertion surface for the
+#      verify play - it logs every request as a JSON line.
+#   2. Container-side: install python3 + sudo, seed two runner service
+#      users, lay out /opt/runners/<name>/ for each entry with a stub
+#      config.sh that records its argv to a per-runner log the verify
+#      play reads.
+
+- name: Prepare controller - launch mock GitHub API
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    mock_port: 18081
+    mock_pidfile: /tmp/runner-registration-remove-mock.pid
+    mock_log: /tmp/runner-registration-remove-mock.log
+    mock_registered_file: /tmp/runner-registration-remove-mock-registered.txt
+    mock_stderr: /tmp/runner-registration-remove-mock.stderr
+    mock_script: "{{ playbook_dir }}/../../../mock-github-api.py"
+  tasks:
+    - name: Kill any leftover mock server from a previous run
+      ansible.builtin.include_tasks: ../tasks/_kill-mock-pidfile.yml
+
+    # Initial registered set: only runner-removable. runner-orphan is
+    # deliberately absent so the skip branch fires on it. The mock
+    # re-reads this file on every GET so side_effect.yml can clear it
+    # between the converge and idempotence runs.
+    - name: Seed the registered-runners file with runner-removable
+      ansible.builtin.copy:
+        dest: "{{ mock_registered_file }}"
+        content: |
+          runner-removable
+        mode: "0644"
+
+    - name: Launch mock + wait for it to accept connections
+      ansible.builtin.include_tasks: ../tasks/_launch-mock.yml
+
+- name: Prepare container - users, runner directories, stub config.sh
+  hosts: all
+  gather_facts: false
+  vars:
+    # Two reconciled entries:
+    #   runner-removable  - present on the mock's registered set ->
+    #                       remove branch fires (mint removal token +
+    #                       config.sh remove).
+    #   runner-orphan     - absent on the mock's registered set ->
+    #                       skip branch fires.
+    runner_dirs:
+      - name: runner-removable
+        user: u-runner-shared
+      - name: runner-orphan
+        user: u-runner-other
+  tasks:
+    # python3 + python3-apt + sudo are baked into the scenario's
+    # custom image (see the sibling Dockerfile); no apt round-trip
+    # needed here.
+    #
+    # Two users so the scenario also exercises the per-user become_user
+    # boundary the role's config.sh tasks rely on (u-runner-shared
+    # owns runner-removable; u-runner-other owns runner-orphan).
+    - name: Seed runner service users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop:
+        - u-runner-shared
+        - u-runner-other
+
+    - name: Create per-runner extract directory
+      ansible.builtin.file:
+        path: "/opt/runners/{{ item.name }}"
+        state: directory
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: "0755"
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Stub config.sh records every invocation's argv as a JSON line to
+    # a per-runner log. The remove direction calls it with
+    # `remove --token <removal> --unattended`; the stub does not need
+    # to clear .runner because runner_binary's remove direction wipes
+    # the whole runner directory one role later.
+    - name: Install stub config.sh in each runner directory
+      ansible.builtin.copy:
+        dest: "/opt/runners/{{ item.name }}/config.sh"
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env python3
+          import json
+          import os
+          import sys
+
+          here = os.path.dirname(os.path.abspath(__file__))
+          name = os.path.basename(here)
+          log = "/var/log/runner-" + name + "-config.log"
+
+          with open(log, "a", encoding="utf-8") as fh:
+              fh.write(json.dumps({"argv": sys.argv[1:]}) + "\n")
+
+          sys.exit(0)
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Empty per-runner config.sh logs up front so the verify play can
+    # `slurp` them unconditionally without a "file not found" branch.
+    # Owner is the matching runner service user because the stub
+    # config.sh runs under `become_user: <runnerUsername>` and would
+    # otherwise hit `PermissionError: [Errno 13]` appending to a
+    # root-owned log file.
+    - name: Initialise per-runner config.sh logs as empty files
+      ansible.builtin.copy:
+        dest: "/var/log/runner-{{ item.name }}-config.log"
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        content: ""
+        mode: "0644"
+        force: true
+      loop: "{{ runner_dirs }}"
+      loop_control:
+        label: "{{ item.name }}"

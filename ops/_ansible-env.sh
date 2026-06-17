@@ -73,6 +73,14 @@ export ANSIBLE_HOST_KEY_CHECKING=False
 # Ubuntu cloud images where auto_silent resolves cleanly.
 export ANSIBLE_PYTHON_INTERPRETER=auto_silent
 
+# Mirrors `timeout = 30` from ../ansible.cfg [defaults]. Becomes the
+# ssh `-o ConnectTimeout=`. The default 10s is tight for the two-hop
+# proxy (host portproxy -> router -W-> guest): a freshly-booted VM can
+# be slow to send its SSH banner while settling, and at 10s a slow-but-
+# alive exchange gets cut off and burns a retry. 30s rides out that
+# latency instead.
+export ANSIBLE_TIMEOUT=30
+
 # Mirrors `retry_files_enabled = False`. Keeps *.retry noise out of
 # the repo root. The .gitignore already excludes them, but disabling
 # generation entirely is cleaner than relying on the ignore.
@@ -89,3 +97,12 @@ export ANSIBLE_RETRY_FILES_ENABLED=False
 # preserve Ansible's upstream defaults (connection multiplexing) so
 # we extend rather than replace.
 export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+
+# Mirrors `retries = 3` from ../ansible.cfg [ssh_connection]. Freshly-
+# provisioned VMs are reached over a two-hop proxy (host portproxy ->
+# router -W-> guest); during the early-boot settling window the inner
+# hop can stall at banner exchange, which a one-shot connect (default
+# 0) turns into a fatal UNREACHABLE that aborts the whole run. Three
+# retries absorb that transient without masking a dead host (which
+# fails every attempt). Only connection setup is retried, not tasks.
+export ANSIBLE_SSH_RETRIES=3

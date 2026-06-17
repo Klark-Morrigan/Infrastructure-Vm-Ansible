@@ -36,6 +36,10 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
 fi
 export GH_TOKEN
 export NEEDS_GITHUB_RUNNERS=1
+# Register-only opt-in: VMs fetch the actions/runner tarball from a
+# Windows-side HttpListener the bridge spins up. The deregister entry
+# leaves this unset because the down path fetches nothing.
+export NEEDS_HOST_FILE_SERVER=1
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec "${script_dir}/_run-playbook.sh" playbooks/register-runners.yml "$@"

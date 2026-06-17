@@ -6,14 +6,16 @@
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars-inventory.sh"
 
+# shellcheck source=Tests/ops/_bats-helpers.sh
+source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
+
 setup() {
-    BASH_BIN="$(command -v bash)"
-    TEST_TMP="$(mktemp -d -t buildExtraVarsInv.XXXXXX)"
+    _bats_init_temp buildExtraVarsInv
     PROV="${TEST_TMP}/provisioner.json"
 }
 
 teardown() {
-    rm -rf "${TEST_TMP}"
+    _bats_cleanup_temp
 }
 
 @test "fails with usage when --provisioner-config is missing" {

@@ -1,0 +1,30 @@
+---
+# Remove direction for runner_binary. Symmetric to tasks/main.yml: where
+# the register direction extracts a tarball into /opt/runners/<name>/,
+# the remove direction deletes that directory.
+#
+# vm_runner_entries is supplied by the runner_entry_resolve meta dep -
+# same fact, same per-host slice, both directions. Looping over it
+# (rather than scanning /opt/runners/ for whatever happens to be there)
+# keeps the role bounded to entries the config declares for this host;
+# a stray directory on disk that does not appear in the vault stays put.
+#
+# The tarball cache at /home/<runnerUsername>/cache/ is intentionally
+# NOT removed. It is shared across runners on the same VM and the next
+# register run reuses it - re-downloading a multi-hundred-MB tarball on
+# every teardown / setup cycle would defeat the cache. The runner
+# service user account itself is owned by the `users` role's remove
+# direction (feature 03), not this role.
+#
+# Absent /opt/runners/<name>/ is not an error: ansible.builtin.file
+# state=absent on a missing path is a no-op, which gives the
+# "idempotent re-run" and "directory already gone" cases for free.
+
+- name: Remove the per-runner extract directory
+  ansible.builtin.file:
+    path: "/opt/runners/{{ item.runnerName }}"
+    state: absent
+  become: true
+  loop: "{{ vm_runner_entries }}"
+  loop_control:
+    label: "{{ item.runnerName }}"

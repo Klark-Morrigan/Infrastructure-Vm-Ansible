@@ -1,0 +1,146 @@
+---
+# Operator-facing entry into the deregister-runners flow. Counterpart
+# to register-runners.yml: the same three runner roles, invoked in
+# reverse order via `tasks_from: remove` so each role runs its sibling
+# remove.yml instead of main.yml.
+#
+# Order is runner_service -> runner_registration -> runner_binary
+# (mirror of the register order):
+# - runner_service first: a running runner process can hold
+#   .credentials open and race `config.sh remove`. Quiescing the
+#   systemd unit before the registration step touches anything
+#   prevents the race.
+# - runner_registration next: clears GitHub-side state and runs
+#   `config.sh remove --unattended` against the still-present runner
+#   directory. Must precede runner_binary because both `svc.sh` (used
+#   indirectly here for context) and `config.sh remove` resolve their
+#   own root via $(pwd) inside /opt/runners/<name>/ — deleting that
+#   directory first would strand both tools.
+# - runner_binary last: deletes /opt/runners/<name>/ once nothing in
+#   the prior two steps still needs it on disk.
+#
+# Two extras sit on either side of the per-VM play and have no
+# role-level home:
+# - Play 1 (localhost): reachability split + controller-side force
+#   path for unreachable VMs. A VM that is down today still has a
+#   self-hosted runner attached to its repo; --force lets the operator
+#   clean that up via the GitHub REST API without an SSH path. Lives
+#   on localhost because it iterates entries (not hosts) and the
+#   target is the GitHub API, not the VM.
+# - Play 3 (localhost): single end-of-run assert that surfaces the
+#   accumulated unreachable-with-registration list as one non-zero
+#   exit code. Without it, partial-success runs (some VMs reachable,
+#   some unreachable + registered, no --force) would return 0 and
+#   silently leave orphans.
+#
+# Shared posture (hosts, gather_facts, any_errors_fatal, tags, why
+# role order lives here rather than in meta deps) is documented once
+# in docs/dev/playbook-conventions.md.
+
+- name: Reachability split and controller-side force fan-out
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Initialised here so _handle-unreachable-entry.yml can append to
+    # it via set_fact across iterations and play 3 can read it back
+    # without a `| default([])` chain every reference.
+    runners_unreachable_errors: []
+  tasks:
+    # wait_for_connection per unique VM rather than per entry: several
+    # entries can share a vmName (multi-runner hosts are expected per
+    # problem.md), and probing the host once is enough. timeout 10 is
+    # the same upper bound the PowerShell predecessor used; tuneable
+    # via an extra-var later if a slow link warrants it.
+    #
+    # ignore_errors (not failed_when: false) is what lets the next
+    # task split the inventory. failed_when: false flips each
+    # iteration's `.failed` to false, indistinguishable from genuine
+    # success; ignore_errors leaves `.failed: true` on the timed-out
+    # iterations and only suppresses the play-abort, so the per-item
+    # `when: item.failed` guard below has a real signal to read.
+    - name: Probe reachability of each VM
+      ansible.builtin.wait_for_connection:
+        timeout: 10
+      delegate_to: "{{ item }}"
+      loop: >-
+        {{ github_runners_config | default([])
+           | map(attribute='vmName') | unique | list }}
+      loop_control:
+        label: "{{ item }}"
+      register: deregister_runners_reachability
+      ignore_errors: true
+
+    # add_host with `groups:` puts unreachable VMs into a synthetic
+    # group play 1's per-entry loop guards on (and the per-VM play
+    # could also limit against, though today it just lets the SSH
+    # itself fail loudly when a host is unreachable - matches feature
+    # 08's posture for the register direction).
+    - name: Mark unreachable VMs
+      ansible.builtin.add_host:
+        name: "{{ item.item }}"
+        groups: runners_unreachable
+      loop: "{{ deregister_runners_reachability.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.failed | default(false)
+      changed_when: false
+
+    # Per-entry include rather than inline branching so the probe +
+    # force-or-error switch lives in one greppable file. loop_var:
+    # entry matches the name the included file (and the shared
+    # _probe-github.yml) reads.
+    - name: Decide force-or-error for each entry on an unreachable VM
+      ansible.builtin.include_tasks: tasks/_handle-unreachable-entry.yml
+      loop: "{{ github_runners_config | default([]) }}"
+      loop_control:
+        label: "{{ entry.vmName }}/{{ entry.runnerName }}"
+        loop_var: entry
+      when: entry.vmName in (groups['runners_unreachable'] | default([]))
+
+- name: Deregister self-hosted GitHub Actions runners on provisioned VMs
+  hosts: vm_provisioner_hosts
+  gather_facts: true
+  # Per-host failures still surface in the recap; one offline VM
+  # should not strand the rest. Same shared posture remove-users.yml
+  # carries.
+  any_errors_fatal: false
+  tasks:
+    - name: Stop and uninstall the runner systemd service
+      ansible.builtin.import_role:
+        name: runner_service
+        tasks_from: remove
+      tags: runner_service
+
+    - name: Deregister the runner from GitHub
+      ansible.builtin.import_role:
+        name: runner_registration
+        tasks_from: remove
+      tags: runner_registration
+
+    - name: Remove the per-runner extract directory
+      ansible.builtin.import_role:
+        name: runner_binary
+        tasks_from: remove
+      tags: runner_binary
+
+- name: Surface unreachable-with-registration as one exit code
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # Read the list back via hostvars because play 1 set it on
+    # localhost's host scope; without the indirection the empty
+    # default fires here and hides the play-1 accumulation.
+    - name: Assert no unreachable VMs still hold GitHub-registered runners
+      ansible.builtin.assert:
+        that:
+          - >-
+            (hostvars['localhost']['runners_unreachable_errors']
+              | default([]) | length) == 0
+        fail_msg: >-
+          Unreachable VMs still have GitHub-registered runners:
+          {{ hostvars['localhost']['runners_unreachable_errors']
+             | default([]) | join(', ') }}.
+          Re-run with --force to remove them via the GitHub API, or
+          repair the VMs.
