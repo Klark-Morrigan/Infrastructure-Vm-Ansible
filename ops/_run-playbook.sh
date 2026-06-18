@@ -41,6 +41,15 @@ readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
+# _to_windows_path is a generic helper shared from Common-Automation.
+# Sourced before the EXIT trap is installed because cleanup() calls it
+# to point pwsh.exe at the stop helper. Resolved from the sibling
+# checkout by default; COMMON_AUTOMATION_ROOT lets the bats suite point
+# the source at a transplanted copy (see the helper's own header).
+common_automation_root="${COMMON_AUTOMATION_ROOT:-$(cd "${script_dir}/../../Common-Automation" && pwd)}"
+# shellcheck source=/dev/null
+source "${common_automation_root}/scripts/_to-windows-path.sh"
+
 # Timestamped phase logger. Every phase below this orchestrator drives is
 # silent on its own (vault reads and the KVP/portproxy/staging pwsh.exe
 # round-trips redirect their stdout to files or capture it, and the
@@ -120,7 +129,9 @@ chmod 700 "${tmpdir}"
 host_fs_pid=""
 cleanup() {
     if [[ -n "${host_fs_pid}" ]]; then
-        pwsh.exe -NoProfile -File "${script_dir}/_stop-host-file-server.ps1" \
+        local stop_ps1
+        stop_ps1="$(_to_windows_path "${script_dir}/_stop-host-file-server.ps1")"
+        pwsh.exe -NoProfile -File "${stop_ps1}" \
             -ProcessId "${host_fs_pid}" >/dev/null 2>&1 || true
         host_fs_pid=""
     fi

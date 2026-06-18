@@ -39,6 +39,21 @@ setup() {
     cp "${REPO_ROOT}/Tests/playbooks/_noop.yml" "${TEST_REPO}/playbooks/"
     chmod +x "${TEST_REPO}/ops/_run-playbook.sh"
 
+    # _to_windows_path now lives in Common-Automation, an external
+    # abstraction to this orchestrator, so it is mocked here (its real
+    # behavior is unit-tested in Common-Automation/scripts/_to-windows-path.bats).
+    # The stub goes in a fake COMMON_AUTOMATION_ROOT so the orchestrator's
+    # sibling-source wiring is still exercised end to end - CI has no real
+    # ../Common-Automation checkout for this repo, so the env override is
+    # what keeps the source resolvable. The pwsh.exe stub ignores the path
+    # it receives, so a passthrough is all cleanup() needs.
+    export COMMON_AUTOMATION_ROOT="${TEST_TMP}/Common-Automation"
+    mkdir -p "${COMMON_AUTOMATION_ROOT}/scripts"
+    cat >"${COMMON_AUTOMATION_ROOT}/scripts/_to-windows-path.sh" <<'STUB'
+#!/usr/bin/env bash
+_to_windows_path() { printf '%s' "$1"; }
+STUB
+
     # No-op activate. The stubbed ansible-playbook on PATH is what
     # actually runs; activating a real venv would defeat the stub.
     : > "${TEST_REPO}/.venv/bin/activate"
@@ -157,7 +172,10 @@ if [[ -n "${cmd}" ]]; then
             ;;
     esac
 fi
-case "$(basename "${file}")" in
+# The bridge now hands pwsh.exe a Windows path (wslpath -w), so strip the
+# last path component on either separator rather than using basename, which
+# keys on '/' alone and would leave a backslash path intact.
+case "${file##*[\\/]}" in
     _stop-host-file-server.ps1)
         echo "stop-host-file-server:${process_id}" >> "${TRACE_FILE}"
         ;;

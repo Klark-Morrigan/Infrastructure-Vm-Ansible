@@ -30,6 +30,13 @@ set -euo pipefail
 # shellcheck source=ops/_die-on-unknown-flag.sh
 source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
 
+# _to_windows_path is a generic helper shared from Common-Automation
+# (see its own header for the sibling/COMMON_AUTOMATION_ROOT contract).
+_ops_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+common_automation_root="${COMMON_AUTOMATION_ROOT:-$(cd "${_ops_dir}/../../Common-Automation" && pwd)}"
+# shellcheck source=/dev/null
+source "${common_automation_root}/scripts/_to-windows-path.sh"
+
 provisioner_path=""
 token=""
 token_set=0
@@ -94,8 +101,9 @@ log() { printf '[%s] _stage-host-fileserver.sh: %s\n' "$(date +%H:%M:%S)" "$*" >
 #    progress lines under -v) so only the version reaches stdout.
 # ---------------------------------------------------------------------------
 log "Resolving latest actions/runner version via GitHub API ..."
+resolve_ps1="$(_to_windows_path "${script_dir}/_resolve-runner-version.ps1")"
 runner_version="$(pwsh.exe -NoProfile -NoLogo \
-    -File "${script_dir}/_resolve-runner-version.ps1" \
+    -File "${resolve_ps1}" \
     -Token "${token}" 2>/dev/null \
     | tr -d '\r' | tail -n1)"
 if [[ -z "${runner_version}" ]]; then
@@ -110,15 +118,21 @@ fi
 #    the same dir without touching this script.
 # ---------------------------------------------------------------------------
 log "Ensuring runner tarball ${runner_version} is cached (downloads ~100MB on a cache miss) ..."
+ensure_ps1="$(_to_windows_path "${script_dir}/_ensure-runner-tarball.ps1")"
 tar_path="$(pwsh.exe -NoProfile -NoLogo \
-    -File "${script_dir}/_ensure-runner-tarball.ps1" \
+    -File "${ensure_ps1}" \
     -Version "${runner_version}" 2>/dev/null \
     | tr -d '\r' | tail -n1)"
 if [[ -z "${tar_path}" ]]; then
     echo "_stage-host-fileserver.sh: failed to stage runner tarball" >&2
     exit 1
 fi
-staging_dir="$(dirname "${tar_path}")"
+# tar_path is a Windows path (the PowerShell helper returns Join-Path
+# output, e.g. C:\Users\...\runner-cache\actions-...tar.gz). bash `dirname`
+# keys on '/' and would return '.' for a backslash path, so strip the last
+# path component directly - the result stays in Windows form, which is what
+# the listener's -StagingDir argument needs.
+staging_dir="${tar_path%[\\/]*}"
 log "Runner tarball ready: ${tar_path}"
 
 # ---------------------------------------------------------------------------
@@ -171,8 +185,9 @@ fi
 # ---------------------------------------------------------------------------
 log "Starting host file server listener ..."
 : > "${listener_log}"
+start_ps1="$(_to_windows_path "${script_dir}/_start-host-file-server.ps1")"
 pwsh.exe -NoProfile -NoLogo \
-    -File "${script_dir}/_start-host-file-server.ps1" \
+    -File "${start_ps1}" \
     "${listener_args[@]}" \
     > "${listener_log}" 2>&1 &
 listener_bash_pid=$!
