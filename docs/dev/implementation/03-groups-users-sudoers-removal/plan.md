@@ -439,7 +439,7 @@ be archived because the E2E layer still calls into it.
   dispatcher takes `-WslDistro` (not in the original sketch below)
   because the create-side dispatcher already needs it to avoid
   Docker Desktop's no-bash default-distro trap
-  ([feedback_check_wsl_default_first](../../../../../.claude/projects/c--a-Code-GitHub-Common/memory/feedback_check_wsl_default_first.md));
+  ([feedback_check_wsl_default_first](../../../../../.claude/projects/c--a-Code-Common-Automation/memory/feedback_check_wsl_default_first.md));
   the remove path runs the same bridge and would re-introduce the
   same bug without it. `-Entry` is also accepted for parity with the
   create-side dispatcher and any future per-host invocation logic
@@ -564,7 +564,7 @@ flowchart TD
 
 **Reason:** Final step of feature 03. Up to this point the migration
 honours the
-[don't-mutate-repos-being-archived](../../../../../.claude/projects/c--a-Code-GitHub-Common/memory/feedback_dont_mutate_repos_being_archived.md)
+[don't-mutate-repos-being-archived](../../../../../.claude/projects/c--a-Code-Common-Automation/memory/feedback_dont_mutate_repos_being_archived.md)
 rule — Vm-Users has been completely untouched while both create and
 remove paths exist in parallel. With step 5 validated, the legacy
 repo just needs a visible breadcrumb at the top of its README pointing
