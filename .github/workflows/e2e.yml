@@ -3,10 +3,11 @@ name: E2E
 # Calls the shared E2E workflow in Infrastructure-E2E as a required PR check.
 # Mirrors the Vm-Users gating shape: this repo cannot merge Ansible changes
 # to master without the lifecycle layer (provisioning + users + runner)
-# proving the new code still produces a working, online runner. Once
-# feature 02 ships, the workstation agent defaults to UsersFlow=ansible,
-# so the test that runs here exercises THIS repo's create-users.sh end
-# to end against a real VM.
+# proving the new code still produces a working, online runner. This repo
+# owns BOTH ansible layers (create-users.sh and register-runners.sh), so it
+# pins the ansible scenario via flow-spec. It matches the shared workflow's
+# default today; pinning it keeps this repo's PR on the ansible path even if
+# that default ever changes.
 #
 # The shared workflow handles the GitHub App token mint and the deployment
 # poll. secrets: inherit forwards the upstream GH_APP_* secrets so the
@@ -19,3 +20,5 @@ jobs:
   e2e:
     uses: Klark-Morrigan/Infrastructure-E2E/.github/workflows/e2e.yml@master
     secrets: inherit
+    with:
+      flow-spec: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
