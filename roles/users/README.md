@@ -111,7 +111,7 @@ Three tasks per declared user:
    non-zero exit code so a stuck removal stays loud.
 
 The pre-kill is the substantive departure from
-[Infrastructure-Vm-Users' legacy `remove-users.ps1`](https://github.com/VitaliiAndreev/Infrastructure-Vm-Users)
+[Infrastructure-Vm-Users' legacy `remove-users.ps1`](https://github.com/Klark-Morrigan/Infrastructure-Vm-Users)
 flow, which surfaced an error and moved on when the user had running
 processes, leaving the account stuck. Operator-driven removal is a
 declared act here, and leaving processes alive is the surprising

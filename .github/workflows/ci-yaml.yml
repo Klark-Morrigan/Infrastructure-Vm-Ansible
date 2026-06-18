@@ -14,4 +14,4 @@ on:
 
 jobs:
   ci-yaml:
-    uses: VitaliiAndreev/Common-Automation/.github/workflows/ci-yaml.yml@master
+    uses: Klark-Morrigan/Common-Automation/.github/workflows/ci-yaml.yml@master

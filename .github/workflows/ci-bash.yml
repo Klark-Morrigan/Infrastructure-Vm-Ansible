@@ -14,4 +14,4 @@ on:
 
 jobs:
   ci-bash:
-    uses: VitaliiAndreev/Common-Automation/.github/workflows/ci-bash.yml@master
+    uses: Klark-Morrigan/Common-Automation/.github/workflows/ci-bash.yml@master

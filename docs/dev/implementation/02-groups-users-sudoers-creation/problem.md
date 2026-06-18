@@ -70,7 +70,7 @@ boundary:
 
 | Decision | Value |
 |----------|-------|
-| WSL install policy | Install if not found, skip if found — delegated to [`Assert-Wsl2Ready`](https://github.com/VitaliiAndreev/Common-PowerShell/blob/master/Common.PowerShell/Public/Assert-Wsl2Ready.ps1) in `Common.PowerShell`. That function runs `wsl --install` unconditionally when WSL is not ready (idempotent on Windows 11) and throws a `Wsl2NotReady:` error the operator catches with a reboot prompt. `bootstrap-controller.ps1` uses the standard try/catch pattern documented in `Assert-Wsl2Ready`'s example. |
+| WSL install policy | Install if not found, skip if found — delegated to [`Assert-Wsl2Ready`](https://github.com/Klark-Morrigan/Common-PowerShell/blob/master/Common.PowerShell/Public/Assert-Wsl2Ready.ps1) in `Common.PowerShell`. That function runs `wsl --install` unconditionally when WSL is not ready (idempotent on Windows 11) and throws a `Wsl2NotReady:` error the operator catches with a reboot prompt. `bootstrap-controller.ps1` uses the standard try/catch pattern documented in `Assert-Wsl2Ready`'s example. |
 | Where Ansible runs | Inside WSL2 (Ubuntu). Windows is not an Ansible controller. |
 | Python | A repo-local `.venv/` (gitignored) with pinned `ansible-core` and deps from `requirements.txt`. No system-wide Ansible install. |
 | Galaxy collections | Installed from `requirements.yml` (`ansible.posix`, `community.general` as needed). Pinned by version. |
@@ -125,7 +125,7 @@ all:
 #### CI: YAML and Ansible lint gate
 
 A single reusable-workflow caller (`.github/workflows/ci-yaml.yml`) wires
-the repo into [Common-Automation's `ci-yaml.yml`](https://github.com/VitaliiAndreev/Common-Automation/blob/master/.github/workflows/ci-yaml.yml)
+the repo into [Common-Automation's `ci-yaml.yml`](https://github.com/Klark-Morrigan/Common-Automation/blob/master/.github/workflows/ci-yaml.yml)
 so every PR runs the four shared lint jobs: `actionlint`,
 `action-validator`, `yamllint`, `ansible-lint`. The substrate this
 feature ships (YAML inventory, requirements files, playbooks, roles)

@@ -12,4 +12,4 @@ on:
 
 jobs:
   ci-powershell:
-    uses: VitaliiAndreev/Common-PowerShell/.github/workflows/ci-powershell.yml@master
+    uses: Klark-Morrigan/Common-PowerShell/.github/workflows/ci-powershell.yml@master

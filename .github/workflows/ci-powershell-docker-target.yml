@@ -13,4 +13,4 @@ on:
 
 jobs:
   ci-powershell-docker-target:
-    uses: VitaliiAndreev/Common-PowerShell/.github/workflows/ci-powershell-docker-target.yml@master
+    uses: Klark-Morrigan/Common-PowerShell/.github/workflows/ci-powershell-docker-target.yml@master
