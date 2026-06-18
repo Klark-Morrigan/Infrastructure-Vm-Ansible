@@ -79,11 +79,21 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Progress logger. This helper's stdout is the KEY=value contract the
+# caller captures via command substitution, so every progress line must
+# go to stderr or it would corrupt that contract. Each step below is a
+# pwsh.exe round-trip that runs silently; the tarball cache miss in
+# particular downloads ~100MB with no output, so the steps announce
+# themselves to stderr (which the caller merges 2>&1 and shows).
+# shellcheck disable=SC2312  # date never fails; masking its status is fine here
+log() { printf '[%s] _stage-host-fileserver.sh: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+
 # ---------------------------------------------------------------------------
 # 1. Resolve runner version. The trailing `tail -n1` strips any
 #    chatter pwsh.exe prints before the function's return value (e.g.
 #    progress lines under -v) so only the version reaches stdout.
 # ---------------------------------------------------------------------------
+log "Resolving latest actions/runner version via GitHub API ..."
 runner_version="$(pwsh.exe -NoProfile -NoLogo \
     -File "${script_dir}/_resolve-runner-version.ps1" \
     -Token "${token}" 2>/dev/null \
@@ -99,6 +109,7 @@ fi
 #    future toolchain-delivery feature can stage extra payloads in
 #    the same dir without touching this script.
 # ---------------------------------------------------------------------------
+log "Ensuring runner tarball ${runner_version} is cached (downloads ~100MB on a cache miss) ..."
 tar_path="$(pwsh.exe -NoProfile -NoLogo \
     -File "${script_dir}/_ensure-runner-tarball.ps1" \
     -Version "${runner_version}" 2>/dev/null \
@@ -108,6 +119,7 @@ if [[ -z "${tar_path}" ]]; then
     exit 1
 fi
 staging_dir="$(dirname "${tar_path}")"
+log "Runner tarball ready: ${tar_path}"
 
 # ---------------------------------------------------------------------------
 # 3. Decide where to bind the listener.
@@ -131,6 +143,7 @@ staging_dir="$(dirname "${tar_path}")"
 # ---------------------------------------------------------------------------
 listener_args=(-StagingDir "${staging_dir}")
 if [[ -n "${ROUTER_IP:-}" ]]; then
+    log "Resolving host adapter IP on the router's upstream LAN (ROUTER_IP=${ROUTER_IP}) ..."
     host_ip="$(pwsh.exe -NoProfile -NoLogo -Command \
         "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmSwitchHostIp -VmIpAddress '${ROUTER_IP}'" \
         2>/dev/null | tr -d '\r' | tail -n1)"
@@ -156,6 +169,7 @@ fi
 #    from the helper itself). The `kill -0` check short-circuits the
 #    wait if the helper has already exited.
 # ---------------------------------------------------------------------------
+log "Starting host file server listener ..."
 : > "${listener_log}"
 pwsh.exe -NoProfile -NoLogo \
     -File "${script_dir}/_start-host-file-server.ps1" \

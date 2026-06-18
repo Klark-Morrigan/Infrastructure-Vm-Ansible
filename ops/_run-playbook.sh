@@ -41,6 +41,19 @@ readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
+# Timestamped phase logger. Every phase below this orchestrator drives is
+# silent on its own (vault reads and the KVP/portproxy/staging pwsh.exe
+# round-trips redirect their stdout to files or capture it, and the
+# longest of them - the KVP IP poll and the runner-tarball download -
+# can block for minutes). Without a per-phase marker the operator only
+# sees the caller's "Registering runners ..." line and then nothing, with
+# no way to tell which phase is stuck. The timestamp turns "it's been
+# like this for a long time" into a measurable per-phase duration. stderr
+# (not stdout) so these never pollute a stdout captured by command
+# substitution; the caller merges 2>&1 so they stay visible.
+# shellcheck disable=SC2312  # date never fails; masking its status is fine here
+log() { printf '[%s] _run-playbook.sh: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+
 # ---------------------------------------------------------------------------
 # 1. Argument validation. One positional arg required (the playbook
 #    path); anything after it is forwarded verbatim to ansible-playbook
@@ -144,10 +157,12 @@ source "${script_dir}/_ansible-env.sh"
 provisioner_file="${tmpdir}/provisioner.json"
 users_file="${tmpdir}/users.json"
 
+log "Reading vault secret ${VM_PROVISIONER_VAULT}/${VM_PROVISIONER_SECRET} ..."
 "${script_dir}/_read-vault-config.sh" "${VM_PROVISIONER_VAULT}" "${VM_PROVISIONER_SECRET}" \
     > "${provisioner_file}"
 chmod 600 "${provisioner_file}"
 
+log "Reading vault secret ${VM_USERS_VAULT}/${VM_USERS_SECRET} ..."
 "${script_dir}/_read-vault-config.sh" "${VM_USERS_VAULT}" "${VM_USERS_SECRET}" \
     > "${users_file}"
 chmod 600 "${users_file}"
@@ -161,6 +176,7 @@ host_base_url=""
 runner_version=""
 if [[ "${needs_github_runners}" -eq 1 ]]; then
     runners_file="${tmpdir}/runners.json"
+    log "Reading vault secret ${GITHUB_RUNNERS_VAULT}/${GITHUB_RUNNERS_SECRET} ..."
     "${script_dir}/_read-vault-config.sh" "${GITHUB_RUNNERS_VAULT}" "${GITHUB_RUNNERS_SECRET}" \
         > "${runners_file}"
     chmod 600 "${runners_file}"
@@ -213,10 +229,15 @@ if [[ -n "${router_row}" ]]; then
 
     if [[ -n "${static_router_ip}" ]]; then
         ROUTER_IP="${static_router_ip}"
+        log "Router '${router_vm_name}' static IP from vault: ${ROUTER_IP}"
     else
         # Get-VmKvpIpAddress polls KVP until the router publishes its
         # ext0 IPv4; tail -n1 strips any noise pwsh.exe might emit
         # before the value (status lines, warnings) on slow imports.
+        # This poll blocks with no output until the router boots far
+        # enough to publish KVP - the single most common silent stall in
+        # this flow, so it gets its own before/after markers.
+        log "Resolving router '${router_vm_name}' upstream IP via Hyper-V KVP on switch '${router_switch}' (polls until the router publishes; can take minutes on a cold boot) ..."
         ROUTER_IP="$(pwsh.exe -NoProfile -NoLogo -Command \
             "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmKvpIpAddress -VmName '${router_vm_name}' -SwitchName '${router_switch}'" \
             2>/dev/null | tr -d '\r' | tail -n1)"
@@ -224,6 +245,7 @@ if [[ -n "${router_row}" ]]; then
             echo "_run-playbook.sh: Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'" >&2
             exit 1
         fi
+        log "Router '${router_vm_name}' KVP IP resolved: ${ROUTER_IP}"
     fi
 
     # WSL2-on-Windows portproxy redirect. WSL2 runs as its own
@@ -263,6 +285,7 @@ if [[ -n "${router_row}" ]]; then
     # ICS NAT to work around) and on WSL hosts without a matching
     # portproxy rule (ROUTER_IP stays as it was, direct path).
     if grep -qi microsoft /proc/version 2>/dev/null; then
+        log "WSL detected; discovering host netsh portproxy rule for ${ROUTER_IP}:22 ..."
         portproxy_port="$(pwsh.exe -NoProfile -NoLogo -Command \
             "& netsh interface portproxy show v4tov4 2>\$null | Where-Object { \$_ -match '^(0\.0\.0\.0|127\.0\.0\.1)\s+(\d+)\s+${ROUTER_IP//./\\.}\s+22' } | ForEach-Object { (\$_ -split '\s+' | Where-Object { \$_ })[1] } | Select-Object -First 1" \
             2>/dev/null | tr -d '\r' | tail -n1)"
@@ -313,6 +336,7 @@ fi
 #    injects ansible_ssh_common_args per workload host.
 # ---------------------------------------------------------------------------
 hosts_file="${tmpdir}/hosts.json"
+log "Building Ansible inventory ..."
 "${script_dir}/_build-inventory.sh" < "${provisioner_file}" > "${hosts_file}"
 chmod 600 "${hosts_file}"
 
@@ -334,10 +358,17 @@ chmod 600 "${hosts_file}"
 # ---------------------------------------------------------------------------
 if [[ "${needs_host_file_server}" -eq 1 ]]; then
     listener_log="${tmpdir}/fileserver.out"
+    # stage_out captures the helper's stdout (its KEY=value contract), so
+    # its own progress lines go to stderr and surface here. This step
+    # resolves the runner version, downloads the ~100MB runner tarball on
+    # a cache miss, then starts the listener - the download is the second
+    # most common silent stall after the KVP poll.
+    log "Staging host file server (resolve runner version, cache tarball, start listener) ..."
     stage_out="$("${script_dir}/_stage-host-fileserver.sh" \
         --provisioner-config "${provisioner_file}" \
         --github-token       "${github_token}" \
         --listener-log       "${listener_log}")"
+    log "Host file server staged."
 
     runner_version="$(grep '^RUNNER_VERSION=' <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
     host_base_url="$(grep  '^BASE_URL='        <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
@@ -375,6 +406,7 @@ if [[ -n "${runners_file}" ]]; then
     fi
 fi
 
+log "Composing extra-vars ..."
 "${script_dir}/_build-extra-vars.sh" "${extra_vars_args[@]}" \
     > "${extra_vars_file}"
 chmod 600 "${extra_vars_file}"
@@ -385,6 +417,7 @@ chmod 600 "${extra_vars_file}"
 #    path so operator flags reach ansible-playbook unmodified.
 # ---------------------------------------------------------------------------
 cd "${repo_root}"
+log "Dispatching ansible-playbook ${playbook_path} (PLAY/TASK output follows) ..."
 ansible-playbook \
     -i "${hosts_file}" \
     --extra-vars "@${extra_vars_file}" \
