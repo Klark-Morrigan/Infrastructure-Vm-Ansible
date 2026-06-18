@@ -13,6 +13,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 # ---------------------------------------------------------------------------
 # Vault contract. Hardcoded to match Infrastructure-Secrets convention.
 # Pinning both ends to constants makes a mismatch a code-review issue
@@ -29,7 +32,7 @@ readonly GITHUB_RUNNERS_VAULT="GitHubRunners"
 # silently fall through to a default name and collide with another
 # lifecycle's data.
 if [[ -z "${SECRET_SUFFIX:-}" ]]; then
-    echo "_run-playbook.sh: SECRET_SUFFIX must be set (e.g. Production or the caller's lifecycle label)" >&2
+    log_err "SECRET_SUFFIX must be set (e.g. Production or the caller's lifecycle label)"
     exit 2
 fi
 readonly VM_PROVISIONER_SECRET="VmProvisionerConfig-${SECRET_SUFFIX}"
@@ -41,27 +44,20 @@ readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
-# _to_windows_path is a generic helper shared from Common-Automation.
-# Sourced before the EXIT trap is installed because cleanup() calls it
-# to point pwsh.exe at the stop helper. Resolved from the sibling
-# checkout by default; COMMON_AUTOMATION_ROOT lets the bats suite point
-# the source at a transplanted copy (see the helper's own header).
-common_automation_root="${COMMON_AUTOMATION_ROOT:-$(cd "${script_dir}/../../Common-Automation" && pwd)}"
-# shellcheck source=/dev/null
-source "${common_automation_root}/scripts/_to-windows-path.sh"
+# _to_windows_path (shared from Common-Automation) is sourced before the
+# EXIT trap is installed because cleanup() calls it to point pwsh.exe at
+# the stop helper. The imports/ adapter owns the cross-repo resolution.
+# shellcheck source=ops/imports/_to-windows-path.sh
+source "${BASH_SOURCE[0]%/*}/imports/_to-windows-path.sh"
 
-# Timestamped phase logger. Every phase below this orchestrator drives is
-# silent on its own (vault reads and the KVP/portproxy/staging pwsh.exe
-# round-trips redirect their stdout to files or capture it, and the
-# longest of them - the KVP IP poll and the runner-tarball download -
-# can block for minutes). Without a per-phase marker the operator only
-# sees the caller's "Registering runners ..." line and then nothing, with
-# no way to tell which phase is stuck. The timestamp turns "it's been
-# like this for a long time" into a measurable per-phase duration. stderr
-# (not stdout) so these never pollute a stdout captured by command
-# substitution; the caller merges 2>&1 so they stay visible.
-# shellcheck disable=SC2312  # date never fails; masking its status is fine here
-log() { printf '[%s] _run-playbook.sh: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+# Why this orchestrator narrates each phase via log_info (from imports/_log.sh):
+# every phase below is silent on its own - vault reads and the
+# KVP/portproxy/staging pwsh.exe round-trips capture or redirect their
+# stdout, and the longest of them (the KVP IP poll, the runner-tarball
+# download) can block for minutes. Without a per-phase marker the
+# operator sees the caller's "Registering runners ..." line and then
+# nothing, unable to tell which phase is stuck; the timestamp turns that
+# stall into a measurable per-phase duration.
 
 # ---------------------------------------------------------------------------
 # 1. Argument validation. One positional arg required (the playbook
@@ -78,7 +74,7 @@ playbook_path="$1"
 shift
 
 if [[ ! -f "${repo_root}/${playbook_path}" && ! -f "${playbook_path}" ]]; then
-    echo "_run-playbook.sh: playbook not found: ${playbook_path}" >&2
+    log_err "playbook not found: ${playbook_path}"
     exit 2
 fi
 
@@ -88,7 +84,7 @@ fi
 needs_github_runners=0
 if [[ "${NEEDS_GITHUB_RUNNERS:-0}" == "1" ]]; then
     if [[ -z "${GH_TOKEN:-}" ]]; then
-        echo "_run-playbook.sh: NEEDS_GITHUB_RUNNERS=1 requires GH_TOKEN env var" >&2
+        log_err "NEEDS_GITHUB_RUNNERS=1 requires GH_TOKEN env var"
         exit 2
     fi
     needs_github_runners=1
@@ -104,7 +100,7 @@ fi
 needs_host_file_server=0
 if [[ "${NEEDS_HOST_FILE_SERVER:-0}" == "1" ]]; then
     if [[ "${needs_github_runners}" -ne 1 ]]; then
-        echo "_run-playbook.sh: NEEDS_HOST_FILE_SERVER=1 requires NEEDS_GITHUB_RUNNERS=1" >&2
+        log_err "NEEDS_HOST_FILE_SERVER=1 requires NEEDS_GITHUB_RUNNERS=1"
         exit 2
     fi
     needs_host_file_server=1
@@ -147,7 +143,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 venv_activate="${repo_root}/.venv/bin/activate"
 if [[ ! -f "${venv_activate}" ]]; then
-    echo "_run-playbook.sh: .venv missing - run ops/bootstrap-controller.{ps1,sh} first" >&2
+    log_err ".venv missing - run ops/bootstrap-controller.{ps1,sh} first"
     exit 1
 fi
 # shellcheck disable=SC1090  # path is computed at runtime
@@ -168,12 +164,12 @@ source "${script_dir}/_ansible-env.sh"
 provisioner_file="${tmpdir}/provisioner.json"
 users_file="${tmpdir}/users.json"
 
-log "Reading vault secret ${VM_PROVISIONER_VAULT}/${VM_PROVISIONER_SECRET} ..."
+log_info "Reading vault secret ${VM_PROVISIONER_VAULT}/${VM_PROVISIONER_SECRET} ..."
 "${script_dir}/_read-vault-config.sh" "${VM_PROVISIONER_VAULT}" "${VM_PROVISIONER_SECRET}" \
     > "${provisioner_file}"
 chmod 600 "${provisioner_file}"
 
-log "Reading vault secret ${VM_USERS_VAULT}/${VM_USERS_SECRET} ..."
+log_info "Reading vault secret ${VM_USERS_VAULT}/${VM_USERS_SECRET} ..."
 "${script_dir}/_read-vault-config.sh" "${VM_USERS_VAULT}" "${VM_USERS_SECRET}" \
     > "${users_file}"
 chmod 600 "${users_file}"
@@ -187,7 +183,7 @@ host_base_url=""
 runner_version=""
 if [[ "${needs_github_runners}" -eq 1 ]]; then
     runners_file="${tmpdir}/runners.json"
-    log "Reading vault secret ${GITHUB_RUNNERS_VAULT}/${GITHUB_RUNNERS_SECRET} ..."
+    log_info "Reading vault secret ${GITHUB_RUNNERS_VAULT}/${GITHUB_RUNNERS_SECRET} ..."
     "${script_dir}/_read-vault-config.sh" "${GITHUB_RUNNERS_VAULT}" "${GITHUB_RUNNERS_SECRET}" \
         > "${runners_file}"
     chmod 600 "${runners_file}"
@@ -252,13 +248,13 @@ if [[ -n "${router_row}" ]]; then
     ROUTER_PASSWORD="$(printf '%s' "${router_row}" | jq -r '.password // empty')"
     static_router_ip="$(printf '%s' "${router_row}" | jq -r '.ipAddress // empty')"
     if [[ -z "${router_vm_name}" || -z "${router_switch}" || -z "${ROUTER_USERNAME}" || -z "${ROUTER_PASSWORD}" ]]; then
-        echo "_run-playbook.sh: router row missing required fields (vmName/externalSwitchName/username/password)" >&2
+        log_err "router row missing required fields (vmName/externalSwitchName/username/password)"
         exit 1
     fi
 
     if [[ -n "${static_router_ip}" ]]; then
         ROUTER_IP="${static_router_ip}"
-        log "Router '${router_vm_name}' static IP from vault: ${ROUTER_IP}"
+        log_info "Router '${router_vm_name}' static IP from vault: ${ROUTER_IP}"
     else
         # Get-VmKvpIpAddress polls KVP until the router publishes its
         # ext0 IPv4; tail -n1 strips any noise pwsh.exe might emit
@@ -266,15 +262,15 @@ if [[ -n "${router_row}" ]]; then
         # This poll blocks with no output until the router boots far
         # enough to publish KVP - the single most common silent stall in
         # this flow, so it gets its own before/after markers.
-        log "Resolving router '${router_vm_name}' upstream IP via Hyper-V KVP on switch '${router_switch}' (polls until the router publishes; can take minutes on a cold boot) ..."
+        log_info "Resolving router '${router_vm_name}' upstream IP via Hyper-V KVP on switch '${router_switch}' (polls until the router publishes; can take minutes on a cold boot) ..."
         ROUTER_IP="$(pwsh.exe -NoProfile -NoLogo -Command \
             "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmKvpIpAddress -VmName '${router_vm_name}' -SwitchName '${router_switch}'" \
             2>/dev/null | tr -d '\r' | tail -n1)"
         if [[ -z "${ROUTER_IP}" ]]; then
-            echo "_run-playbook.sh: Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'" >&2
+            log_err "Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'"
             exit 1
         fi
-        log "Router '${router_vm_name}' KVP IP resolved: ${ROUTER_IP}"
+        log_info "Router '${router_vm_name}' KVP IP resolved: ${ROUTER_IP}"
     fi
 
     # ROUTER_SSH_HOST defaults to the router's true LAN IP: on direct
@@ -324,7 +320,7 @@ if [[ -n "${router_row}" ]]; then
     # portproxy rule (ROUTER_SSH_HOST stays equal to ROUTER_IP, the
     # direct path).
     if grep -qi microsoft /proc/version 2>/dev/null; then
-        log "WSL detected; discovering host netsh portproxy rule for ${ROUTER_IP}:22 ..."
+        log_info "WSL detected; discovering host netsh portproxy rule for ${ROUTER_IP}:22 ..."
         portproxy_port="$(pwsh.exe -NoProfile -NoLogo -Command \
             "& netsh interface portproxy show v4tov4 2>\$null | Where-Object { \$_ -match '^(0\.0\.0\.0|127\.0\.0\.1)\s+(\d+)\s+${ROUTER_IP//./\\.}\s+22' } | ForEach-Object { (\$_ -split '\s+' | Where-Object { \$_ })[1] } | Select-Object -First 1" \
             2>/dev/null | tr -d '\r' | tail -n1)"
@@ -375,7 +371,7 @@ fi
 #    injects ansible_ssh_common_args per workload host.
 # ---------------------------------------------------------------------------
 hosts_file="${tmpdir}/hosts.json"
-log "Building Ansible inventory ..."
+log_info "Building Ansible inventory ..."
 "${script_dir}/_build-inventory.sh" < "${provisioner_file}" > "${hosts_file}"
 chmod 600 "${hosts_file}"
 
@@ -402,19 +398,19 @@ if [[ "${needs_host_file_server}" -eq 1 ]]; then
     # resolves the runner version, downloads the ~100MB runner tarball on
     # a cache miss, then starts the listener - the download is the second
     # most common silent stall after the KVP poll.
-    log "Staging host file server (resolve runner version, cache tarball, start listener) ..."
+    log_info "Staging host file server (resolve runner version, cache tarball, start listener) ..."
     stage_out="$("${script_dir}/_stage-host-fileserver.sh" \
         --provisioner-config "${provisioner_file}" \
         --github-token       "${github_token}" \
         --listener-log       "${listener_log}")"
-    log "Host file server staged."
+    log_info "Host file server staged."
 
     runner_version="$(grep '^RUNNER_VERSION=' <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
     host_base_url="$(grep  '^BASE_URL='        <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
     host_fs_pid="$(grep    '^PID='             <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
 
     if [[ -z "${runner_version}" || -z "${host_base_url}" || -z "${host_fs_pid}" ]]; then
-        echo "_run-playbook.sh: staging helper did not return RUNNER_VERSION/BASE_URL/PID" >&2
+        log_err "staging helper did not return RUNNER_VERSION/BASE_URL/PID"
         exit 1
     fi
 fi
@@ -445,7 +441,7 @@ if [[ -n "${runners_file}" ]]; then
     fi
 fi
 
-log "Composing extra-vars ..."
+log_info "Composing extra-vars ..."
 "${script_dir}/_build-extra-vars.sh" "${extra_vars_args[@]}" \
     > "${extra_vars_file}"
 chmod 600 "${extra_vars_file}"
@@ -456,7 +452,7 @@ chmod 600 "${extra_vars_file}"
 #    path so operator flags reach ansible-playbook unmodified.
 # ---------------------------------------------------------------------------
 cd "${repo_root}"
-log "Dispatching ansible-playbook ${playbook_path} (PLAY/TASK output follows) ..."
+log_info "Dispatching ansible-playbook ${playbook_path} (PLAY/TASK output follows) ..."
 ansible-playbook \
     -i "${hosts_file}" \
     --extra-vars "@${extra_vars_file}" \

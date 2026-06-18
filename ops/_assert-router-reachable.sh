@@ -21,15 +21,18 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 router_ip="${1:?_assert-router-reachable.sh: router IP required}"
 probe_port="${2:-22}"
 
-echo "_assert-router-reachable.sh: probing router reachability at ${router_ip}:${probe_port} ..."
+log_info "probing router reachability at ${router_ip}:${probe_port} ..."
 
 # Segment 1: TCP. A failure here means the connection never reaches the
 # router sshd at all (the relay is not delivering).
 if ! nc -z -w5 "${router_ip}" "${probe_port}" 2>/dev/null; then
-    echo "_assert-router-reachable.sh: ROUTER UNREACHABLE - TCP connect to ${router_ip}:${probe_port} failed." >&2
+    log_err "ROUTER UNREACHABLE - TCP connect to ${router_ip}:${probe_port} failed."
     echo "  Segment: controller -> host portproxy -> router. The relay is not" >&2
     echo "  delivering (the router sshd never sees the connection). This is the" >&2
     echo "  portproxy/relay or router-readiness segment, not Ansible." >&2
@@ -45,11 +48,11 @@ banner="$(ssh -o BatchMode=yes -o ConnectTimeout=5 \
     -p "${probe_port}" "sshprobe@${router_ip}" true 2>&1 || true)"
 if printf '%s' "${banner}" \
     | grep -qiE 'timed out|banner exchange|connection refused|no route to host'; then
-    echo "_assert-router-reachable.sh: ROUTER SSH BANNER FAILED at ${router_ip}:${probe_port}:" >&2
+    log_err "ROUTER SSH BANNER FAILED at ${router_ip}:${probe_port}:"
     printf '  %s\n' "${banner}" >&2
     echo "  Segment: TCP opened but no SSH banner returned - the relay is half-open" >&2
     echo "  or the router sshd is not answering. Not an Ansible fault." >&2
     exit 1
 fi
 
-echo "_assert-router-reachable.sh: router reachable (TCP + SSH banner OK at ${router_ip}:${probe_port})."
+log_info "router reachable (TCP + SSH banner OK at ${router_ip}:${probe_port})."

@@ -40,6 +40,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 # ---------------------------------------------------------------------------
 # 1. Slurp stdin. The whole document is small (an array of VM defs);
 #    reading it into memory and validating it in one jq invocation is
@@ -49,7 +52,7 @@ set -euo pipefail
 input="$(cat)"
 
 if [[ -z "${input}" ]]; then
-    echo "_build-inventory.sh: no input on stdin" >&2
+    log_err "no input on stdin"
     exit 2
 fi
 
@@ -84,7 +87,7 @@ if ! err="$(printf '%s' "${input}" | jq -r '
         | .[]
     end
 ' 2>&1)"; then
-    echo "_build-inventory.sh: jq failed validating input: ${err}" >&2
+    log_err "jq failed validating input: ${err}"
     exit 1
 fi
 

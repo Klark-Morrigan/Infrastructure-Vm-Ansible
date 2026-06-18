@@ -23,6 +23,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 if [[ -z "${GH_TOKEN:-}" ]]; then
     # Refuse to prompt when stdin is not a terminal. Unattended callers
     # (the E2E agent driving this via `wsl -- ...`) must supply GH_TOKEN
@@ -31,7 +34,7 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
     # block forever on a prompt no one can answer. Failing fast turns
     # that silent hang into an immediate, actionable error.
     if [[ ! -t 0 ]]; then
-        echo 'register-runners.sh: GH_TOKEN must be set for unattended use (no TTY to prompt on).' >&2
+        log_err 'GH_TOKEN must be set for unattended use (no TTY to prompt on).'
         echo '  When invoked via wsl, ensure GH_TOKEN is forwarded through WSLENV.' >&2
         exit 2
     fi
@@ -41,7 +44,7 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
     read -rsp 'GitHub token: ' GH_TOKEN
     echo
     if [[ -z "${GH_TOKEN}" ]]; then
-        echo 'GitHub token required' >&2
+        log_err 'GitHub token required'
         exit 2
     fi
 fi

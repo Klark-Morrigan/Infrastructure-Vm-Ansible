@@ -19,6 +19,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 # ---------------------------------------------------------------------------
 # 1. Argument validation. Both vault and secret are required - guessing
 #    either is worse than failing fast.
@@ -54,7 +57,7 @@ if ! raw="$(pwsh.exe -NoProfile -NonInteractive -Command \
      Use-MicrosoftPowerShellSecretStoreProvider; \
      Get-InfrastructureSecret -VaultName '${VAULT_NAME}' -SecretName '${SECRET_NAME}' | Out-String" \
     2>&1)"; then
-    echo "_read-vault-config.sh: pwsh.exe failed reading ${VAULT_NAME}/${SECRET_NAME}: ${raw}" >&2
+    log_err "pwsh.exe failed reading ${VAULT_NAME}/${SECRET_NAME}: ${raw}"
     exit 1
 fi
 
@@ -77,12 +80,12 @@ raw="${raw%$'\n'}"
 #    has to parse this script's stderr to know what broke.
 # ---------------------------------------------------------------------------
 if [[ -z "${raw}" ]]; then
-    echo "_read-vault-config.sh: empty payload for ${VAULT_NAME}/${SECRET_NAME}" >&2
+    log_err "empty payload for ${VAULT_NAME}/${SECRET_NAME}"
     exit 1
 fi
 
 if ! printf '%s' "${raw}" | jq empty >/dev/null 2>&1; then
-    echo "_read-vault-config.sh: payload for ${VAULT_NAME}/${SECRET_NAME} is not valid JSON" >&2
+    log_err "payload for ${VAULT_NAME}/${SECRET_NAME} is not valid JSON"
     exit 1
 fi
 

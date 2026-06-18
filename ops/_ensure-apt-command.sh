@@ -9,6 +9,9 @@
 # failure, which is the desired fail-fast behaviour from inside a
 # bootstrap pipeline.
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 # ensure_apt_command <cmd> <pkg> [pkg...]
 #
 # Idempotent presence-or-install gate. If <cmd> is already on PATH,
@@ -36,6 +39,6 @@ ensure_apt_command() {
         fi
     fi
 
-    echo "$cmd not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y ${pkgs[*]}" >&2
+    log_err "$cmd not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y ${pkgs[*]}"
     exit 1
 }

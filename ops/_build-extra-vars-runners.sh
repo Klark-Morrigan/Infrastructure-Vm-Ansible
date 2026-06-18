@@ -33,6 +33,8 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
 # shellcheck source=ops/_validate-extra-vars-input.sh
 source "${BASH_SOURCE[0]%/*}/_validate-extra-vars-input.sh"
 # shellcheck source=ops/_die-on-unknown-flag.sh
@@ -76,7 +78,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            _die_on_unknown_flag _build-extra-vars-runners.sh "$1"
+            _die_on_unknown_flag "$1"
             ;;
     esac
 done
@@ -91,30 +93,26 @@ fi
 # drop one half of the runner_binary download contract, so reject
 # any partial set here rather than emit a half-formed extra-vars doc.
 if [[ "${host_base_url_set}" -ne "${runner_version_set}" ]]; then
-    echo "_build-extra-vars-runners.sh: --host-base-url and --runner-version" \
-         "must be supplied together" >&2
+    log_err "--host-base-url and --runner-version must be supplied together"
     exit 2
 fi
 
 if [[ -z "${token}" ]]; then
-    echo "_build-extra-vars-runners.sh: --github-token requires a non-empty value" >&2
+    log_err "--github-token requires a non-empty value"
     exit 2
 fi
 
 if [[ "${host_base_url_set}" -eq 1 && -z "${host_base_url}" ]]; then
-    echo "_build-extra-vars-runners.sh: --host-base-url requires a non-empty value" >&2
+    log_err "--host-base-url requires a non-empty value"
     exit 2
 fi
 
 if [[ "${runner_version_set}" -eq 1 && -z "${runner_version}" ]]; then
-    echo "_build-extra-vars-runners.sh: --runner-version requires a non-empty value" >&2
+    log_err "--runner-version requires a non-empty value"
     exit 2
 fi
 
-_validate_extra_vars_input \
-    _build-extra-vars-runners.sh \
-    --runners-config \
-    "${runners_path}"
+_validate_extra_vars_input --runners-config "${runners_path}"
 
 # Build the object in two steps so the file-server pair is genuinely
 # absent (not present-as-empty-string) when the caller omits it.

@@ -29,6 +29,11 @@ setup() {
 
     cp "${REPO_ROOT}/ops/deregister-runners.sh" "${TEST_REPO}/ops/"
     chmod +x "${TEST_REPO}/ops/deregister-runners.sh"
+    # The entry sources ops/imports/_log.sh (cross-repo logger adapter) for
+    # its log_err helper; copy the imports/ folder so the transplanted
+    # script's source resolves. The adapter loads scripts/log.sh from the
+    # COMMON_AUTOMATION_ROOT stub _bats_init_temp stands up.
+    cp -r "${REPO_ROOT}/ops/imports" "${TEST_REPO}/ops/"
 
     # Stub _run-playbook.sh records the env and argv it was invoked
     # with so the entry's prompt/export/translation contract can be

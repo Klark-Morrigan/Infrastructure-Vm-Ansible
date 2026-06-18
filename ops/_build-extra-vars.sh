@@ -31,6 +31,8 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
 # shellcheck source=ops/_die-on-unknown-flag.sh
 source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
 
@@ -85,7 +87,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            _die_on_unknown_flag _build-extra-vars.sh "$1"
+            _die_on_unknown_flag "$1"
             ;;
     esac
 done
@@ -107,8 +109,7 @@ runners_pair_set=0
 [[ "${token_set}" -eq 1 ]] && runners_pair_set=$(( runners_pair_set + 1 ))
 
 if [[ "${runners_pair_set}" -eq 1 ]]; then
-    echo "_build-extra-vars.sh: --runners-config and --github-token" \
-         "must be supplied together" >&2
+    log_err "--runners-config and --github-token must be supplied together"
     exit 2
 fi
 
@@ -117,8 +118,7 @@ fileserver_pair_set=0
 [[ "${runner_version_set}" -eq 1 ]] && fileserver_pair_set=$(( fileserver_pair_set + 1 ))
 
 if [[ "${fileserver_pair_set}" -eq 1 ]]; then
-    echo "_build-extra-vars.sh: --host-base-url and --runner-version" \
-         "must be supplied together" >&2
+    log_err "--host-base-url and --runner-version must be supplied together"
     exit 2
 fi
 
@@ -126,8 +126,7 @@ fi
 # carries the tarball download URL the runner_binary role consumes,
 # and that role only runs when the runners config is on hand.
 if [[ "${fileserver_pair_set}" -eq 2 && "${runners_pair_set}" -ne 2 ]]; then
-    echo "_build-extra-vars.sh: --host-base-url / --runner-version require" \
-         "--runners-config and --github-token" >&2
+    log_err "--host-base-url / --runner-version require --runners-config and --github-token"
     exit 2
 fi
 

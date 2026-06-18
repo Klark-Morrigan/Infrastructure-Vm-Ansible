@@ -29,7 +29,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            _die_on_unknown_flag _build-extra-vars-inventory.sh "$1"
+            _die_on_unknown_flag "$1"
             ;;
     esac
 done
@@ -39,10 +39,7 @@ if [[ -z "${provisioner_path}" ]]; then
     exit 2
 fi
 
-_validate_extra_vars_input \
-    _build-extra-vars-inventory.sh \
-    --provisioner-config \
-    "${provisioner_path}"
+_validate_extra_vars_input --provisioner-config "${provisioner_path}"
 
 # --slurpfile loads the document as a one-element array; `$p[0]`
 # extracts the document so it nests directly under the canonical key.

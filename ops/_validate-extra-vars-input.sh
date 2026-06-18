@@ -11,22 +11,24 @@
 #
 # Caller pattern:
 #   source "${BASH_SOURCE[0]%/*}/_validate-extra-vars-input.sh"
-#   _validate_extra_vars_input \
-#       _build-extra-vars-inventory.sh \
-#       --provisioner-config \
-#       "${provisioner_path}"
+#   _validate_extra_vars_input --provisioner-config "${provisioner_path}"
+#
+# The script name in the message is supplied by the shared logger
+# (BASH_SOURCE[-1]), so callers pass only the flag and the path.
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 _validate_extra_vars_input() {
-    local script_name="$1"
-    local flag_name="$2"
-    local path="$3"
+    local flag_name="$1"
+    local path="$2"
 
     if [[ ! -f "${path}" ]]; then
-        echo "${script_name}: ${flag_name} file not found: ${path}" >&2
+        log_err "${flag_name} file not found: ${path}"
         exit 1
     fi
 
     if ! jq empty "${path}" >/dev/null 2>&1; then
-        echo "${script_name}: ${flag_name} is not valid JSON: ${path}" >&2
+        log_err "${flag_name} is not valid JSON: ${path}"
         exit 1
     fi
 }

@@ -36,6 +36,14 @@ setup() {
     # in this test context (no ansible-playbook actually reads it).
     cp "${REPO_ROOT}/ops/_run-playbook.sh"      "${TEST_REPO}/ops/"
     cp "${REPO_ROOT}/ops/_ansible-env.sh"       "${TEST_REPO}/ops/"
+    # ops/imports/ holds the cross-repo adapter shims the orchestrator
+    # sources (_log.sh for log_info/log_err, _to-windows-path.sh for
+    # cleanup's pwsh path) plus their shared root resolver - copy the whole
+    # folder so the transplanted script's `source ${script_dir}/imports/*`
+    # lookups resolve. The adapters load scripts/log.sh and
+    # scripts/_to-windows-path.sh from the COMMON_AUTOMATION_ROOT stub
+    # _bats_init_temp / this setup stand up.
+    cp -r "${REPO_ROOT}/ops/imports"            "${TEST_REPO}/ops/"
     cp "${REPO_ROOT}/Tests/playbooks/_noop.yml" "${TEST_REPO}/playbooks/"
     chmod +x "${TEST_REPO}/ops/_run-playbook.sh"
 

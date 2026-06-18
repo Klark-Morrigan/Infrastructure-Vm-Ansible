@@ -28,6 +28,9 @@ cd "$repo_root"
 
 venv_dir="$repo_root/.venv"
 
+# shellcheck source=ops/imports/_log.sh
+source "$script_dir/imports/_log.sh"
+
 # shellcheck source=ops/_ansible-env.sh
 source "$script_dir/_ansible-env.sh"
 
@@ -60,13 +63,13 @@ if ! python3 -c 'import ensurepip' 2>/dev/null; then
     # metapackage is absent on a minimal image.
     echo "Installing python3-venv (binary alone is not enough; ensurepip missing) ..."
     if ! (command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1); then
-        echo "ensurepip missing and sudo/apt-get unavailable. Install it with: sudo apt-get update && sudo apt-get install -y python3-venv" >&2
+        log_err "ensurepip missing and sudo/apt-get unavailable. Install it with: sudo apt-get update && sudo apt-get install -y python3-venv"
         exit 1
     fi
     sudo apt-get update
     sudo apt-get install -y python3-venv
     if ! python3 -c 'import ensurepip' 2>/dev/null; then
-        echo "python3-venv install completed but ensurepip still missing - inspect apt output above." >&2
+        log_err "python3-venv install completed but ensurepip still missing - inspect apt output above."
         exit 1
     fi
 fi
@@ -146,7 +149,7 @@ fi
 #    the bootstrap looks. Fail here, not later.
 # ---------------------------------------------------------------------------
 if ! command -v pwsh.exe >/dev/null 2>&1; then
-    echo "pwsh.exe not reachable from WSL. Install PowerShell 7+ on the Windows host so the vault bridge can read SecretManagement secrets." >&2
+    log_err "pwsh.exe not reachable from WSL. Install PowerShell 7+ on the Windows host so the vault bridge can read SecretManagement secrets."
     exit 1
 fi
 
