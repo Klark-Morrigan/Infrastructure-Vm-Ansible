@@ -14,6 +14,7 @@ reconciles) and points here for the shared posture.
 - [`gather_facts: true`](#gather_facts-true)
 - [`any_errors_fatal: false`](#any_errors_fatal-false)
 - [Tags mirror role names](#tags-mirror-role-names)
+- [`acl` prerequisite for unprivileged become](#acl-prerequisite-for-unprivileged-become)
 - [Role order lives in the playbook, not meta deps](#role-order-lives-in-the-playbook-not-meta-deps)
 
 ## `hosts: vm_provisioner_hosts`
@@ -52,6 +53,34 @@ role's preconditions unsatisfied, and the role will fail loudly rather
 than silently mis-reconcile. The remove direction is symmetric:
 skipping `users` while running `groups` hits the role's
 non-empty-group skip path, which is the intended safety net.
+
+## `acl` prerequisite for unprivileged become
+
+The runner playbooks ([register-runners.yml](../../playbooks/register-runners.yml)
+and [deregister-runners.yml](../../playbooks/deregister-runners.yml)) drive
+roles that become an unprivileged service user: `runner_binary` downloads
+the tarball as the runner user, and `runner_registration` runs `config.sh`
+as the runner user (the actions/runner refuses to configure as root). When
+Ansible becomes an unprivileged user from a non-root SSH login it grants
+that user access to its temporary files via `setfacl`, which lives in the
+`acl` package. A minimal Ubuntu install omits it; without it Ansible falls
+back to an NFSv4-style `chmod A+user:<user>:rx:allow` that GNU coreutils
+rejects, and every unprivileged-become task fails with "Failed to set
+permissions on the temporary files Ansible needs to create when becoming an
+unprivileged user".
+
+Both per-VM plays therefore run a `pre_tasks` step
+([tasks/_ensure-acl-present.yml](../../playbooks/tasks/_ensure-acl-present.yml))
+that installs `acl`. It carries `tags: always` so it survives a narrowed
+`--tags <role-name>` run - unlike the roles themselves, which deliberately
+do not coordinate across tag scopes (see above), this prerequisite must
+run whenever any of them does.
+
+This only matters in production, where the SSH connection user is the
+unprivileged deploy user. The molecule scenarios connect as root
+(`ansible_user: root`), so Ansible chmods the temp files directly and skips
+ACLs - which is why they pass without the package and cannot catch its
+absence.
 
 ## Role order lives in the playbook, not meta deps
 

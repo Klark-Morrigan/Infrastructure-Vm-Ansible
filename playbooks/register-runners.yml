@@ -22,6 +22,13 @@
   hosts: vm_provisioner_hosts
   gather_facts: true
   any_errors_fatal: false
+  pre_tasks:
+    # tags: always so the prerequisite still runs when an operator
+    # narrows the run to a single role tag (e.g. --tags runner_binary);
+    # every role below relies on becoming the unprivileged runner user.
+    - name: Ensure host prerequisites for unprivileged become
+      ansible.builtin.import_tasks: tasks/_ensure-acl-present.yml
+      tags: always
   tasks:
     - name: Cache and extract the runner tarball
       ansible.builtin.import_role:

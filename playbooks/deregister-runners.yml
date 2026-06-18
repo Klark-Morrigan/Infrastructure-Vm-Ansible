@@ -105,6 +105,14 @@
   # should not strand the rest. Same shared posture remove-users.yml
   # carries.
   any_errors_fatal: false
+  pre_tasks:
+    # runner_registration's remove path runs config.sh as the
+    # unprivileged runner user, so the same acl prerequisite the
+    # register flow needs applies here. tags: always keeps it active
+    # under a narrowed --tags run.
+    - name: Ensure host prerequisites for unprivileged become
+      ansible.builtin.import_tasks: tasks/_ensure-acl-present.yml
+      tags: always
   tasks:
     - name: Stop and uninstall the runner systemd service
       ansible.builtin.import_role:
