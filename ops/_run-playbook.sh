@@ -209,14 +209,32 @@ fi
 #     Find the router row in VmProvisionerConfig (kind == 'router'),
 #     resolve its upstream IPv4 via Hyper-V KVP when externalDhcp=true
 #     leaves ipAddress empty in the vault, and export ROUTER_* env
-#     vars consumed by the downstream helpers:
+#     vars consumed by the downstream helpers.
 #
-#       - _build-inventory.sh    : injects ansible_ssh_common_args
-#                                  per workload (ProxyCommand+sshpass).
+#     Two distinct addresses are kept separate on purpose:
+#
+#       ROUTER_IP       the router's TRUE upstream LAN IP (its identity
+#                       on the Hyper-V switch, e.g. 192.168.137.10).
+#                       NEVER rewritten - it is a topological fact.
+#       ROUTER_SSH_HOST the address the controller actually opens an SSH
+#                       connection to. Equals ROUTER_IP on direct hosts;
+#                       under WSL it is rewritten to the host portproxy
+#                       endpoint (the WSL adapter cannot reach the
+#                       Internal-switch subnet through ICS NAT).
+#
+#     Consumers:
+#
+#       - _build-inventory.sh    : injects ansible_ssh_common_args per
+#                                  workload (ProxyCommand+sshpass) aimed
+#                                  at ROUTER_SSH_HOST - the SSH endpoint.
+#       - _assert-router-reachable.sh : probes ROUTER_SSH_HOST.
 #       - _stage-host-fileserver.sh : binds the listener on the host
-#                                  adapter sharing the router's
-#                                  upstream /24 (Get-VmSwitchHostIp on
-#                                  ROUTER_IP).
+#                                  adapter sharing the router's upstream
+#                                  /24 (Get-VmSwitchHostIp on ROUTER_IP,
+#                                  the topological IP - NOT the SSH
+#                                  endpoint, which under WSL points at
+#                                  the host's own WSL adapter and would
+#                                  resolve no Hyper-V switch adapter).
 #       - ansible-playbook'd ssh : reads $SSHPASS at sshpass -e time
 #                                  to authenticate to the router
 #                                  without putting the password in
@@ -259,6 +277,13 @@ if [[ -n "${router_row}" ]]; then
         log "Router '${router_vm_name}' KVP IP resolved: ${ROUTER_IP}"
     fi
 
+    # ROUTER_SSH_HOST defaults to the router's true LAN IP: on direct
+    # (non-WSL) hosts the SSH endpoint and the topological IP are one and
+    # the same. The WSL branch below overrides only this SSH endpoint,
+    # leaving ROUTER_IP untouched for the Get-VmSwitchHostIp lookup in
+    # _stage-host-fileserver.sh.
+    ROUTER_SSH_HOST="${ROUTER_IP}"
+
     # WSL2-on-Windows portproxy redirect. WSL2 runs as its own
     # Hyper-V guest with its own NAT and cannot reach the host's
     # Internal-switch subnet (e.g. 192.168.137.0/24, the ICS-served
@@ -266,8 +291,10 @@ if [[ -n "${router_row}" ]]; then
     # Vm-Provisioner ensures a host-side netsh portproxy rule
     # forwarding <listenAddr>:<port> -> <routerIp>:22 at provisioning
     # time; here we discover that rule from inside WSL (via
-    # pwsh.exe -> netsh) and rewrite ROUTER_IP/ROUTER_PORT to point
-    # at it.
+    # pwsh.exe -> netsh) and point ROUTER_SSH_HOST/ROUTER_PORT at it.
+    # ROUTER_IP itself is deliberately NOT rewritten - it remains the
+    # router's upstream LAN IP so _stage-host-fileserver.sh can resolve
+    # the host's Internal-switch adapter from it.
     #
     # Reaching the host portproxy from WSL has two cases:
     #   - WSL mirrored networking mode: 127.0.0.1 from WSL IS the
@@ -286,7 +313,7 @@ if [[ -n "${router_row}" ]]; then
     # delay the fallback.
     #
     # Listen-port auto-discovery (no hardcoded port): we parse netsh
-    # output for any rule whose ConnectAddress matches the current
+    # output for any rule whose ConnectAddress matches the router's
     # ROUTER_IP and use whichever ListenPort the provisioner chose.
     # The listen address regex accepts both 0.0.0.0 (default) and
     # 127.0.0.1 (operator-pinned). The provisioner's default is
@@ -294,7 +321,8 @@ if [[ -n "${router_row}" ]]; then
     #
     # No-op on non-WSL hosts (Linux CI, Mac, etc. - no netsh, no
     # ICS NAT to work around) and on WSL hosts without a matching
-    # portproxy rule (ROUTER_IP stays as it was, direct path).
+    # portproxy rule (ROUTER_SSH_HOST stays equal to ROUTER_IP, the
+    # direct path).
     if grep -qi microsoft /proc/version 2>/dev/null; then
         log "WSL detected; discovering host netsh portproxy rule for ${ROUTER_IP}:22 ..."
         portproxy_port="$(pwsh.exe -NoProfile -NoLogo -Command \
@@ -312,7 +340,7 @@ if [[ -n "${router_row}" ]]; then
                 fi
             fi
             echo "_run-playbook.sh: WSL detected; routing via host portproxy ${target_ip}:${portproxy_port} -> ${ROUTER_IP}:22"
-            ROUTER_IP="${target_ip}"
+            ROUTER_SSH_HOST="${target_ip}"
             ROUTER_PORT="${portproxy_port}"
             export ROUTER_PORT
         fi
@@ -322,7 +350,7 @@ if [[ -n "${router_row}" ]]; then
     # playbook's ssh subprocesses inherit it and pass it through to
     # sshpass inside the ProxyCommand. The password never appears in
     # argv (no `sshpass -p`), so `ps` listings stay clean.
-    export ROUTER_IP ROUTER_USERNAME
+    export ROUTER_IP ROUTER_SSH_HOST ROUTER_USERNAME
     export SSHPASS="${ROUTER_PASSWORD}"
     # Avoid leaving the cleartext in a non-exported var the rest of the
     # script could accidentally interpolate into a log line. SSHPASS
@@ -337,7 +365,7 @@ if [[ -n "${router_row}" ]]; then
     #     ~136s per-host connect-retry budget on a hop the helper already
     #     proved broken. The helper's stderr names the failed segment.
     # -----------------------------------------------------------------------
-    "${script_dir}/_assert-router-reachable.sh" "${ROUTER_IP}" "${ROUTER_PORT:-22}"
+    "${script_dir}/_assert-router-reachable.sh" "${ROUTER_SSH_HOST}" "${ROUTER_PORT:-22}"
 fi
 
 # ---------------------------------------------------------------------------

@@ -105,16 +105,19 @@ input="$(printf '%s' "${input}" | jq '[ .[] | select((.kind // "") != "router") 
 #    (`add` on `[]` is null - `// {}` falls back to an empty hosts
 #    map, which Ansible accepts and reports as "no hosts").
 #
-#    When the caller exports ROUTER_IP + ROUTER_USERNAME (the
+#    When the caller exports ROUTER_SSH_HOST + ROUTER_USERNAME (the
 #    feature-53 NAT topology), every workload gets an
 #    ansible_ssh_common_args clause that routes its ssh through the
-#    router via ProxyCommand + sshpass. The router's password is
-#    fetched by sshpass from $SSHPASS at run time, NOT from argv,
+#    router via ProxyCommand + sshpass. ROUTER_SSH_HOST is the SSH
+#    endpoint (the host portproxy under WSL, else the router's own IP) -
+#    NOT ROUTER_IP, which the caller keeps as the router's topological
+#    LAN IP for the host-adapter lookup elsewhere. The router's password
+#    is fetched by sshpass from $SSHPASS at run time, NOT from argv,
 #    so it never appears in `ps`. Workloads' own host keys and the
 #    router's host key are both ignored (StrictHostKeyChecking=no +
 #    UserKnownHostsFile=/dev/null) - same posture every other SSH
 #    path in this stack takes against a private test LAN. When
-#    ROUTER_IP is empty the legacy direct-routing path is preserved
+#    ROUTER_SSH_HOST is empty the legacy direct-routing path is preserved
 #    and ansible_ssh_common_args is omitted entirely.
 #
 #    Optional ROUTER_PORT env var: when set, injects `-p ${ROUTER_PORT}`
@@ -125,7 +128,7 @@ input="$(printf '%s' "${input}" | jq '[ .[] | select((.kind // "") != "router") 
 #    direct-routing path stays unaffected.
 # ---------------------------------------------------------------------------
 printf '%s' "${input}" | jq \
-    --arg router_ip   "${ROUTER_IP:-}" \
+    --arg router_ip   "${ROUTER_SSH_HOST:-${ROUTER_IP:-}}" \
     --arg router_port "${ROUTER_PORT:-}" \
     --arg router_user "${ROUTER_USERNAME:-}" \
 '
