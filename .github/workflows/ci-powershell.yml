@@ -3,7 +3,7 @@
 # composite) and the bare-return-empty-array lint over this repo's
 # .ps1 surface. Kept as a local file so the pull_request trigger
 # works for PRs in this repo.
-name: ci-powershell
+name: Common-PowerShell
 
 on:
   pull_request:

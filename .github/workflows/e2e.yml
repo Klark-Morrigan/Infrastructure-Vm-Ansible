@@ -1,4 +1,4 @@
-name: E2E
+name: Infrastructure-E2E
 
 # Calls the shared E2E workflow in Infrastructure-E2E as a required PR check.
 # Mirrors the Vm-Users gating shape: this repo cannot merge Ansible changes

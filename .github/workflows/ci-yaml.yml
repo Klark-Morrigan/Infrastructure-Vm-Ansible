@@ -5,7 +5,7 @@
 # single one-line wiring serves every stage of the repo's growth -
 # from today's scaffold (no playbooks yet) through every later
 # feature.
-name: ci-yaml
+name: Common-Automation
 
 on:
   pull_request:

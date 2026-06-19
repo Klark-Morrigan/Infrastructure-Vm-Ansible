@@ -5,7 +5,7 @@
 # auto-skip with ::notice::, so this single wiring covers the repo
 # from today's scaffold (only ops/_bootstrap-controller-wsl.sh) through
 # every later feature that adds bats coverage.
-name: ci-bash
+name: Common-Automation
 
 on:
   pull_request:
