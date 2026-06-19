@@ -26,19 +26,19 @@ ensure_apt_command() {
     shift
     local pkgs=("$@")
 
-    if command -v "$cmd" >/dev/null 2>&1; then
+    if command -v "${cmd}" >/dev/null 2>&1; then
         return 0
     fi
 
     if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
         if sudo apt-get update && sudo apt-get install -y "${pkgs[@]}"; then
             hash -r  # drop bash's command lookup cache so the re-check sees the new binary
-            if command -v "$cmd" >/dev/null 2>&1; then
+            if command -v "${cmd}" >/dev/null 2>&1; then
                 return 0
             fi
         fi
     fi
 
-    log_err "$cmd not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y ${pkgs[*]}"
+    log_err "${cmd} not found in WSL. Install it with: sudo apt-get update && sudo apt-get install -y ${pkgs[*]}"
     exit 1
 }

@@ -23,19 +23,19 @@ readonly EXPECTED_PYTHON_MAJOR_MINOR="3"
 # enough that external utilities are unreachable, which matters for the
 # bats harness that scrubs PATH to exercise the absent-tool branches.
 script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-cd "$repo_root"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+cd "${repo_root}"
 
-venv_dir="$repo_root/.venv"
+venv_dir="${repo_root}/.venv"
 
 # shellcheck source=ops/imports/_log.sh
-source "$script_dir/imports/_log.sh"
+source "${script_dir}/imports/_log.sh"
 
 # shellcheck source=ops/_ansible-env.sh
-source "$script_dir/_ansible-env.sh"
+source "${script_dir}/_ansible-env.sh"
 
 # shellcheck source=ops/_ensure-apt-command.sh
-source "$script_dir/_ensure-apt-command.sh"
+source "${script_dir}/_ensure-apt-command.sh"
 
 # ---------------------------------------------------------------------------
 # 1. Python availability. python3 plus the ensurepip module are the
@@ -97,32 +97,32 @@ ensure_apt_command sshpass sshpass
 #    rather than silently reused.
 # ---------------------------------------------------------------------------
 needs_create=1
-if [[ -x "$venv_dir/bin/python" ]]; then
-    actual_major="$("$venv_dir/bin/python" -c 'import sys; print(sys.version_info[0])')"
-    if [[ "$actual_major" == "$EXPECTED_PYTHON_MAJOR_MINOR" ]]; then
+if [[ -x "${venv_dir}/bin/python" ]]; then
+    actual_major="$("${venv_dir}/bin/python" -c 'import sys; print(sys.version_info[0])')"
+    if [[ "${actual_major}" == "${EXPECTED_PYTHON_MAJOR_MINOR}" ]]; then
         needs_create=0
     fi
 fi
 
-if [[ "$needs_create" -eq 1 ]]; then
-    echo "Creating Python venv at $venv_dir ..."
+if [[ "${needs_create}" -eq 1 ]]; then
+    echo "Creating Python venv at ${venv_dir} ..."
     # --upgrade-deps (Python 3.9+) forces pip + setuptools into the
     # venv on creation, instead of relying on ensurepip's default
     # behaviour - which on some Ubuntu / Debian configurations leaves
     # bin/python in place but skips bin/pip entirely. Without this the
-    # next step (`$venv_dir/bin/pip install ...`) dies with
+    # next step (`${venv_dir}/bin/pip install ...`) dies with
     # `No such file or directory` and the bootstrap reports a confusing
     # half-built state.
-    python3 -m venv --upgrade-deps "$venv_dir"
+    python3 -m venv --upgrade-deps "${venv_dir}"
 fi
 
 # Belt-and-braces: even when --upgrade-deps was passed, re-validate
 # that pip actually landed. A pre-existing venv from a buggy earlier
 # bootstrap may have skipped pip seeding entirely; in that case run
 # ensurepip into the venv so the next pip install line works.
-if [[ ! -x "$venv_dir/bin/pip" ]]; then
+if [[ ! -x "${venv_dir}/bin/pip" ]]; then
     echo "Repairing venv: bin/pip missing despite venv create - running ensurepip ..."
-    "$venv_dir/bin/python" -m ensurepip --upgrade
+    "${venv_dir}/bin/python" -m ensurepip --upgrade
 fi
 
 # ---------------------------------------------------------------------------
@@ -130,8 +130,8 @@ fi
 #    their pins (no-op when current) while still picking up changes
 #    after a requirements.txt bump.
 # ---------------------------------------------------------------------------
-"$venv_dir/bin/pip" install --upgrade pip >/dev/null
-"$venv_dir/bin/pip" install -r requirements.txt
+"${venv_dir}/bin/pip" install --upgrade pip >/dev/null
+"${venv_dir}/bin/pip" install -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # 4. Galaxy collections. --force-with-deps ensures the pinned versions
@@ -140,7 +140,7 @@ fi
 #    that ansible-playbook discovers automatically when invoked from
 #    the repo root.
 # ---------------------------------------------------------------------------
-"$venv_dir/bin/ansible-galaxy" collection install -r requirements.yml --force-with-deps
+"${venv_dir}/bin/ansible-galaxy" collection install -r requirements.yml --force-with-deps
 
 # ---------------------------------------------------------------------------
 # 5. pwsh.exe presence. The bash bridge in step 3 invokes pwsh.exe to
@@ -159,7 +159,17 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "Controller bootstrap complete:"
-echo "  Python : $("$venv_dir/bin/python" --version)"
-echo "  Ansible: $("$venv_dir/bin/ansible" --version | head -n 1)"
+# Capture each version into its own variable so the command
+# substitution's exit status is observed rather than masked inside the
+# echo (shellcheck SC2312); a probe failure degrades to "unknown" rather
+# than aborting the summary. Ansible's first line is taken via parameter
+# expansion (not `| head`) to avoid a SIGPIPE-driven non-zero pipe
+# status under `set -o pipefail` masquerading as a failure.
+python_version="$("${venv_dir}/bin/python" --version)" || python_version="unknown"
+ansible_version="$("${venv_dir}/bin/ansible" --version)" || ansible_version="unknown"
+ansible_version="${ansible_version%%$'\n'*}"
+jq_version="$(jq --version)" || jq_version="unknown"
+echo "  Python : ${python_version}"
+echo "  Ansible: ${ansible_version}"
 echo "  pwsh.exe: reachable"
-echo "  jq     : $(jq --version)"
+echo "  jq     : ${jq_version}"
