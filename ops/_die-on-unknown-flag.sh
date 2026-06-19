@@ -14,14 +14,20 @@
 #   while [[ $# -gt 0 ]]; do
 #       case "$1" in
 #           --known-flag) ... ;;
-#           *) _die_on_unknown_flag <script-name> "$1" ;;
+#           *) _die_on_unknown_flag "$1" ;;
 #       esac
 #   done
-_die_on_unknown_flag() {
-    local script_name="$1"
-    local arg="$2"
+#
+# The script name in the message is supplied by the shared logger
+# (BASH_SOURCE[-1]), so callers no longer pass it - one fewer thing to
+# keep in sync across the five arg parsers.
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
 
-    echo "${script_name}: unknown argument: ${arg}" >&2
+_die_on_unknown_flag() {
+    local arg="$1"
+
+    log_err "unknown argument: ${arg}"
     usage
     exit 2
 }

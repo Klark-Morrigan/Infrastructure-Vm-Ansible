@@ -1,9 +1,11 @@
 #!/usr/bin/env bats
 # Tests for ops/_build-inventory.sh - the pure stdin -> stdout
 # transform that turns vm_provisioner_config into Ansible JSON
-# inventory. No stubs needed: the script's only external dep is jq,
-# and the test runs the real one. Output is compared structurally
-# (jq -S) so key-order differences don't make assertions brittle.
+# inventory. Its only runtime deps are jq (the real one is used) and the
+# shared logger it sources via _log.sh; _bats_init_temp stands up the
+# COMMON_AUTOMATION_ROOT stub that the logger shim resolves. Output is
+# compared structurally (jq -S) so key-order differences don't make
+# assertions brittle.
 # Run with: bats Tests/ops/_build-inventory.bats
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-inventory.sh"
@@ -12,7 +14,11 @@ SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-inventory.sh"
 source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
 
 setup() {
-    _bats_resolve_bash
+    _bats_init_temp buildInventory
+}
+
+teardown() {
+    _bats_cleanup_temp
 }
 
 # json_eq <expected-json> <actual-json> - structural JSON equality

@@ -23,14 +23,28 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 if [[ -z "${GH_TOKEN:-}" ]]; then
+    # Refuse to prompt when stdin is not a terminal. Unattended callers
+    # (the E2E agent driving this via `wsl -- ...`) must supply GH_TOKEN
+    # in the environment; if the variable failed to cross into WSL (e.g.
+    # the name was omitted from WSLENV) the `read` below would otherwise
+    # block forever on a prompt no one can answer. Failing fast turns
+    # that silent hang into an immediate, actionable error.
+    if [[ ! -t 0 ]]; then
+        log_err 'GH_TOKEN must be set for unattended use (no TTY to prompt on).'
+        echo '  When invoked via wsl, ensure GH_TOKEN is forwarded through WSLENV.' >&2
+        exit 2
+    fi
     # -s suppresses echo so the token never appears in the terminal
     # scrollback. -r keeps backslashes literal; some PATs contain
     # characters the line editor would otherwise re-interpret.
     read -rsp 'GitHub token: ' GH_TOKEN
     echo
     if [[ -z "${GH_TOKEN}" ]]; then
-        echo 'GitHub token required' >&2
+        log_err 'GitHub token required'
         exit 2
     fi
 fi

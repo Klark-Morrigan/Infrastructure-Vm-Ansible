@@ -5,13 +5,12 @@
 # single one-line wiring serves every stage of the repo's growth -
 # from today's scaffold (no playbooks yet) through every later
 # feature.
-name: ci-yaml
+name: Common-Automation
 
 on:
   pull_request:
-    branches: [ master ]
   workflow_dispatch:
 
 jobs:
   ci-yaml:
-    uses: VitaliiAndreev/Common-Automation/.github/workflows/ci-yaml.yml@master
+    uses: Klark-Morrigan/Common-Automation/.github/workflows/ci-yaml.yml@master

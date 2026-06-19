@@ -5,13 +5,12 @@
 # auto-skip with ::notice::, so this single wiring covers the repo
 # from today's scaffold (only ops/_bootstrap-controller-wsl.sh) through
 # every later feature that adds bats coverage.
-name: ci-bash
+name: Common-Automation
 
 on:
   pull_request:
-    branches: [ master ]
   workflow_dispatch:
 
 jobs:
   ci-bash:
-    uses: VitaliiAndreev/Common-Automation/.github/workflows/ci-bash.yml@master
+    uses: Klark-Morrigan/Common-Automation/.github/workflows/ci-bash.yml@master

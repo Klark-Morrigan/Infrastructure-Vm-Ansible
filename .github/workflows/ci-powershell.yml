@@ -3,13 +3,12 @@
 # composite) and the bare-return-empty-array lint over this repo's
 # .ps1 surface. Kept as a local file so the pull_request trigger
 # works for PRs in this repo.
-name: ci-powershell
+name: Common-PowerShell
 
 on:
   pull_request:
-    branches: [ master ]
   workflow_dispatch:
 
 jobs:
   ci-powershell:
-    uses: VitaliiAndreev/Common-PowerShell/.github/workflows/ci-powershell.yml@master
+    uses: Klark-Morrigan/Common-PowerShell/.github/workflows/ci-powershell.yml@master

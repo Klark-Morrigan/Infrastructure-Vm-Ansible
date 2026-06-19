@@ -17,6 +17,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 force=0
 forwarded=()
 while (( $# )); do
@@ -34,7 +37,7 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
     read -rsp 'GitHub token: ' GH_TOKEN
     echo
     if [[ -z "${GH_TOKEN}" ]]; then
-        echo 'GitHub token required' >&2
+        log_err 'GitHub token required'
         exit 2
     fi
 fi

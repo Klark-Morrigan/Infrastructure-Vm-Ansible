@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
             shift 2 || true
             ;;
         *)
-            _die_on_unknown_flag _build-extra-vars-users.sh "$1"
+            _die_on_unknown_flag "$1"
             ;;
     esac
 done
@@ -38,9 +38,6 @@ if [[ -z "${users_path}" ]]; then
     exit 2
 fi
 
-_validate_extra_vars_input \
-    _build-extra-vars-users.sh \
-    --users-config \
-    "${users_path}"
+_validate_extra_vars_input --users-config "${users_path}"
 
 jq -n --slurpfile u "${users_path}" '{vm_users_config: $u[0]}'

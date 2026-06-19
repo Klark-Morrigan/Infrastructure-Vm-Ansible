@@ -23,6 +23,11 @@ setup() {
 
     cp "${REPO_ROOT}/ops/register-runners.sh" "${TEST_REPO}/ops/"
     chmod +x "${TEST_REPO}/ops/register-runners.sh"
+    # The entry sources ops/imports/_log.sh (cross-repo logger adapter) for
+    # its log_err helper; copy the imports/ folder so the transplanted
+    # script's source resolves. The adapter loads scripts/log.sh from the
+    # COMMON_AUTOMATION_ROOT stub _bats_init_temp stands up.
+    cp -r "${REPO_ROOT}/ops/imports" "${TEST_REPO}/ops/"
 
     # Stub _run-playbook.sh records the env and argv it was invoked
     # with so the entry's prompt/export contract can be asserted
@@ -58,28 +63,18 @@ teardown() {
     [[ "${trace}" == *"GH_TOKEN=ghp_preset"* ]]
 }
 
-@test "GH_TOKEN unset: prompt accepts a value and the bridge receives it" {
-    # Unset any inherited token so the prompt branch fires. `read -s`
-    # reads from stdin; piping a value in simulates the operator typing
-    # it. The trailing newline closes `read`'s line.
+@test "GH_TOKEN unset and stdin not a TTY: fast-fails with exit 2, bridge never invoked" {
+    # The unattended-hang regression guard. With no GH_TOKEN and a
+    # non-interactive stdin (the shape the E2E agent's `wsl -- ...` child
+    # runs under), the entry must fail immediately rather than block on a
+    # `read` prompt no automated caller can answer. bats stdin is never a
+    # TTY, so piping here exercises the same `! -t 0` branch headless
+    # callers hit. The interactive prompt branch (stdin IS a TTY) is not
+    # reachable headlessly and is verified manually.
     run env -u GH_TOKEN "${BASH_BIN}" -c \
-        "printf 'ghp_typed\n' | '${TEST_REPO}/ops/register-runners.sh'"
-    [ "${status}" -eq 0 ]
-
-    trace="$(cat "${TRACE_FILE}")"
-    [[ "${trace}" == *"NEEDS_GITHUB_RUNNERS=1"* ]]
-    [[ "${trace}" == *"GH_TOKEN=ghp_typed"* ]]
-}
-
-@test "GH_TOKEN unset and prompt rejected: exit 2, bridge never invoked" {
-    # Empty prompt input -> the entry must hard-fail rather than
-    # invoke the bridge with an empty token (the bridge's own gate
-    # would catch it later, but failing at the operator edge keeps
-    # the error message specific to the prompt).
-    run env -u GH_TOKEN "${BASH_BIN}" -c \
-        "printf '\n' | '${TEST_REPO}/ops/register-runners.sh'"
+        "printf '' | '${TEST_REPO}/ops/register-runners.sh'"
     [ "${status}" -eq 2 ]
-    [[ "${output}" == *"GitHub token required"* ]]
+    [[ "${output}" == *"GH_TOKEN must be set for unattended use"* ]]
 
     # Stub never ran -> trace stays empty.
     [ ! -s "${TRACE_FILE}" ]

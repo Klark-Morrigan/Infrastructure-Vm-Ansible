@@ -36,8 +36,31 @@ setup() {
     # in this test context (no ansible-playbook actually reads it).
     cp "${REPO_ROOT}/ops/_run-playbook.sh"      "${TEST_REPO}/ops/"
     cp "${REPO_ROOT}/ops/_ansible-env.sh"       "${TEST_REPO}/ops/"
+    # ops/imports/ holds the cross-repo adapter shims the orchestrator
+    # sources (_log.sh for log_info/log_err, _to-windows-path.sh for
+    # cleanup's pwsh path) plus their shared root resolver - copy the whole
+    # folder so the transplanted script's `source ${script_dir}/imports/*`
+    # lookups resolve. The adapters load scripts/log.sh and
+    # scripts/_to-windows-path.sh from the COMMON_AUTOMATION_ROOT stub
+    # _bats_init_temp / this setup stand up.
+    cp -r "${REPO_ROOT}/ops/imports"            "${TEST_REPO}/ops/"
     cp "${REPO_ROOT}/Tests/playbooks/_noop.yml" "${TEST_REPO}/playbooks/"
     chmod +x "${TEST_REPO}/ops/_run-playbook.sh"
+
+    # _to_windows_path now lives in Common-Automation, an external
+    # abstraction to this orchestrator, so it is mocked here (its real
+    # behavior is unit-tested in Common-Automation/scripts/_to-windows-path.bats).
+    # The stub goes in a fake COMMON_AUTOMATION_ROOT so the orchestrator's
+    # sibling-source wiring is still exercised end to end - CI has no real
+    # ../Common-Automation checkout for this repo, so the env override is
+    # what keeps the source resolvable. The pwsh.exe stub ignores the path
+    # it receives, so a passthrough is all cleanup() needs.
+    export COMMON_AUTOMATION_ROOT="${TEST_TMP}/Common-Automation"
+    mkdir -p "${COMMON_AUTOMATION_ROOT}/scripts"
+    cat >"${COMMON_AUTOMATION_ROOT}/scripts/_to-windows-path.sh" <<'STUB'
+#!/usr/bin/env bash
+_to_windows_path() { printf '%s' "$1"; }
+STUB
 
     # No-op activate. The stubbed ansible-playbook on PATH is what
     # actually runs; activating a real venv would defeat the stub.
@@ -157,7 +180,10 @@ if [[ -n "${cmd}" ]]; then
             ;;
     esac
 fi
-case "$(basename "${file}")" in
+# The bridge now hands pwsh.exe a Windows path (wslpath -w), so strip the
+# last path component on either separator rather than using basename, which
+# keys on '/' alone and would leave a backslash path intact.
+case "${file##*[\\/]}" in
     _stop-host-file-server.ps1)
         echo "stop-host-file-server:${process_id}" >> "${TRACE_FILE}"
         ;;
@@ -620,4 +646,109 @@ STUB
     [ "${status}" -ne 0 ]
     # Aborted before dispatch - the ansible-playbook stub never recorded argv.
     [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}" ]
+}
+
+@test "WSL portproxy rewrite redirects only the SSH endpoint, not the router's LAN IP" {
+    # Regression guard for the overloaded-ROUTER_IP bug: ROUTER_IP is the
+    # router's topological LAN IP and feeds Get-VmSwitchHostIp inside
+    # _stage-host-fileserver.sh to bind the host file server on the
+    # router's upstream adapter. The WSL portproxy redirect must rewrite
+    # only the SSH endpoint (ROUTER_SSH_HOST); clobbering ROUTER_IP fed
+    # the host's own WSL adapter to Get-VmSwitchHostIp and the staging
+    # step failed with "returned empty".
+    #
+    # The redirect only runs when /proc/version reports a WSL kernel; on a
+    # plain Linux CI runner the block is skipped entirely, so there is no
+    # rewrite to assert and the test is skipped honestly rather than
+    # validating a no-op.
+    if ! grep -qi microsoft /proc/version 2>/dev/null; then
+        skip "WSL portproxy rewrite path is only reachable under a WSL kernel"
+    fi
+
+    export NEEDS_GITHUB_RUNNERS=1
+    export NEEDS_HOST_FILE_SERVER=1
+    export GH_TOKEN="ghp_example"
+
+    # Static-IP router so resolution takes the no-KVP branch and ROUTER_IP
+    # starts as the LAN IP 192.168.1.5.
+    cat >"${TEST_REPO}/ops/_read-vault-config.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "read-vault-config:$1:$2" >> "${TRACE_FILE}"
+case "$1" in
+    VmProvisioner)
+        printf '%s' '[
+            {"vmName":"router","kind":"router","ipAddress":"192.168.1.5","username":"routeradmin","password":"rp","externalSwitchName":"Ext"},
+            {"vmName":"a","ipAddress":"10.10.0.50","username":"u","password":"p"}
+        ]'
+        ;;
+    *) printf '%s' '{"stub":"vault"}' ;;
+esac
+STUB
+    chmod +x "${TEST_REPO}/ops/_read-vault-config.sh"
+
+    # pwsh.exe override: the portproxy discovery returns a listen port so
+    # the WSL branch performs the rewrite. The stop-host-file-server -File
+    # path (EXIT trap) is preserved so cleanup stays quiet.
+    cat >"${TEST_TMP}/stubs/pwsh.exe" <<'STUB'
+#!/usr/bin/env bash
+cmd=""; file=""; process_id=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -File)      file="$2";       shift 2 ;;
+        -Command)   cmd="$2";        shift 2 ;;
+        -ProcessId) process_id="$2"; shift 2 ;;
+        *)          shift ;;
+    esac
+done
+if [[ -n "${cmd}" ]]; then
+    case "${cmd}" in
+        *portproxy*) echo "2222"; exit 0 ;;
+        *) echo "pwsh-stub: unhandled -Command payload" >&2; exit 99 ;;
+    esac
+fi
+case "${file##*[\\/]}" in
+    _stop-host-file-server.ps1)
+        echo "stop-host-file-server:${process_id}" >> "${TRACE_FILE}" ;;
+    *) echo "pwsh-stub: unhandled file=${file}" >&2; exit 99 ;;
+esac
+STUB
+    chmod +x "${TEST_TMP}/stubs/pwsh.exe"
+
+    # nc stub succeeds on the 127.0.0.1 probe so target_ip stays
+    # 127.0.0.1 (deterministic) instead of falling back to the host's WSL
+    # gateway, whose address varies per machine.
+    cat >"${TEST_TMP}/stubs/nc" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "${TEST_TMP}/stubs/nc"
+
+    # Both consumers record the addresses they were handed post-rewrite.
+    cat >"${TEST_REPO}/ops/_build-inventory.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "build-inventory:ROUTER_IP=${ROUTER_IP:-EMPTY}:ROUTER_SSH_HOST=${ROUTER_SSH_HOST:-EMPTY}:ROUTER_PORT=${ROUTER_PORT:-EMPTY}" >> "${TRACE_FILE}"
+printf '%s' '{"stub":"inventory"}'
+STUB
+    chmod +x "${TEST_REPO}/ops/_build-inventory.sh"
+
+    cat >"${TEST_REPO}/ops/_stage-host-fileserver.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "stage-host-fileserver:ROUTER_IP=${ROUTER_IP:-EMPTY}" >> "${TRACE_FILE}"
+printf 'RUNNER_VERSION=%s\n' "2.999.0"
+printf 'BASE_URL=%s\n'        "http://10.10.0.1:8745"
+printf 'PID=%s\n'             "12345"
+STUB
+    chmod +x "${TEST_REPO}/ops/_stage-host-fileserver.sh"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    # The staging helper still sees the router's true LAN IP for the
+    # Get-VmSwitchHostIp host-adapter lookup ...
+    [[ "${trace}" == *"stage-host-fileserver:ROUTER_IP=192.168.1.5"* ]]
+    # ... while the SSH consumers route through the portproxy endpoint.
+    [[ "${trace}" == *"build-inventory:ROUTER_IP=192.168.1.5:ROUTER_SSH_HOST=127.0.0.1:ROUTER_PORT=2222"* ]]
+    [[ "${trace}" == *"assert-router-reachable:127.0.0.1 2222"* ]]
 }

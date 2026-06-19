@@ -13,6 +13,9 @@
 
 set -euo pipefail
 
+# shellcheck source=ops/imports/_log.sh
+source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
 # ---------------------------------------------------------------------------
 # Vault contract. Hardcoded to match Infrastructure-Secrets convention.
 # Pinning both ends to constants makes a mismatch a code-review issue
@@ -29,7 +32,7 @@ readonly GITHUB_RUNNERS_VAULT="GitHubRunners"
 # silently fall through to a default name and collide with another
 # lifecycle's data.
 if [[ -z "${SECRET_SUFFIX:-}" ]]; then
-    echo "_run-playbook.sh: SECRET_SUFFIX must be set (e.g. Production or the caller's lifecycle label)" >&2
+    log_err "SECRET_SUFFIX must be set (e.g. Production or the caller's lifecycle label)"
     exit 2
 fi
 readonly VM_PROVISIONER_SECRET="VmProvisionerConfig-${SECRET_SUFFIX}"
@@ -40,6 +43,21 @@ readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 # regardless of the caller's working directory.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
+
+# _to_windows_path (shared from Common-Automation) is sourced before the
+# EXIT trap is installed because cleanup() calls it to point pwsh.exe at
+# the stop helper. The imports/ adapter owns the cross-repo resolution.
+# shellcheck source=ops/imports/_to-windows-path.sh
+source "${BASH_SOURCE[0]%/*}/imports/_to-windows-path.sh"
+
+# Why this orchestrator narrates each phase via log_info (from imports/_log.sh):
+# every phase below is silent on its own - vault reads and the
+# KVP/portproxy/staging pwsh.exe round-trips capture or redirect their
+# stdout, and the longest of them (the KVP IP poll, the runner-tarball
+# download) can block for minutes. Without a per-phase marker the
+# operator sees the caller's "Registering runners ..." line and then
+# nothing, unable to tell which phase is stuck; the timestamp turns that
+# stall into a measurable per-phase duration.
 
 # ---------------------------------------------------------------------------
 # 1. Argument validation. One positional arg required (the playbook
@@ -56,7 +74,7 @@ playbook_path="$1"
 shift
 
 if [[ ! -f "${repo_root}/${playbook_path}" && ! -f "${playbook_path}" ]]; then
-    echo "_run-playbook.sh: playbook not found: ${playbook_path}" >&2
+    log_err "playbook not found: ${playbook_path}"
     exit 2
 fi
 
@@ -66,7 +84,7 @@ fi
 needs_github_runners=0
 if [[ "${NEEDS_GITHUB_RUNNERS:-0}" == "1" ]]; then
     if [[ -z "${GH_TOKEN:-}" ]]; then
-        echo "_run-playbook.sh: NEEDS_GITHUB_RUNNERS=1 requires GH_TOKEN env var" >&2
+        log_err "NEEDS_GITHUB_RUNNERS=1 requires GH_TOKEN env var"
         exit 2
     fi
     needs_github_runners=1
@@ -82,7 +100,7 @@ fi
 needs_host_file_server=0
 if [[ "${NEEDS_HOST_FILE_SERVER:-0}" == "1" ]]; then
     if [[ "${needs_github_runners}" -ne 1 ]]; then
-        echo "_run-playbook.sh: NEEDS_HOST_FILE_SERVER=1 requires NEEDS_GITHUB_RUNNERS=1" >&2
+        log_err "NEEDS_HOST_FILE_SERVER=1 requires NEEDS_GITHUB_RUNNERS=1"
         exit 2
     fi
     needs_host_file_server=1
@@ -107,7 +125,9 @@ chmod 700 "${tmpdir}"
 host_fs_pid=""
 cleanup() {
     if [[ -n "${host_fs_pid}" ]]; then
-        pwsh.exe -NoProfile -File "${script_dir}/_stop-host-file-server.ps1" \
+        local stop_ps1
+        stop_ps1="$(_to_windows_path "${script_dir}/_stop-host-file-server.ps1")"
+        pwsh.exe -NoProfile -File "${stop_ps1}" \
             -ProcessId "${host_fs_pid}" >/dev/null 2>&1 || true
         host_fs_pid=""
     fi
@@ -123,7 +143,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 venv_activate="${repo_root}/.venv/bin/activate"
 if [[ ! -f "${venv_activate}" ]]; then
-    echo "_run-playbook.sh: .venv missing - run ops/bootstrap-controller.{ps1,sh} first" >&2
+    log_err ".venv missing - run ops/bootstrap-controller.{ps1,sh} first"
     exit 1
 fi
 # shellcheck disable=SC1090  # path is computed at runtime
@@ -144,10 +164,12 @@ source "${script_dir}/_ansible-env.sh"
 provisioner_file="${tmpdir}/provisioner.json"
 users_file="${tmpdir}/users.json"
 
+log_info "Reading vault secret ${VM_PROVISIONER_VAULT}/${VM_PROVISIONER_SECRET} ..."
 "${script_dir}/_read-vault-config.sh" "${VM_PROVISIONER_VAULT}" "${VM_PROVISIONER_SECRET}" \
     > "${provisioner_file}"
 chmod 600 "${provisioner_file}"
 
+log_info "Reading vault secret ${VM_USERS_VAULT}/${VM_USERS_SECRET} ..."
 "${script_dir}/_read-vault-config.sh" "${VM_USERS_VAULT}" "${VM_USERS_SECRET}" \
     > "${users_file}"
 chmod 600 "${users_file}"
@@ -161,6 +183,7 @@ host_base_url=""
 runner_version=""
 if [[ "${needs_github_runners}" -eq 1 ]]; then
     runners_file="${tmpdir}/runners.json"
+    log_info "Reading vault secret ${GITHUB_RUNNERS_VAULT}/${GITHUB_RUNNERS_SECRET} ..."
     "${script_dir}/_read-vault-config.sh" "${GITHUB_RUNNERS_VAULT}" "${GITHUB_RUNNERS_SECRET}" \
         > "${runners_file}"
     chmod 600 "${runners_file}"
@@ -182,14 +205,32 @@ fi
 #     Find the router row in VmProvisionerConfig (kind == 'router'),
 #     resolve its upstream IPv4 via Hyper-V KVP when externalDhcp=true
 #     leaves ipAddress empty in the vault, and export ROUTER_* env
-#     vars consumed by the downstream helpers:
+#     vars consumed by the downstream helpers.
 #
-#       - _build-inventory.sh    : injects ansible_ssh_common_args
-#                                  per workload (ProxyCommand+sshpass).
+#     Two distinct addresses are kept separate on purpose:
+#
+#       ROUTER_IP       the router's TRUE upstream LAN IP (its identity
+#                       on the Hyper-V switch, e.g. 192.168.137.10).
+#                       NEVER rewritten - it is a topological fact.
+#       ROUTER_SSH_HOST the address the controller actually opens an SSH
+#                       connection to. Equals ROUTER_IP on direct hosts;
+#                       under WSL it is rewritten to the host portproxy
+#                       endpoint (the WSL adapter cannot reach the
+#                       Internal-switch subnet through ICS NAT).
+#
+#     Consumers:
+#
+#       - _build-inventory.sh    : injects ansible_ssh_common_args per
+#                                  workload (ProxyCommand+sshpass) aimed
+#                                  at ROUTER_SSH_HOST - the SSH endpoint.
+#       - _assert-router-reachable.sh : probes ROUTER_SSH_HOST.
 #       - _stage-host-fileserver.sh : binds the listener on the host
-#                                  adapter sharing the router's
-#                                  upstream /24 (Get-VmSwitchHostIp on
-#                                  ROUTER_IP).
+#                                  adapter sharing the router's upstream
+#                                  /24 (Get-VmSwitchHostIp on ROUTER_IP,
+#                                  the topological IP - NOT the SSH
+#                                  endpoint, which under WSL points at
+#                                  the host's own WSL adapter and would
+#                                  resolve no Hyper-V switch adapter).
 #       - ansible-playbook'd ssh : reads $SSHPASS at sshpass -e time
 #                                  to authenticate to the router
 #                                  without putting the password in
@@ -207,24 +248,37 @@ if [[ -n "${router_row}" ]]; then
     ROUTER_PASSWORD="$(printf '%s' "${router_row}" | jq -r '.password // empty')"
     static_router_ip="$(printf '%s' "${router_row}" | jq -r '.ipAddress // empty')"
     if [[ -z "${router_vm_name}" || -z "${router_switch}" || -z "${ROUTER_USERNAME}" || -z "${ROUTER_PASSWORD}" ]]; then
-        echo "_run-playbook.sh: router row missing required fields (vmName/externalSwitchName/username/password)" >&2
+        log_err "router row missing required fields (vmName/externalSwitchName/username/password)"
         exit 1
     fi
 
     if [[ -n "${static_router_ip}" ]]; then
         ROUTER_IP="${static_router_ip}"
+        log_info "Router '${router_vm_name}' static IP from vault: ${ROUTER_IP}"
     else
         # Get-VmKvpIpAddress polls KVP until the router publishes its
         # ext0 IPv4; tail -n1 strips any noise pwsh.exe might emit
         # before the value (status lines, warnings) on slow imports.
+        # This poll blocks with no output until the router boots far
+        # enough to publish KVP - the single most common silent stall in
+        # this flow, so it gets its own before/after markers.
+        log_info "Resolving router '${router_vm_name}' upstream IP via Hyper-V KVP on switch '${router_switch}' (polls until the router publishes; can take minutes on a cold boot) ..."
         ROUTER_IP="$(pwsh.exe -NoProfile -NoLogo -Command \
             "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmKvpIpAddress -VmName '${router_vm_name}' -SwitchName '${router_switch}'" \
             2>/dev/null | tr -d '\r' | tail -n1)"
         if [[ -z "${ROUTER_IP}" ]]; then
-            echo "_run-playbook.sh: Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'" >&2
+            log_err "Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'"
             exit 1
         fi
+        log_info "Router '${router_vm_name}' KVP IP resolved: ${ROUTER_IP}"
     fi
+
+    # ROUTER_SSH_HOST defaults to the router's true LAN IP: on direct
+    # (non-WSL) hosts the SSH endpoint and the topological IP are one and
+    # the same. The WSL branch below overrides only this SSH endpoint,
+    # leaving ROUTER_IP untouched for the Get-VmSwitchHostIp lookup in
+    # _stage-host-fileserver.sh.
+    ROUTER_SSH_HOST="${ROUTER_IP}"
 
     # WSL2-on-Windows portproxy redirect. WSL2 runs as its own
     # Hyper-V guest with its own NAT and cannot reach the host's
@@ -233,8 +287,10 @@ if [[ -n "${router_row}" ]]; then
     # Vm-Provisioner ensures a host-side netsh portproxy rule
     # forwarding <listenAddr>:<port> -> <routerIp>:22 at provisioning
     # time; here we discover that rule from inside WSL (via
-    # pwsh.exe -> netsh) and rewrite ROUTER_IP/ROUTER_PORT to point
-    # at it.
+    # pwsh.exe -> netsh) and point ROUTER_SSH_HOST/ROUTER_PORT at it.
+    # ROUTER_IP itself is deliberately NOT rewritten - it remains the
+    # router's upstream LAN IP so _stage-host-fileserver.sh can resolve
+    # the host's Internal-switch adapter from it.
     #
     # Reaching the host portproxy from WSL has two cases:
     #   - WSL mirrored networking mode: 127.0.0.1 from WSL IS the
@@ -253,7 +309,7 @@ if [[ -n "${router_row}" ]]; then
     # delay the fallback.
     #
     # Listen-port auto-discovery (no hardcoded port): we parse netsh
-    # output for any rule whose ConnectAddress matches the current
+    # output for any rule whose ConnectAddress matches the router's
     # ROUTER_IP and use whichever ListenPort the provisioner chose.
     # The listen address regex accepts both 0.0.0.0 (default) and
     # 127.0.0.1 (operator-pinned). The provisioner's default is
@@ -261,8 +317,10 @@ if [[ -n "${router_row}" ]]; then
     #
     # No-op on non-WSL hosts (Linux CI, Mac, etc. - no netsh, no
     # ICS NAT to work around) and on WSL hosts without a matching
-    # portproxy rule (ROUTER_IP stays as it was, direct path).
+    # portproxy rule (ROUTER_SSH_HOST stays equal to ROUTER_IP, the
+    # direct path).
     if grep -qi microsoft /proc/version 2>/dev/null; then
+        log_info "WSL detected; discovering host netsh portproxy rule for ${ROUTER_IP}:22 ..."
         portproxy_port="$(pwsh.exe -NoProfile -NoLogo -Command \
             "& netsh interface portproxy show v4tov4 2>\$null | Where-Object { \$_ -match '^(0\.0\.0\.0|127\.0\.0\.1)\s+(\d+)\s+${ROUTER_IP//./\\.}\s+22' } | ForEach-Object { (\$_ -split '\s+' | Where-Object { \$_ })[1] } | Select-Object -First 1" \
             2>/dev/null | tr -d '\r' | tail -n1)"
@@ -278,7 +336,7 @@ if [[ -n "${router_row}" ]]; then
                 fi
             fi
             echo "_run-playbook.sh: WSL detected; routing via host portproxy ${target_ip}:${portproxy_port} -> ${ROUTER_IP}:22"
-            ROUTER_IP="${target_ip}"
+            ROUTER_SSH_HOST="${target_ip}"
             ROUTER_PORT="${portproxy_port}"
             export ROUTER_PORT
         fi
@@ -288,7 +346,7 @@ if [[ -n "${router_row}" ]]; then
     # playbook's ssh subprocesses inherit it and pass it through to
     # sshpass inside the ProxyCommand. The password never appears in
     # argv (no `sshpass -p`), so `ps` listings stay clean.
-    export ROUTER_IP ROUTER_USERNAME
+    export ROUTER_IP ROUTER_SSH_HOST ROUTER_USERNAME
     export SSHPASS="${ROUTER_PASSWORD}"
     # Avoid leaving the cleartext in a non-exported var the rest of the
     # script could accidentally interpolate into a log line. SSHPASS
@@ -303,7 +361,7 @@ if [[ -n "${router_row}" ]]; then
     #     ~136s per-host connect-retry budget on a hop the helper already
     #     proved broken. The helper's stderr names the failed segment.
     # -----------------------------------------------------------------------
-    "${script_dir}/_assert-router-reachable.sh" "${ROUTER_IP}" "${ROUTER_PORT:-22}"
+    "${script_dir}/_assert-router-reachable.sh" "${ROUTER_SSH_HOST}" "${ROUTER_PORT:-22}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -313,6 +371,7 @@ fi
 #    injects ansible_ssh_common_args per workload host.
 # ---------------------------------------------------------------------------
 hosts_file="${tmpdir}/hosts.json"
+log_info "Building Ansible inventory ..."
 "${script_dir}/_build-inventory.sh" < "${provisioner_file}" > "${hosts_file}"
 chmod 600 "${hosts_file}"
 
@@ -334,17 +393,24 @@ chmod 600 "${hosts_file}"
 # ---------------------------------------------------------------------------
 if [[ "${needs_host_file_server}" -eq 1 ]]; then
     listener_log="${tmpdir}/fileserver.out"
+    # stage_out captures the helper's stdout (its KEY=value contract), so
+    # its own progress lines go to stderr and surface here. This step
+    # resolves the runner version, downloads the ~100MB runner tarball on
+    # a cache miss, then starts the listener - the download is the second
+    # most common silent stall after the KVP poll.
+    log_info "Staging host file server (resolve runner version, cache tarball, start listener) ..."
     stage_out="$("${script_dir}/_stage-host-fileserver.sh" \
         --provisioner-config "${provisioner_file}" \
         --github-token       "${github_token}" \
         --listener-log       "${listener_log}")"
+    log_info "Host file server staged."
 
     runner_version="$(grep '^RUNNER_VERSION=' <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
     host_base_url="$(grep  '^BASE_URL='        <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
     host_fs_pid="$(grep    '^PID='             <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
 
     if [[ -z "${runner_version}" || -z "${host_base_url}" || -z "${host_fs_pid}" ]]; then
-        echo "_run-playbook.sh: staging helper did not return RUNNER_VERSION/BASE_URL/PID" >&2
+        log_err "staging helper did not return RUNNER_VERSION/BASE_URL/PID"
         exit 1
     fi
 fi
@@ -375,6 +441,7 @@ if [[ -n "${runners_file}" ]]; then
     fi
 fi
 
+log_info "Composing extra-vars ..."
 "${script_dir}/_build-extra-vars.sh" "${extra_vars_args[@]}" \
     > "${extra_vars_file}"
 chmod 600 "${extra_vars_file}"
@@ -385,6 +452,7 @@ chmod 600 "${extra_vars_file}"
 #    path so operator flags reach ansible-playbook unmodified.
 # ---------------------------------------------------------------------------
 cd "${repo_root}"
+log_info "Dispatching ansible-playbook ${playbook_path} (PLAY/TASK output follows) ..."
 ansible-playbook \
     -i "${hosts_file}" \
     --extra-vars "@${extra_vars_file}" \

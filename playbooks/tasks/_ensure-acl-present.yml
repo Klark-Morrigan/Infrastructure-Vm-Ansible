@@ -1,0 +1,27 @@
+---
+# Host prerequisite shared by the register and deregister per-VM plays.
+#
+# Both flows drive roles that become an unprivileged service user
+# (runner_binary downloads the tarball as the runner user;
+# runner_registration runs config.sh as the runner user, which the
+# actions/runner refuses to do as root). When Ansible becomes an
+# unprivileged user from a NON-root SSH login, it hands its temporary
+# files to that user via setfacl. setfacl ships in the `acl` package,
+# which a minimal Ubuntu install omits. Without it Ansible falls back to
+# an NFSv4-style `chmod A+user:<user>:rx:allow`, which GNU coreutils
+# chmod rejects ("invalid mode"), and every unprivileged-become task
+# fails with "Failed to set permissions on the temporary files Ansible
+# needs to create when becoming an unprivileged user".
+#
+# This only bites when the SSH connection user is unprivileged (the
+# production deploy user). Connecting as root lets Ansible chmod the
+# temp files directly and skip ACLs entirely - which is why the molecule
+# scenarios (ansible_user: root) pass without this package and so cannot
+# catch its absence.
+- name: Ensure the acl package is present for unprivileged become
+  ansible.builtin.apt:
+    name: acl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
