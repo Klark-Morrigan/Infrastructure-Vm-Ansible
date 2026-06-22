@@ -44,6 +44,61 @@ readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
+# ---------------------------------------------------------------------------
+# Windows launcher bridge. This script's whole toolchain - the .venv +
+# ansible-playbook, nc, and the WSL router-relay redirect below - lives in
+# the WSL controller that ops/bootstrap-controller provisions. But the
+# operator entry points launch it through Git Bash (the menu's
+# Invoke-BashScript, and create-users.bat via _find-bash.bat). Under Git
+# Bash none of that toolchain exists: ansible is not on PATH, .venv/bin's
+# python3 is a Linux symlink, nc is absent, and the relay redirect is
+# skipped because /proc/version is not "microsoft". So when we detect a Git
+# Bash / Cygwin launch, re-exec self inside the WSL default distro - the
+# same distro bootstrap-controller provisions and drives via `wsl --`.
+# uname -s is "Linux" inside WSL and on native-Linux CI, so the re-exec
+# fires exactly once and never on the controller itself (no loop, no effect
+# on the bats suite, which runs under Linux).
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*)
+        if ! command -v wsl.exe >/dev/null 2>&1; then
+            log_err "launched under Git Bash but wsl.exe is not available; this bridge runs in the WSL controller. Install WSL and run ops/bootstrap-controller first."
+            exit 2
+        fi
+
+        # Translate this script's own dir /c/... (Git Bash) -> /mnt/c/...
+        # (WSL mount) into an absolute path wsl.exe can re-run. The script
+        # self-anchors via BASH_SOURCE, so no working-directory juggling is
+        # needed. \L lowercases the drive letter (GNU sed, which Git Bash
+        # ships).
+        wsl_script="$(printf '%s' "${script_dir}" | sed -E 's#^/([A-Za-z])/#/mnt/\L\1/#')/_run-playbook.sh"
+
+        # Forward only the caller-supplied inputs the bridge consults.
+        # WSLENV injects them into the WSL environment; GH_TOKEN rides this
+        # channel rather than the command line so it never lands in a `ps`
+        # listing. Append to any existing WSLENV rather than clobber.
+        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:NEEDS_GITHUB_RUNNERS:GH_TOKEN:NEEDS_HOST_FILE_SERVER"
+
+        # MSYS2 (Git Bash) rewrites /-leading arguments into Windows paths
+        # when launching a Windows .exe, which corrupts the /mnt path and
+        # the forwarded args wsl.exe receives - the defect that delivered an
+        # empty playbook path on the far side. Disable arg path-conversion
+        # for this exec so wsl.exe sees them verbatim.
+        export MSYS2_ARG_CONV_EXCL='*'
+        export MSYS_NO_PATHCONV=1
+        log_info "Git Bash launch detected; re-executing under the WSL controller (default distro) ..."
+
+        # Run the script by absolute path under the controller's bash, with
+        # this invocation's original args ("$@" = playbook path + forwarded
+        # ansible flags) passed straight through.
+        exec wsl.exe -- bash "${wsl_script}" "$@"
+        ;;
+    *)
+        # WSL ("Linux" uname) or native-Linux CI: the venv / nc / ansible
+        # toolchain is already present, so run in place. This is the path
+        # the controller and the bats suite take.
+        ;;
+esac
+
 # _to_windows_path (shared from Common-Automation) is sourced before the
 # EXIT trap is installed because cleanup() calls it to point pwsh.exe at
 # the stop helper. The imports/ adapter owns the cross-repo resolution.
