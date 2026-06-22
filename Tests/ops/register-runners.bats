@@ -28,6 +28,9 @@ setup() {
     # script's source resolves. The adapter loads scripts/log.sh from the
     # COMMON_AUTOMATION_ROOT stub _bats_init_temp stands up.
     cp -r "${REPO_ROOT}/ops/imports" "${TEST_REPO}/ops/"
+    # Shared GH_TOKEN-acquisition helper the entry sources; copy it next to
+    # the transplanted script so its source resolves.
+    cp "${REPO_ROOT}/ops/_require-gh-token.sh" "${TEST_REPO}/ops/"
 
     # Stub _run-playbook.sh records the env and argv it was invoked
     # with so the entry's prompt/export contract can be asserted
