@@ -476,6 +476,36 @@ STUB
     [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}" ]
 }
 
+@test "Git Bash launch re-execs the bridge under the WSL controller" {
+    # The menu (Invoke-BashScript) and create-users.bat launch this under
+    # Git Bash, where the venv / nc / relay-redirect toolchain does not
+    # exist. A MINGW/MSYS uname must re-exec self under `wsl --` rather than
+    # run here. Stub uname -> MINGW and wsl.exe -> a recorder so the re-exec
+    # wiring is asserted without a real WSL. The re-exec sits before the
+    # EXIT trap and tmpdir setup, so nothing local is touched.
+    cat >"${TEST_TMP}/stubs/uname" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "-s" ]]; then echo "MINGW64_NT-10.0-26200"; else exec /usr/bin/uname "$@"; fi
+STUB
+    cat >"${TEST_TMP}/stubs/wsl.exe" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "${TEST_TMP}/wsl-args"
+exit 0
+STUB
+    chmod +x "${TEST_TMP}/stubs/uname" "${TEST_TMP}/stubs/wsl.exe"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml --check
+
+    [ "${status}" -eq 0 ]
+    # Re-exec fired: the recorder captured the bridge plus the original args.
+    [ -f "${TEST_TMP}/wsl-args" ]
+    grep -q '_run-playbook.sh'    "${TEST_TMP}/wsl-args"
+    grep -q 'playbooks/_noop.yml' "${TEST_TMP}/wsl-args"
+    grep -q -- '--check'          "${TEST_TMP}/wsl-args"
+    # And nothing ran in the Git Bash process - the siblings never fired.
+    [ ! -s "${TRACE_FILE}" ]
+}
+
 @test "tmpdir is removed when a sibling fails mid-pipeline" {
     # Replace the inventory stub with a failing one to exercise the
     # EXIT trap on the unhappy path.
