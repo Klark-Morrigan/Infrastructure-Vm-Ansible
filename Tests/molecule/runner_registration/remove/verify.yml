@@ -176,3 +176,122 @@
       ansible.builtin.assert:
         that:
           - (mock_log_after_raw['content'] | b64decode | length) == 0
+
+    # ------------------------------------------------------------------
+    # Orphan branch: a runner registered on GitHub but with NO local
+    # /opt/runners/<name> (a register run that never finished extracting
+    # it). config.sh remove is impossible, so the role applies the same
+    # force-or-error contract the unreachable-VM path uses: fail directing
+    # the operator to --force, or DELETE the registration server-side when
+    # --force is set. runner-nolocal is registered on the mock below but has
+    # no on-disk directory (prepare never created one for it).
+    # ------------------------------------------------------------------
+    - name: Seed the registered set with an orphan (registered, no local dir)
+      ansible.builtin.copy:
+        dest: /tmp/runner-registration-remove-mock-registered.txt
+        content: |
+          runner-nolocal
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: Truncate mock log before the no-force orphan probe
+      ansible.builtin.copy:
+        dest: /tmp/runner-registration-remove-mock.log
+        content: ""
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: Orphan without --force fails directing the operator to --force
+      block:
+        # vm_runner_entries is set directly (not just github_runners_config):
+        # runner_entry_resolve is a once-per-play meta dep, already fired by
+        # the empty-token re-apply above, so it will not re-resolve here. Both
+        # are set so the loop sees runner-nolocal whether or not the resolve
+        # re-runs.
+        - name: Stage fixture - orphan entry, no --force
+          ansible.builtin.set_fact:
+            github_token: "fake-pat-for-molecule-scenario-only"
+            runners_force_remove: false
+            github_runners_config: &orphan_entry
+              - vmName: instance
+                runnerName: runner-nolocal
+                runnerUsername: u-runner-shared
+                deployUsername: u-deploy
+                githubUrl: https://github.com/example/repo-nolocal
+                runnerLabels: [self-hosted]
+            vm_runner_entries: *orphan_entry
+            github_api_base_url: "http://127.0.0.1:18081"
+
+        - name: Re-apply remove direction against the orphan (no --force)
+          ansible.builtin.include_role:
+            name: runner_registration
+            tasks_from: remove
+
+        - name: Reached this point - the orphan did not fail as required
+          ansible.builtin.fail:
+            msg: >-
+              runner_registration (remove) accepted an orphan without
+              --force; the force-or-error guard is missing or broken.
+      rescue:
+        - name: Confirm the orphan failure directs the operator to --force
+          ansible.builtin.assert:
+            that:
+              - "'--force' in (ansible_failed_result.msg | default(''))"
+
+    - name: Read mock log after the no-force orphan probe
+      ansible.builtin.slurp:
+        src: /tmp/runner-registration-remove-mock.log
+      delegate_to: localhost
+      register: mock_log_noforce_raw
+
+    - name: No-force orphan probed GitHub but issued no DELETE
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((mock_log_noforce_raw['content'] | b64decode).splitlines()
+              | map('from_json')
+              | selectattr('method', 'equalto', 'DELETE')
+              | list | length) == 0
+
+    - name: Truncate mock log before the --force orphan probe
+      ansible.builtin.copy:
+        dest: /tmp/runner-registration-remove-mock.log
+        content: ""
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: Stage fixture - orphan entry, with --force
+      ansible.builtin.set_fact:
+        github_token: "fake-pat-for-molecule-scenario-only"
+        runners_force_remove: true
+        github_runners_config: &orphan_entry_force
+          - vmName: instance
+            runnerName: runner-nolocal
+            runnerUsername: u-runner-shared
+            deployUsername: u-deploy
+            githubUrl: https://github.com/example/repo-nolocal
+            runnerLabels: [self-hosted]
+        vm_runner_entries: *orphan_entry_force
+        github_api_base_url: "http://127.0.0.1:18081"
+
+    - name: Re-apply remove direction against the orphan (with --force)
+      ansible.builtin.include_role:
+        name: runner_registration
+        tasks_from: remove
+
+    - name: Read mock log after the --force orphan probe
+      ansible.builtin.slurp:
+        src: /tmp/runner-registration-remove-mock.log
+      delegate_to: localhost
+      register: mock_log_force_raw
+
+    - name: Force orphan issued exactly one DELETE for the registration
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((mock_log_force_raw['content'] | b64decode).splitlines()
+              | map('from_json')
+              | selectattr('method', 'equalto', 'DELETE')
+              | selectattr('path', 'search',
+                           '/repos/example/repo-nolocal/actions/runners/')
+              | list | length) == 1

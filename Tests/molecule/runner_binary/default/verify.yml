@@ -25,11 +25,15 @@
           fixture_version }}.tar.gz
       register: cache_shared
 
-    - name: Assert u-runner-shared cache file is present and owned by the user
+    # gr_name asserts the per-user-group fix: prepare seeded the user into the
+    # shared `users` group, so a file group of u-runner-shared proves the role
+    # established the per-user primary group and the unprivileged chgrp landed.
+    - name: Assert u-runner-shared cache file is present and owned user:group
       ansible.builtin.assert:
         that:
           - cache_shared.stat.exists
           - cache_shared.stat.pw_name == 'u-runner-shared'
+          - cache_shared.stat.gr_name == 'u-runner-shared'
         fail_msg: >-
           u-runner-shared cache file missing or wrongly owned;
           stat: {{ cache_shared.stat }}
@@ -44,11 +48,12 @@
           fixture_version }}.tar.gz
       register: cache_other
 
-    - name: Assert u-runner-other cache file is present and owned by the user
+    - name: Assert u-runner-other cache file is present and owned user:group
       ansible.builtin.assert:
         that:
           - cache_other.stat.exists
           - cache_other.stat.pw_name == 'u-runner-other'
+          - cache_other.stat.gr_name == 'u-runner-other'
         fail_msg: >-
           u-runner-other cache file missing or wrongly owned;
           stat: {{ cache_other.stat }}

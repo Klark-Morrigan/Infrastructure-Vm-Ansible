@@ -69,6 +69,19 @@ Two task groups, both keyed off `vm_runner_entries`:
    The destination directory itself is pre-created at `0755` so
    `unarchive` does not need to create missing parents.
 
+Before either group, the role makes each `runnerUsername`'s same-named
+group its **primary** group (`ansible.builtin.group` then
+`ansible.builtin.user` with `group:`). The role stamps
+`group: <runnerUsername>` on every file it owns, including the tarball the
+cache step fetches unprivileged under `become_user`; a non-root user can
+only `chgrp` to a group it belongs to, so the per-user group has to be the
+user's own. That invariant is normally implicit (useradd's per-user group),
+but a target whose `useradd` defaults new users into a shared group (e.g.
+`users`, gid 100) breaks it - the role establishes it explicitly rather than
+trusting the target's default. A primary group is not touched by the
+[`users`](../users/README.md) role's `append: false` supplementary
+reconciliation, so it survives a later create-users run.
+
 Both phases run with `become: true`. Ownership is the runner service
 user end-to-end so the registration and service roles can act on the
 runner directory tree as that user without per-task fix-ups.

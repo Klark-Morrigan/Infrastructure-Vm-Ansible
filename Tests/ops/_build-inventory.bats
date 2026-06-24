@@ -37,7 +37,7 @@ json_eq() {
     json_eq '{"all":{"children":{"vm_provisioner_hosts":{"hosts":{}}}}}' "${output}"
 }
 
-@test "single VM produces the expected inventory shape with all six host vars" {
+@test "single VM produces the expected inventory shape with all host vars" {
     input='[{"vmName":"vm-01","ipAddress":"10.0.0.1","username":"u","password":"p"}]'
     expected='{
         "all": {
@@ -45,6 +45,7 @@ json_eq() {
                 "vm_provisioner_hosts": {
                     "hosts": {
                         "vm-01": {
+                            "ansible_connection":    "ssh",
                             "ansible_host":          "10.0.0.1",
                             "ansible_user":          "u",
                             "ansible_password":      "p",
@@ -152,6 +153,22 @@ json_eq() {
     [[ "${ssh_args}" == *"routeradmin@192.168.1.42"* ]]
     [[ "${ssh_args}" == *"StrictHostKeyChecking=no"* ]]
     [[ "${ssh_args}" == *"UserKnownHostsFile=/dev/null"* ]]
+    # ConnectTimeout must bound BOTH the inner (router) and outer ssh so an
+    # unreachable hop fails fast instead of hanging on SYN retries.
+    [[ "${ssh_args}" == *"ConnectTimeout=10"* ]]
+    [ "$(printf '%s' "${ssh_args}" | grep -o 'ConnectTimeout=10' | wc -l)" -eq 2 ]
+}
+
+@test "workload entries pin ansible_connection=ssh (delegated probes do not inherit connection: local)" {
+    # The deregister reachability probe runs in a connection: local play and
+    # delegate_to's each VM; without an explicit ansible_connection the
+    # delegated wait_for_connection would inherit local (always "reachable")
+    # instead of probing the VM. Pinning ssh is unconditional - present even
+    # on the legacy direct-routing path (no ROUTER_IP).
+    input='[{"vmName":"wl","ipAddress":"10.99.0.10","username":"u","password":"p"}]'
+    run "${BASH_BIN}" "${SCRIPT}" <<< "${input}"
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s' "${output}" | jq -r '.all.children.vm_provisioner_hosts.hosts.wl.ansible_connection')" = "ssh" ]
 }
 
 @test "ROUTER_IP set: router password is NOT embedded in ansible_ssh_common_args" {

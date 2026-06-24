@@ -6,29 +6,51 @@
 #
 # The skip branch (entry not on GitHub) is silent: every guarded task
 # below uses the same `when` and falls through cleanly. runner_binary's
-# remove direction owns the on-disk teardown; this role does not touch
-# /opt/runners files outside of the `config.sh remove` invocation
-# below (and `config.sh remove` only runs when the GitHub-side record
-# exists in the first place).
+# remove direction owns the on-disk teardown; this role only removes the
+# GitHub-side registration - gracefully via `config.sh remove` when the
+# runner's local directory exists, or server-side via the GitHub API when
+# it does not (the orphan branch below).
 - name: Probe GitHub for existing registration of this runner
   ansible.builtin.include_tasks: _probe-github.yml
+
+# An entry can be registered on GitHub yet have no /opt/runners/<name> - a
+# register run that failed after registration but before the binary extract,
+# or a half-cleaned host. config.sh remove cannot run without that directory,
+# so the result of this stat selects the removal path: present -> graceful
+# config.sh remove; absent -> the same force-or-error contract the
+# unreachable-VM path uses (DELETE under --force, else a directed error).
+- name: Stat the runner directory to choose graceful vs server-side removal
+  ansible.builtin.stat:
+    path: "/opt/runners/{{ entry.runnerName }}/config.sh"
+  register: runner_registration_configsh
+  when: runner_registration_on_github
+
+# ---------------------------------------------------------------------------
+# Graceful path: the local runner directory exists, so deregister via
+# `config.sh remove` (removes the GitHub registration AND the on-disk
+# credentials in one runner-side call).
+# ---------------------------------------------------------------------------
 
 # Mint the removal token via the shared _mint-remove-token.yml so the
 # URI contract stays locked together with the register direction's
 # re-register branch (the other caller). The included file sets
-# `runner_registration_remove_token_resp` in this entry's scope; the
-# `when:` here is the only branch this caller adds.
+# `runner_registration_remove_token_resp` in this entry's scope.
 - name: Mint a removal token when GitHub still knows this runner
   ansible.builtin.include_tasks: _mint-remove-token.yml
-  when: runner_registration_on_github
+  when:
+    - runner_registration_on_github
+    - runner_registration_configsh.stat.exists | default(false)
 
 # Run `config.sh remove --token <removal> --unattended` as the runner
 # service user. become_user (not root) so the files config.sh touches
 # keep the runner-user ownership runner_binary established. argv form
 # (not shell string) so the token never lands in a shell history; the
-# whole task is no_log so it does not land in Ansible's output either.
-# changed_when: true because config.sh has side effects every time we
-# invoke it; suppressing changed would lie about what the role did.
+# whole task is no_log so the token (in argv) does not land in Ansible's
+# output either. changed_when: true because config.sh has side effects
+# every time we invoke it; suppressing changed would lie about what the
+# role did. failed_when: false + register defers the failure to the
+# surfacing task below: no_log censors the result, so failing here would
+# print only an opaque "censored" line with no cause.
 - name: Run config.sh remove --unattended as the runner service user
   ansible.builtin.command:
     argv:
@@ -42,4 +64,72 @@
   become_user: "{{ entry.runnerUsername }}"
   changed_when: true
   no_log: true
-  when: runner_registration_on_github
+  register: runner_registration_config_remove
+  failed_when: false
+  when:
+    - runner_registration_on_github
+    - runner_registration_configsh.stat.exists | default(false)
+
+# Surface the cause when config.sh failed. The removal token lives only in
+# argv (the result's `cmd`), never in config.sh's own stdout/stderr, so
+# re-emitting rc + msg + stdout + stderr here (this task is NOT no_log)
+# exposes the real error without leaking the token. Deliberately omits `cmd`.
+- name: Fail with config.sh remove output when the removal errored
+  ansible.builtin.fail:
+    # `msg` carries a module-level error (could not exec config.sh:
+    # permission denied, no such file) where there is no rc/stdout; the
+    # rc/stdout/stderr carry a command-level failure (config.sh ran and
+    # exited non-zero). Surface all four so either shape is legible.
+    msg: |-
+      config.sh remove failed for {{ entry.runnerName }}
+      (rc={{ runner_registration_config_remove.rc | default('none') }}).
+      msg:    {{ runner_registration_config_remove.msg | default('') }}
+      stdout: {{ runner_registration_config_remove.stdout | default('') }}
+      stderr: {{ runner_registration_config_remove.stderr | default('') }}
+  when:
+    - runner_registration_on_github
+    - runner_registration_configsh.stat.exists | default(false)
+    - runner_registration_config_remove.rc | default(0) != 0
+
+# ---------------------------------------------------------------------------
+# Orphan path: registered on GitHub but no local directory to remove from.
+# config.sh remove is impossible, so apply the same force-or-error contract
+# the unreachable-VM path uses (playbooks/tasks/_handle-unreachable-entry.yml):
+# DELETE the registration controller-side under --force, else fail with a
+# directed message rather than leave a phantom runner attached to the repo.
+# ---------------------------------------------------------------------------
+- name: Force-remove the orphaned runner via the GitHub API (no local config.sh)
+  ansible.builtin.uri:
+    # Inline id lookup mirrors _handle-unreachable-entry.yml so the
+    # name -> id resolution lives in the same shape in both paths.
+    url: >-
+      {{ github_api_base_url }}/repos/{{ runner_registration_entry_owner
+      }}/{{ runner_registration_entry_repo }}/actions/runners/{{
+        (runner_registration_runners_resp.json.runners
+          | selectattr('name', 'equalto', entry.runnerName)
+          | first).id
+      }}
+    method: DELETE
+    headers:
+      Authorization: "token {{ github_token }}"
+      Accept: application/vnd.github+json
+    # 204 documented success; 200 older surfaces; 404 the already-gone race.
+    status_code: [200, 204, 404]
+  delegate_to: localhost
+  no_log: true
+  when:
+    - runner_registration_on_github
+    - not (runner_registration_configsh.stat.exists | default(false))
+    - runners_force_remove | default(false) | bool
+
+- name: Fail when an orphaned runner needs --force to remove server-side
+  ansible.builtin.fail:
+    msg: >-
+      Runner {{ entry.runnerName }} is registered on GitHub but has no local
+      /opt/runners/{{ entry.runnerName }} to run config.sh remove from (a
+      register run that did not finish extracting it). Re-run with --force to
+      remove it via the GitHub API.
+  when:
+    - runner_registration_on_github
+    - not (runner_registration_configsh.stat.exists | default(false))
+    - not (runners_force_remove | default(false) | bool)

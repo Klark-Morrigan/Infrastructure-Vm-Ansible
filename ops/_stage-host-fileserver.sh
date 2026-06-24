@@ -100,12 +100,25 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 log_info "Resolving latest actions/runner version via GitHub API ..."
 resolve_ps1="$(_to_windows_path "${script_dir}/_resolve-runner-version.ps1")"
-runner_version="$(pwsh.exe -NoProfile -NoLogo \
-    -File "${resolve_ps1}" \
-    -Token "${token}" 2>/dev/null \
-    | tr -d '\r' | tail -n1)"
-if [[ -z "${runner_version}" ]]; then
-    log_err "failed to resolve runner version"
+# Capture pwsh.exe's stderr - where _resolve-runner-version.ps1 writes its
+# error, e.g. "401 - check the GH_TOKEN scopes" for a bad/expired token -
+# to a temp file instead of discarding it, so a failure surfaces the cause
+# rather than dying silently under `set -o pipefail`. stdout stays the clean
+# version string the caller's KEY=value contract captures; the captured
+# stderr is printed only on failure, keeping the success path chatter-free.
+resolve_err="$(mktemp)"
+runner_version=""
+if runner_version="$(pwsh.exe -NoProfile -NoLogo \
+        -File "${resolve_ps1}" \
+        -Token "${token}" 2>"${resolve_err}" \
+        | tr -d '\r' | tail -n1)" && [[ -n "${runner_version}" ]]; then
+    rm -f "${resolve_err}"
+else
+    log_err "failed to resolve runner version (GitHub API error below):"
+    while IFS= read -r line; do
+        [[ -n "${line}" ]] && log_err "  ${line}"
+    done < "${resolve_err}"
+    rm -f "${resolve_err}"
     exit 1
 fi
 

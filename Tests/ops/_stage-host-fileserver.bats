@@ -74,6 +74,10 @@ fi
 # keys on '/' alone and would leave a backslash path intact.
 case "${file##*[\\/]}" in
     _resolve-runner-version.ps1)
+        if [[ -n "${PWSH_STUB_VERSION_EXIT:-}" && "${PWSH_STUB_VERSION_EXIT}" != "0" ]]; then
+            echo "${PWSH_STUB_VERSION_STDERR:-Resolve-RunnerVersion: GitHub returned 401 - check the GH_TOKEN scopes.}" >&2
+            exit "${PWSH_STUB_VERSION_EXIT}"
+        fi
         echo "${PWSH_STUB_VERSION:-2.999.0}"
         ;;
     _ensure-runner-tarball.ps1)
@@ -179,6 +183,22 @@ teardown() {
     [[ "${output}" == *"RUNNER_VERSION=2.999.0"* ]]
     [[ "${output}" == *"BASE_URL=http://10.10.0.1:8745"* ]]
     [[ "${output}" == *"PID=78901"* ]]
+}
+
+@test "runner version resolution failure surfaces the resolver's stderr and aborts" {
+    # A bad/expired token makes _resolve-runner-version.ps1 exit non-zero with
+    # its 401 message on stderr. The helper must surface that message (not die
+    # silently under pipefail) and abort before any tarball / listener work.
+    export PWSH_STUB_VERSION_EXIT=1
+    export PWSH_STUB_VERSION_STDERR="Resolve-RunnerVersion: GitHub returned 401 - check the GH_TOKEN scopes."
+
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --github-token "ghp_x" \
+        --listener-log "${LISTENER_LOG}"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"failed to resolve runner version"* ]]
+    [[ "${output}" == *"401 - check the GH_TOKEN scopes"* ]]
 }
 
 @test "ROUTER_IP unset: passes -TargetVmIp anchored on the first workload" {
