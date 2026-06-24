@@ -25,6 +25,37 @@
 # vm_runner_entries is set by roles/runner_entry_resolve (pulled in via
 # meta dep; runs once per play). Consumer tasks read it directly.
 
+# The role stamps group: {{ runnerUsername }} on every file it manages,
+# including the tarball the download task below fetches UNPRIVILEGED
+# (become_user the runner user). A non-root user can only chgrp to a group it
+# belongs to, so each runner user must own a same-named primary group - the
+# per-user-group model problem.md assumes. That model normally falls out of
+# useradd's implicit per-user group, but a target whose useradd defaults new
+# users into a shared group (e.g. `users`) breaks it, and the unprivileged
+# chgrp then fails. Establish the invariant explicitly here rather than
+# trusting the target's useradd default: ensure the group exists and is the
+# user's PRIMARY group. A primary group is not touched by the users role's
+# `append: false` supplementary reconciliation, so it survives a later
+# create-users run; once it holds, every file the runner creates defaults to
+# its own group and no chgrp is needed.
+- name: Ensure a per-runner primary group exists for each runner user
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: present
+  become: true
+  loop: "{{ vm_runner_entries | map(attribute='runnerUsername') | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Make each runner user's per-runner group its primary group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    group: "{{ item }}"
+  become: true
+  loop: "{{ vm_runner_entries | map(attribute='runnerUsername') | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+
 # Create the per-user cache directory before get_url runs. get_url's
 # dest-as-directory branch requires the directory to exist; creating it
 # here keeps ownership right (the cache must be writable by the runner

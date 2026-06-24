@@ -43,6 +43,26 @@
   delegate_to: localhost
   register: runner_registration_runners_resp
   no_log: true
+  # Defer the non-200 failure to the surfacing task below: no_log (needed
+  # because the PAT is in the request headers) would otherwise censor the
+  # cause to an opaque "censored" line.
+  failed_when: false
+
+# The PAT lives only in the request headers, never in the response, so
+# re-emitting the status + GitHub's error message here (this task is NOT
+# no_log) exposes the real cause - 401 bad credentials, 403 rate limit or
+# missing scope, etc. - without leaking the token. Runs before the
+# set_fact below, which assumes a 200 body with a .json.runners list.
+- name: Fail with the GitHub API error when the runner probe did not return 200
+  ansible.builtin.fail:
+    msg: >-
+      GitHub runners probe for {{ runner_registration_entry_owner }}/{{
+      runner_registration_entry_repo }} returned HTTP {{
+      runner_registration_runners_resp.status | default('n/a') }}:
+      {{ runner_registration_runners_resp.json.message
+         | default(runner_registration_runners_resp.msg
+                   | default('no response body')) }}
+  when: runner_registration_runners_resp.status | default(0) != 200
 
 - name: Record whether GitHub already knows this runner by name
   ansible.builtin.set_fact:

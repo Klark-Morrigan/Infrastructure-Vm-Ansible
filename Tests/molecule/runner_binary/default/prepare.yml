@@ -24,11 +24,18 @@
     # Dockerfile, so prepare does not need an apt-cache refresh or an
     # install task.
 
-    - name: Seed runner service users
+    # Seed the runner users into a SHARED primary group (users), not their
+    # own per-user group. This reproduces the production target whose useradd
+    # defaults new users into `users` (gid 100) rather than an implicit
+    # per-user group - the condition under which the role's unprivileged
+    # chgrp to group: {{ runnerUsername }} fails. The role under test must
+    # establish each runner's per-user primary group itself; verify asserts it.
+    - name: Seed runner service users in a shared primary group
       ansible.builtin.user:
         name: "{{ item }}"
         shell: /bin/bash
         create_home: true
+        group: users
         state: present
       loop:
         - u-runner-shared

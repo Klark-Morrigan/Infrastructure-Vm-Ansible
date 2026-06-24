@@ -137,9 +137,15 @@ printf '%s' "${input}" | jq \
 '
     ($router_ip != "" and $router_user != "") as $jump
     | (if $router_port != "" then " -p " + $router_port else "" end) as $port_flag
+    # ConnectTimeout bounds the TCP connect so an unreachable host (or
+    # router hop) fails in seconds instead of hanging on SYN retries;
+    # ServerAlive* tears down a connection that established but then went
+    # silent. Applied to both the inner (router) ssh and the outer ssh, and
+    # factored into one var so the two layers cannot drift.
+    | "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3" as $ssh_opts
     | (
         if $jump then
-            "-o ProxyCommand='\''sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" + $port_flag + " " + $router_user + "@" + $router_ip + " -W %h:%p'\'' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+            "-o ProxyCommand='\''sshpass -e ssh " + $ssh_opts + $port_flag + " " + $router_user + "@" + $router_ip + " -W %h:%p'\'' " + $ssh_opts
         else "" end
     ) as $jump_args
     | {
@@ -150,6 +156,12 @@ printf '%s' "${input}" | jq \
                         map({
                             (.vmName): (
                                 {
+                                    # Pin ssh explicitly so a play that runs on
+                                    # localhost with connection: local and then
+                                    # delegates to a VM (the deregister
+                                    # reachability probe) connects to the VM over
+                                    # ssh, not the play local connection.
+                                    ansible_connection:    "ssh",
                                     ansible_host:          .ipAddress,
                                     ansible_user:          .username,
                                     ansible_password:      .password,
