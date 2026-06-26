@@ -1,0 +1,88 @@
+---
+# Read-only status check: for every declared runner on each VM, report
+# whether it is UP - the on-VM systemd unit is active AND GitHub shows the
+# runner online. Dispatched by ops/runner-status.sh through _run-playbook.sh,
+# so it inherits the same vault read, router routing and SSH / GitHub-token
+# plumbing the register / deregister flows use.
+#
+# Each line also reports egress=ok|unreachable: whether the VM itself can
+# reach GitHub. It is diagnostic context only (it does not flip UP/DOWN) -
+# its job is to disambiguate a [service=active, github=offline] runner: with
+# egress unreachable the VM has no path out (router / DNS); with egress ok
+# the listener is merely stale and a service restart should reconnect it.
+#
+# The report is informational: a DOWN runner is a normal result, not an
+# error, so the run still exits 0 - only an actual error (missing
+# github_token, an unreachable controller, a malformed config) fails it.
+# Each runner's line is coloured green (UP) or red (DOWN).
+#
+# gather_facts: false - the per-runner systemd probe is the reachability
+# signal we need, and it carries ignore_unreachable so a down VM yields a
+# clean DOWN verdict rather than aborting the host before the GitHub side
+# (delegate_to: localhost) can be reported.
+
+- name: Report GitHub Actions runner status (on-VM service + GitHub-side)
+  hosts: vm_provisioner_hosts
+  gather_facts: false
+  any_errors_fatal: false
+  vars:
+    # ANSI colours built from the ESC code point (27) via the format filter,
+    # so the source carries no raw control character. Green = UP, red = DOWN.
+    ansi_reset: "{{ '%c[0m' | format(27) }}"
+    ansi_green: "{{ '%c[32m' | format(27) }}"
+    ansi_red: "{{ '%c[31m' | format(27) }}"
+  tasks:
+    # Same input gate the register / remove directions use: github_token
+    # must be present and non-empty before any GitHub round-trip.
+    - name: Assert role inputs (github_token present and non-empty)
+      ansible.builtin.include_role:
+        name: runner_registration
+        tasks_from: _assert-token
+
+    # Sets vm_runner_entries (this host's slice of github_runners_config).
+    - name: Resolve declared runner entries for this host
+      ansible.builtin.include_role:
+        name: runner_entry_resolve
+
+    - name: Initialise the per-host status accumulator
+      ansible.builtin.set_fact:
+        runner_status_results: []
+
+    - name: Probe each declared runner's status
+      ansible.builtin.include_tasks: tasks/_runner-status-one.yml
+      loop: "{{ vm_runner_entries }}"
+      loop_control:
+        loop_var: entry
+        label: "{{ entry.runnerName }}"
+
+    - name: Report each runner's status (green = UP, red = DOWN)
+      vars:
+        runner_up: "{{ item.service_active and (item.github_status == 'online') }}"
+      ansible.builtin.debug:
+        msg: >-
+          {{ (runner_up | bool) | ternary(ansi_green, ansi_red)
+          }}{{ item.vm }}/{{ item.runner }}:
+          {{ (runner_up | bool) | ternary('UP', 'DOWN') }}
+          [service={{ item.service_active | ternary('active', 'inactive') }},
+          github={{ item.github_status }}{{ item.github_busy
+          | ternary(' (busy)', '') }},
+          egress={{ item.egress_reachable | ternary('ok', 'unreachable') }}]{{
+          ansi_reset }}
+      loop: "{{ runner_status_results }}"
+      loop_control:
+        label: "{{ item.runner }}"
+
+    # Report-only: a DOWN runner does not fail the run (that is the whole
+    # point of the check). This coloured count is the at-a-glance summary.
+    - name: Summarise UP / DOWN counts
+      vars:
+        runners_up: >-
+          {{ runner_status_results
+             | selectattr('service_active')
+             | selectattr('github_status', 'equalto', 'online') | list }}
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansi_green }}{{ runners_up | length }} UP{{ ansi_reset }},
+          {{ ansi_red }}{{ (runner_status_results | length)
+          - (runners_up | length) }} DOWN{{ ansi_reset }}
+          of {{ runner_status_results | length }} declared runner(s).

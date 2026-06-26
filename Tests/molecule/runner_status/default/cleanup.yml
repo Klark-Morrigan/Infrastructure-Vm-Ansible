@@ -1,0 +1,22 @@
+---
+# Stop the controller-side mock GitHub API and remove its scratch files.
+# Runs at sequence end (and before the next prepare, belt-and-braces).
+- name: Cleanup - stop mock GitHub API
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    mock_pidfile: /tmp/runner-status-mock.pid
+  tasks:
+    - name: Kill the mock server if its pidfile points at a live process
+      ansible.builtin.include_tasks: ../../runner_registration/tasks/_kill-mock-pidfile.yml
+
+    - name: Remove mock scratch files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/runner-status-mock.pid
+        - /tmp/runner-status-mock.log
+        - /tmp/runner-status-mock-registered.txt
+        - /tmp/runner-status-mock.stderr
