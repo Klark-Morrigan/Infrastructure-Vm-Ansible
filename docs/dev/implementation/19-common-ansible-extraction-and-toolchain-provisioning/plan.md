@@ -51,17 +51,6 @@ comments, the `.github` workflow names, and any ops/script headers.
   for the old name returns only the historical references in
   [problem.md](problem.md) Background and roadmap step 1.
 
-```mermaid
-flowchart LR
-  subgraph repo[Common-Ansible]
-    R[README.md] --> G{grep old name}
-    Y[requirements.yml] --> G
-    C[ansible.cfg] --> G
-    W[.github workflows] --> G
-  end
-  G -->|only doc history remains| OK[clean]
-```
-
 ### Step 1.2 - Update the .menu references and rebuild supersets
 
 Update the five `.menu` files that name the repo (`supersets.psd1`,
