@@ -157,12 +157,16 @@ would import knowledge of its own consumers - a dependency-inversion
 violation. The extraction's real (non-mechanical) work is making the
 bridge consumer-agnostic:
 
-- `VmProvisioner` (the base VM list and addresses) is genuinely shared -
-  every consumer needs the inventory - so it stays an unconditional read
-  in A.
-- `VmUsers` and `GitHubRunners` become consumer-declared: the wrapper
-  states "read this vault, set these toggles" through a contract (env or a
-  small manifest the wrapper passes), instead of the bridge naming them.
+- Every consumer needs an inventory (the base VM list and addresses), so
+  the bridge always reads one - but the *vault it reads it from* is
+  consumer-declared too, not hardcoded. `VmProvisioner` is itself a named
+  vault owned by `Infrastructure-Vm-Provisioner`; baking that name into
+  the substrate would couple it to one repo's naming. The contract
+  therefore carries a required inventory-vault field (the wrapper passes
+  `VmProvisioner`), so the bridge names no vault at all.
+- `VmUsers` and `GitHubRunners` become consumer-declared the same way:
+  the wrapper states "read these extra vaults, set these toggles" through
+  the contract, instead of the bridge naming them.
 
 This decoupling is a prerequisite for steps 2-3 and is sequenced before
 the consumer-specific code moves out.

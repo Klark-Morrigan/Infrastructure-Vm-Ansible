@@ -88,46 +88,52 @@ moves out. See
 
 ### Step 2.1 - Define the consumer contract
 
-Specify how a wrapper declares its needs to the bridge: the vaults to
-read beyond the always-on `VmProvisioner`, plus any toggles (host file
-server, token requirement). Encode as an explicit env contract (e.g.
-`CA_EXTRA_VAULTS`, `CA_NEEDS_HOST_FILE_SERVER`, `CA_REQUIRES_TOKEN`) with
-a documented default of "none".
+Specify how a wrapper declares its needs to the bridge: the inventory
+vault to read, the extra vaults to read on top of it, plus any toggles
+(host file server, token requirement). Encode as an explicit env contract
+(`CA_INVENTORY_VAULT`, `CA_EXTRA_VAULTS`, `CA_NEEDS_HOST_FILE_SERVER`,
+`CA_REQUIRES_TOKEN`). `CA_INVENTORY_VAULT` is required (the bridge always
+needs an inventory and must name no vault itself); the rest default to
+"none".
 
 - **Reason:** A named contract is the seam that lets the substrate serve
-  unknown future consumers without importing their identities.
+  unknown future consumers without importing their identities - including
+  the identity of whichever vault holds the fleet inventory.
 - **Tests:** bats unit tests asserting the bridge parses each contract
-  variable, applies the documented defaults when unset, and errors on an
-  inconsistent combination (token required but absent).
+  variable, applies the documented defaults when unset, rejects a missing
+  required inventory vault, and errors on an inconsistent combination
+  (token required but absent).
 
 ### Step 2.2 - Refactor the bridge to honor the contract
 
-Replace the hardcoded `VmUsers` / `GitHubRunners` reads and the
-`NEEDS_GITHUB_RUNNERS` / `GH_TOKEN` / `NEEDS_HOST_FILE_SERVER` logic with
-the contract from 2.1. `VmProvisioner` stays an unconditional read.
+Replace the hardcoded `VmProvisioner` / `VmUsers` / `GitHubRunners` reads
+and the `NEEDS_GITHUB_RUNNERS` / `GH_TOKEN` / `NEEDS_HOST_FILE_SERVER`
+logic with the contract from 2.1. The bridge always reads one inventory
+vault, but takes its name from `CA_INVENTORY_VAULT` rather than naming it;
+extra vaults flow through as generic `--vault-config Name=path` pairs the
+extra-vars composer dispatches by name.
 
-- **Reason:** Removes the substrate's knowledge of specific consumers -
-  the dependency-inversion fix that earns the `Common-` prefix.
+- **Reason:** Removes the substrate's knowledge of any specific
+  consumer's or provider's vault names - the dependency-inversion fix
+  that earns the `Common-` prefix.
 - **Tests:** bats over the bridge with simulated contracts; the existing
   create-users and register-runners flows still dispatch correctly via
   their updated wrappers (Step 2.3) under integration tests.
 
-```mermaid
-flowchart TD
-  W[wrapper sets contract] --> B[_run-playbook.sh]
-  B --> V0[(VmProvisioner: always)]
-  B --> VE{CA_EXTRA_VAULTS?}
-  VE -->|set| VX[(read each extra vault)]
-  VE -->|unset| SKIP[skip]
-  B --> FS{CA_NEEDS_HOST_FILE_SERVER?}
-  FS -->|1| HFS[start host file server]
-```
-
 ### Step 2.3 - Port the existing wrappers onto the contract
 
 Update `create-users.sh` and `register-runners.sh` (and the remove/status
-wrappers) to declare their needs via the contract instead of relying on
-removed bridge internals.
+wrappers) to declare their needs via the contract
+(`CA_INVENTORY_VAULT=VmProvisioner`, `CA_EXTRA_VAULTS`,
+`CA_REQUIRES_TOKEN`, `CA_NEEDS_HOST_FILE_SERVER`) instead of the removed
+bridge internals (`NEEDS_GITHUB_RUNNERS` / `NEEDS_HOST_FILE_SERVER`).
+Step 2.2 left the bridge contract-driven, so until this step the wrappers
+still export the dropped variables and the live flows do not dispatch -
+this step closes that gap. Also rewrite the operator-flow README sections
+(the create / register / deregister / status write-ups that still name
+`NEEDS_GITHUB_RUNNERS` as "the bridge's vault-read gate") onto the `CA_*`
+contract; 2.2 deliberately left them, since documenting the contract
+before the wrappers used it would describe state that did not exist.
 
 - **Reason:** Keeps both shipping flows working on the decoupled bridge,
   proving the contract before any code leaves the repo.
@@ -136,8 +142,8 @@ removed bridge internals.
 
 ```mermaid
 flowchart LR
-  CU[create-users.sh] -->|CA_EXTRA_VAULTS=VmUsers| B[bridge]
-  RR[register-runners.sh] -->|CA_EXTRA_VAULTS=GitHubRunners; token; file server| B
+  CU[create-users.sh] -->|CA_INVENTORY_VAULT=VmProvisioner; CA_EXTRA_VAULTS=VmUsers| B[bridge]
+  RR[register-runners.sh] -->|CA_INVENTORY_VAULT=VmProvisioner; CA_EXTRA_VAULTS=GitHubRunners; token; file server| B
 ```
 
 ## Section 3 - Extract user provisioning to Infrastructure-Vm-Users
