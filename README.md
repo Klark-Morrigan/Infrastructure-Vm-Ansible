@@ -426,6 +426,22 @@ The bash bridge between operator scripts under `ops/` and
 typed by a human" convention). Each is unit-testable against just
 its own external boundary:
 
+- [`ops/_parse-consumer-contract.sh`](ops/_parse-consumer-contract.sh)
+  - consumer contract parser. A wrapper declares what the run needs
+  through `CA_*` environment variables rather than the bridge
+  hardcoding each consumer's vaults and toggles; this helper normalises
+  that declaration into a stable parsed form. Inputs (all optional,
+  documented default "none"): `CA_EXTRA_VAULTS` (vault names beyond the
+  always-on `VmProvisioner`, whitespace- or comma-separated),
+  `CA_NEEDS_HOST_FILE_SERVER` (`1` opts in), and `CA_REQUIRES_TOKEN`
+  (`1` declares a GitHub token is needed, supplied out-of-band via
+  `GH_TOKEN`). It emits three `KEY=value` lines on stdout
+  (`EXTRA_VAULTS=`, `NEEDS_HOST_FILE_SERVER=`, `REQUIRES_TOKEN=`) and
+  rejects the one inconsistent combination the contract can express - a
+  required token with none supplied - with a non-zero exit before any
+  vault read. Keeping this parse in a single-purpose sibling is the
+  seam that lets the substrate serve unknown future consumers without
+  importing their identities.
 - [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh) - vault
   reader. Shells out to `pwsh.exe` to fetch a named secret via the
   `Infrastructure.Secrets` wrapper (`Get-InfrastructureSecret`, never
