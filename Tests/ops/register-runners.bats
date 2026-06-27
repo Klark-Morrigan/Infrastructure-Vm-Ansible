@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 # Tests for ops/register-runners.sh - the operator entry that owns
-# token-prompting and the NEEDS_GITHUB_RUNNERS=1 opt-in flag. Scope
-# here is the prompt/flag wiring only: bridge orchestration is owned
-# by _run-playbook.bats, which stubs this entry's downstream calls
-# the same way this suite stubs _run-playbook.sh.
+# token-prompting and declares the CA_* consumer contract (GitHubRunners
+# vault + token + host file server). Scope here is the prompt/contract
+# wiring only: bridge orchestration is owned by _run-playbook.bats, which
+# stubs this entry's downstream calls the same way this suite stubs
+# _run-playbook.sh.
 #
 # The entry anchors its sibling lookup to its own BASH_SOURCE dir, so
 # this suite transplants register-runners.sh into a throwaway ops/ tree
@@ -41,9 +42,12 @@ setup() {
     cat >"${TEST_REPO}/ops/_run-playbook.sh" <<'STUB'
 #!/usr/bin/env bash
 {
-    printf 'NEEDS_GITHUB_RUNNERS=%s\n' "${NEEDS_GITHUB_RUNNERS:-}"
-    printf 'GH_TOKEN=%s\n'             "${GH_TOKEN:-}"
-    printf 'ARGV=%s\n'                 "$*"
+    printf 'CA_INVENTORY_VAULT=%s\n'        "${CA_INVENTORY_VAULT:-}"
+    printf 'CA_EXTRA_VAULTS=%s\n'           "${CA_EXTRA_VAULTS:-}"
+    printf 'CA_REQUIRES_TOKEN=%s\n'         "${CA_REQUIRES_TOKEN:-}"
+    printf 'CA_NEEDS_HOST_FILE_SERVER=%s\n' "${CA_NEEDS_HOST_FILE_SERVER:-}"
+    printf 'GH_TOKEN=%s\n'                  "${GH_TOKEN:-}"
+    printf 'ARGV=%s\n'                      "$*"
 } >> "${TRACE_FILE}"
 STUB
     chmod +x "${TEST_REPO}/ops/_run-playbook.sh"
@@ -53,7 +57,7 @@ teardown() {
     _bats_cleanup_temp
 }
 
-@test "GH_TOKEN already set: no prompt, bridge sees opt-in and token" {
+@test "GH_TOKEN already set: no prompt, bridge sees the runner contract and token" {
     GH_TOKEN='ghp_preset' \
         run "${BASH_BIN}" "${TEST_REPO}/ops/register-runners.sh"
     [ "${status}" -eq 0 ]
@@ -62,7 +66,13 @@ teardown() {
     [[ "${output}" != *"GitHub token:"* ]]
 
     trace="$(cat "${TRACE_FILE}")"
-    [[ "${trace}" == *"NEEDS_GITHUB_RUNNERS=1"* ]]
+    # The register entry declares the full runner contract: the
+    # VmProvisioner inventory, the GitHubRunners vault on top, the token
+    # requirement, and the register-only host file server.
+    [[ "${trace}" == *"CA_INVENTORY_VAULT=VmProvisioner"* ]]
+    [[ "${trace}" == *"CA_EXTRA_VAULTS=GitHubRunners"* ]]
+    [[ "${trace}" == *"CA_REQUIRES_TOKEN=1"* ]]
+    [[ "${trace}" == *"CA_NEEDS_HOST_FILE_SERVER=1"* ]]
     [[ "${trace}" == *"GH_TOKEN=ghp_preset"* ]]
 }
 

@@ -8,7 +8,7 @@
 #
 # Two differences from register-runners.bats worth pinning explicitly
 # (each has its own test below):
-#   - NEEDS_HOST_FILE_SERVER must stay unset (the down path fetches
+#   - CA_NEEDS_HOST_FILE_SERVER must stay unset (the down path fetches
 #     nothing; spawning the HttpListener would be a port and a failure
 #     surface for no consumer).
 #   - --force is consumed by the wrapper and translated to
@@ -47,10 +47,12 @@ setup() {
     cat >"${TEST_REPO}/ops/_run-playbook.sh" <<'STUB'
 #!/usr/bin/env bash
 {
-    printf 'NEEDS_GITHUB_RUNNERS=%s\n'   "${NEEDS_GITHUB_RUNNERS:-}"
-    printf 'NEEDS_HOST_FILE_SERVER=%s\n' "${NEEDS_HOST_FILE_SERVER:-}"
-    printf 'GH_TOKEN=%s\n'               "${GH_TOKEN:-}"
-    printf 'ARGV=%s\n'                   "$*"
+    printf 'CA_INVENTORY_VAULT=%s\n'        "${CA_INVENTORY_VAULT:-}"
+    printf 'CA_EXTRA_VAULTS=%s\n'           "${CA_EXTRA_VAULTS:-}"
+    printf 'CA_REQUIRES_TOKEN=%s\n'         "${CA_REQUIRES_TOKEN:-}"
+    printf 'CA_NEEDS_HOST_FILE_SERVER=%s\n' "${CA_NEEDS_HOST_FILE_SERVER:-}"
+    printf 'GH_TOKEN=%s\n'                  "${GH_TOKEN:-}"
+    printf 'ARGV=%s\n'                      "$*"
 } >> "${TRACE_FILE}"
 STUB
     chmod +x "${TEST_REPO}/ops/_run-playbook.sh"
@@ -60,17 +62,20 @@ teardown() {
     _bats_cleanup_temp
 }
 
-@test "GH_TOKEN already set: no prompt, opt-in flags correct, no force" {
+@test "GH_TOKEN already set: no prompt, contract correct, no force" {
     GH_TOKEN='ghp_preset' \
         run "${BASH_BIN}" "${TEST_REPO}/ops/deregister-runners.sh"
     [ "${status}" -eq 0 ]
     [[ "${output}" != *"GitHub token:"* ]]
 
     trace="$(cat "${TRACE_FILE}")"
-    [[ "${trace}" == *"NEEDS_GITHUB_RUNNERS=1"* ]]
+    # Same runner contract as register, minus the host file server.
+    [[ "${trace}" == *"CA_INVENTORY_VAULT=VmProvisioner"* ]]
+    [[ "${trace}" == *"CA_EXTRA_VAULTS=GitHubRunners"* ]]
+    [[ "${trace}" == *"CA_REQUIRES_TOKEN=1"* ]]
     # File-server gate must be empty on the down path - the down
     # roles fetch nothing and the listener would be pure overhead.
-    [[ "${trace}" == *"NEEDS_HOST_FILE_SERVER="$'\n'* ]]
+    [[ "${trace}" == *"CA_NEEDS_HOST_FILE_SERVER="$'\n'* ]]
     [[ "${trace}" == *"GH_TOKEN=ghp_preset"* ]]
     # No --force on this invocation -> no runners_force_remove
     # extra-var in the forwarded argv.

@@ -3,9 +3,10 @@
 #
 # Emits the runners-domain keys consumed by the runner_binary /
 # runner_registration / runner_service roles. Opt-in: dispatched by
-# the orchestrator only when the caller exports NEEDS_GITHUB_RUNNERS=1
-# and supplies GH_TOKEN, so the create-users / remove-users flows
-# never pay for it.
+# the extra-vars composer only when the caller declares the
+# GitHubRunners vault (CA_EXTRA_VAULTS=GitHubRunners with
+# CA_REQUIRES_TOKEN=1) and supplies GH_TOKEN, so the create-users /
+# remove-users flows never pay for it.
 #
 # Output (stdout):
 #   {

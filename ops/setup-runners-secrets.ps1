@@ -14,7 +14,8 @@
     Both repos write to the same vault (`GitHubRunners`) and secret
     name (`GitHubRunnersConfig-<Suffix>`) - which is exactly what
     this repo's bash bridge in `ops/_run-playbook.sh` reads from when
-    `NEEDS_GITHUB_RUNNERS=1`. Forking the writer before the vault
+    a wrapper declares it via `CA_EXTRA_VAULTS=GitHubRunners`. Forking
+    the writer before the vault
     contract genuinely diverges would just create a second place to
     keep in lock-step with the first (same posture as
     `ops/setup-secrets.ps1` toward Vm-Users).

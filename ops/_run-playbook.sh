@@ -83,11 +83,14 @@ case "$(uname -s)" in
 
         # Forward only the caller-supplied inputs the bridge consults: the
         # SECRET_SUFFIX selector and the consumer-contract CA_* variables
-        # the parse step reads. WSLENV injects them into the WSL
-        # environment; GH_TOKEN rides this channel rather than the command
-        # line so it never lands in a `ps` listing. Append to any existing
-        # WSLENV rather than clobber.
-        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_REQUIRES_TOKEN:GH_TOKEN"
+        # the parse step reads. CA_INVENTORY_VAULT is included because it is
+        # the one REQUIRED contract var - omitting it would make the parse
+        # step reject every Git-Bash-launched flow with "CA_INVENTORY_VAULT
+        # must be set" once it re-execs into WSL. WSLENV injects them into
+        # the WSL environment; GH_TOKEN rides this channel rather than the
+        # command line so it never lands in a `ps` listing. Append to any
+        # existing WSLENV rather than clobber.
+        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_INVENTORY_VAULT:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_REQUIRES_TOKEN:GH_TOKEN"
 
         # MSYS2 (Git Bash) rewrites /-leading arguments into Windows paths
         # when launching a Windows .exe, which corrupts the /mnt path and

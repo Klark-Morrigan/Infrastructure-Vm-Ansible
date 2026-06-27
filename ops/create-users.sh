@@ -5,10 +5,17 @@
 # follow the playbook path so operators can pass --tags, --limit,
 # --check, -v, etc. unchanged.
 #
-# Kept as a one-liner on purpose - every concern this script could
-# carry already lives in _run-playbook.sh. Adding logic here would
-# split the bridge across two layers for no readability gain.
+# The wrapper's only job beyond dispatch is to DECLARE its needs to the
+# consumer-agnostic bridge through the CA_* contract: the fleet inventory
+# lives in the VmProvisioner vault, and the user roles' extra-vars come
+# from the VmUsers vault on top of it. The bridge names no vault itself,
+# so naming them here is what couples this flow - not the substrate - to
+# its own vault layout. No token and no host file server: the user flow
+# needs neither.
 set -euo pipefail
+
+export CA_INVENTORY_VAULT=VmProvisioner
+export CA_EXTRA_VAULTS=VmUsers
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec "${script_dir}/_run-playbook.sh" playbooks/create-users.yml "$@"

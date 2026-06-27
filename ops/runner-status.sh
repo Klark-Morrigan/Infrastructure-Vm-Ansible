@@ -3,11 +3,11 @@
 # "up" - its on-VM systemd unit is active AND GitHub shows it online.
 #
 # Read-only counterpart to register-runners.sh / deregister-runners.sh: same
-# GH_TOKEN acquisition (require_gh_token) and the same NEEDS_GITHUB_RUNNERS=1
-# opt-in for the GitHubRunnersConfig vault read the status play needs. No
-# --force / no host file server - nothing is changed or fetched. Every other
-# arg is forwarded to ansible-playbook, so `--limit ubuntu-02-ci` narrows the
-# check to one VM.
+# GH_TOKEN acquisition (require_gh_token) and the same
+# CA_EXTRA_VAULTS=GitHubRunners + CA_REQUIRES_TOKEN=1 contract for the
+# GitHubRunnersConfig vault read the status play needs. No --force / no host
+# file server - nothing is changed or fetched. Every other arg is forwarded
+# to ansible-playbook, so `--limit ubuntu-02-ci` narrows the check to one VM.
 #
 # Report-only: a DOWN runner is a normal result, so the exit code mirrors
 # ansible-playbook's - 0 on a clean run even with runners down, non-zero only
@@ -23,7 +23,10 @@ source "${script_dir}/imports/_log.sh"
 source "${script_dir}/_require-gh-token.sh"
 
 require_gh_token
-export NEEDS_GITHUB_RUNNERS=1
+
+export CA_INVENTORY_VAULT=VmProvisioner
+export CA_EXTRA_VAULTS=GitHubRunners
+export CA_REQUIRES_TOKEN=1
 
 # The play colours its UP/DOWN report with ANSI inside debug msgs, but
 # Ansible's default callback JSON-encodes task results, so each ESC byte

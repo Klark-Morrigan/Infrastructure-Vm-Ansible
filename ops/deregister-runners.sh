@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Operator wrapper for the deregister-runners flow. Mirrors
 # register-runners.sh: same GH_TOKEN acquisition (require_gh_token), same
-# NEEDS_GITHUB_RUNNERS=1 opt-in for the third vault read, same
-# forward-all-other-args convention. Two deliberate differences from the
-# register entry:
+# CA_EXTRA_VAULTS=GitHubRunners + CA_REQUIRES_TOKEN=1 contract for the
+# vault read, same forward-all-other-args convention. Two deliberate
+# differences from the register entry:
 #
-# - NEEDS_HOST_FILE_SERVER stays unset. The down path fetches nothing from
-#   the Windows side, so spawning the HttpListener would be a port and a
-#   failure surface (port-in-use, switch IP absent) for no consumer.
+# - CA_NEEDS_HOST_FILE_SERVER stays unset. The down path fetches nothing
+#   from the Windows side, so spawning the HttpListener would be a port and
+#   a failure surface (port-in-use, switch IP absent) for no consumer.
 # - The wrapper owns one flag of its own, --force, consumed here and
 #   translated to --extra-vars runners_force_remove=true for
 #   ansible-playbook. The translation lives here (not at the playbook
@@ -35,7 +35,10 @@ while (( $# )); do
 done
 
 require_gh_token
-export NEEDS_GITHUB_RUNNERS=1
+
+export CA_INVENTORY_VAULT=VmProvisioner
+export CA_EXTRA_VAULTS=GitHubRunners
+export CA_REQUIRES_TOKEN=1
 
 if (( force )); then
     forwarded+=( --extra-vars 'runners_force_remove=true' )

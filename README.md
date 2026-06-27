@@ -211,7 +211,8 @@ delegates to
 under the same sibling-checkout convention as the Vm-Users wrapper.
 Both repos target the same `GitHubRunners` vault and the same
 `GitHubRunnersConfig-<Suffix>` secret name - which is exactly what
-this repo's bridge reads from when `NEEDS_GITHUB_RUNNERS=1`. The
+this repo's bridge reads from when a runner wrapper declares it via
+`CA_EXTRA_VAULTS=GitHubRunners`. The
 GitHub PAT is **not** stored in this vault: it is supplied per
 register-runners invocation via the entry script's prompt (or
 `GH_TOKEN` for unattended callers).
@@ -232,11 +233,14 @@ Explorer (Git Bash launcher; mirrors the
 sibling-find pattern and reuses
 [`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
 
-[`ops/create-users.sh`](ops/create-users.sh) is a one-line wrapper
-that dispatches [`playbooks/create-users.yml`](playbooks/create-users.yml)
-through the [bridge](#bridge-contract); every flag after the entry
-point is forwarded to `ansible-playbook` verbatim, so the usual
-operator knobs work unchanged:
+[`ops/create-users.sh`](ops/create-users.sh) declares its needs to the
+[bridge](#bridge-contract) through the `CA_*` contract -
+`CA_INVENTORY_VAULT=VmProvisioner` (the fleet inventory) and
+`CA_EXTRA_VAULTS=VmUsers` (the user roles' config on top), with no token
+and no host file server - then dispatches
+[`playbooks/create-users.yml`](playbooks/create-users.yml). Every flag
+after the entry point is forwarded to `ansible-playbook` verbatim, so the
+usual operator knobs work unchanged:
 
 ```
 wsl ./ops/create-users.sh --check               # dry-run
@@ -263,8 +267,10 @@ wsl ./ops/remove-users.sh
 or double-click [`ops/remove-users.bat`](ops/remove-users.bat) from
 Explorer (same Git Bash launcher pattern as the create side).
 
-[`ops/remove-users.sh`](ops/remove-users.sh) is a one-line wrapper
-that dispatches [`playbooks/remove-users.yml`](playbooks/remove-users.yml)
+[`ops/remove-users.sh`](ops/remove-users.sh) declares the same `CA_*`
+contract as the create side (`CA_INVENTORY_VAULT=VmProvisioner`,
+`CA_EXTRA_VAULTS=VmUsers`) and dispatches
+[`playbooks/remove-users.yml`](playbooks/remove-users.yml)
 through the [bridge](#bridge-contract); the same operator knobs as
 the create side work unchanged:
 
@@ -320,11 +326,13 @@ from Explorer (same Git Bash launcher pattern as the users-side
 entries).
 
 [`ops/register-runners.sh`](ops/register-runners.sh) prompts for the
-GitHub PAT via `read -s` when `GH_TOKEN` is unset, exports it plus
-`NEEDS_GITHUB_RUNNERS=1` (the [bridge](#bridge-contract)'s third
-vault-read gate) and `NEEDS_HOST_FILE_SERVER=1` (the bridge's
-host-file-server staging gate; register only, because the down path
-fetches nothing), and dispatches
+GitHub PAT via `read -s` when `GH_TOKEN` is unset, then declares the full
+runner contract to the [bridge](#bridge-contract):
+`CA_INVENTORY_VAULT=VmProvisioner` plus `CA_EXTRA_VAULTS=GitHubRunners`
+(the runner config vault read on top of the inventory),
+`CA_REQUIRES_TOKEN=1` (the GitHub PAT requirement), and
+`CA_NEEDS_HOST_FILE_SERVER=1` (the host-file-server staging gate; register
+only, because the down path fetches nothing). It then dispatches
 [`playbooks/register-runners.yml`](playbooks/register-runners.yml)
 through the bridge. The same operator knobs as the users-side flows
 work unchanged:
@@ -377,12 +385,13 @@ or double-click [`ops/deregister-runners.bat`](ops/deregister-runners.bat)
 from Explorer (same Git Bash launcher pattern as the register entry).
 
 [`ops/deregister-runners.sh`](ops/deregister-runners.sh) mirrors the
-register entry's prompt-or-`GH_TOKEN` shape and exports
-`NEEDS_GITHUB_RUNNERS=1` so the [bridge](#bridge-contract) reads the
-`GitHubRunners` vault. It deliberately does **not** export
-`NEEDS_HOST_FILE_SERVER`: the down path fetches nothing from the
-Windows side, so spawning the `HttpListener` would be a port and a
-failure surface for no consumer. The wrapper owns one flag of its
+register entry's prompt-or-`GH_TOKEN` shape and declares
+`CA_EXTRA_VAULTS=GitHubRunners` (with `CA_REQUIRES_TOKEN=1`) so the
+[bridge](#bridge-contract) reads the `GitHubRunners` vault. It
+deliberately leaves `CA_NEEDS_HOST_FILE_SERVER` unset: the down path
+fetches nothing from the Windows side, so spawning the `HttpListener`
+would be a port and a failure surface for no consumer. The wrapper owns
+one flag of its
 own, `--force`, which it consumes and translates to
 `--extra-vars runners_force_remove=true` for `ansible-playbook`
 (which has no `--force` flag of its own); every other arg is

@@ -27,7 +27,10 @@ single committable act with its reason, tests, and a diagram.
   (`Tests/molecule/<role>`); ops/bridge changes by bats
   (`Tests/ops`); playbook compositions by playbook-level integration
   tests (`Tests/ansible`, `Tests/playbooks`).
-- Each step updates the README sections it earns - no terminal docs pass.
+- Each step updates the README sections it earns as part of that step -
+  no terminal docs pass. Every step names its doc deliverable in a
+  `README:` bullet (which README, which section); a step with no
+  user-facing doc says so explicitly.
 - Cross-repo steps note which repo they land in; this plan is the single
   source for all of them (one plan, all repos).
 - The pre-migration implementation is kept as a fork in Common-Ansible
@@ -50,6 +53,8 @@ comments, the `.github` workflow names, and any ops/script headers.
 - **Tests:** `scripts/run-lint-yaml-and-bash.sh` green; a repo-wide grep
   for the old name returns only the historical references in
   [problem.md](problem.md) Background and roadmap step 1.
+- **README:** Title, index, and prose carry the `Common-Ansible` name;
+  no old-name reference remains in this repo's README.
 
 ### Step 1.2 - Update the .menu references and rebuild supersets
 
@@ -61,6 +66,8 @@ Update the five `.menu` files that name the repo (`supersets.psd1`,
   name drops Common-Ansible out of cluster ordering and superset graphs.
 - **Tests:** The menu loads without error; `Build-Supersets.ps1` for the
   affected superset completes and emits a graph that lists Common-Ansible.
+- **README:** None - the `.menu` / superset tooling files carry no
+  README of their own.
 
 ### Step 1.3 - Update cross-repo references to the repo
 
@@ -71,6 +78,8 @@ Find and update any sibling repo that referenced the old name (remotes,
   redirecting or once a fresh clone is taken.
 - **Tests:** Each touched repo's lint/CI is green; a cross-repo grep for
   the old name is empty.
+- **README:** Each touched sibling repo's README/docs name
+  `Common-Ansible`; this repo's README is unchanged by this step.
 
 ```mermaid
 flowchart LR
@@ -103,6 +112,9 @@ needs an inventory and must name no vault itself); the rest default to
   variable, applies the documented defaults when unset, rejects a missing
   required inventory vault, and errors on an inconsistent combination
   (token required but absent).
+- **README:** None operator-facing yet - the contract parser is an
+  internal bridge helper; its documentation lands with the
+  bridge-contract rewrite in 2.2.
 
 ### Step 2.2 - Refactor the bridge to honor the contract
 
@@ -135,6 +147,10 @@ it, so it carries no topology knowledge itself.
   per-script bats (inventory, router reachability, staging, inventory
   extra-vars) and the host-file-server Pester suite stay green from
   their new `ops/virtual-machines/` location.
+- **README:** Rewrite the "Bridge contract" section onto the `CA_*`
+  contract and document the `ops/virtual-machines/` module grouping
+  (inventory builder, router resolver, host file server). The
+  operator-flow sections stay on the old wording until 2.3.
 
 ### Step 2.3 - Port the existing wrappers onto the contract
 
@@ -155,6 +171,9 @@ before the wrappers used it would describe state that did not exist.
   proving the contract before any code leaves the repo.
 - **Tests:** Integration - create/remove users and register/deregister
   runners still run end to end (molecule + playbook tests unchanged).
+- **README:** Rewrite the create / remove / register / deregister
+  operator-flow sections and the setup-runners-secrets note onto the
+  `CA_*` contract.
 
 ```mermaid
 flowchart LR
@@ -181,6 +200,9 @@ tag. Document the bootstrap that fetches it.
 - **Tests:** A clean controller bootstrap in Infrastructure-Vm-Users
   resolves and installs the pinned Common-Ansible artifact; a smoke
   playbook that includes a substrate role runs.
+- **README:** Document the bootstrap/consumption path in
+  Infrastructure-Vm-Users' README; note the reusable-role packaging
+  (collection or git-sourced roles) in this repo's README.
 
 ```mermaid
 flowchart LR
@@ -202,6 +224,9 @@ copies remain in Common-Ansible as a fork until Step 3.5.
   Common-Ansible runnable, satisfying the keep-a-fork constraint.
 - **Tests:** molecule per moved role in Vm-Users; create/remove-users
   integration against a disposable target.
+- **README:** Infrastructure-Vm-Users' README gains the moved user
+  roles/playbooks; this repo's README still documents the retained fork
+  (removed in 3.5).
 
 ```mermaid
 flowchart LR
@@ -223,6 +248,8 @@ flows in its README index.
 - **Reason:** The owner repo must enforce the same bar and carry its own
   operator docs.
 - **Tests:** Vm-Users CI green (yamllint, shellcheck, molecule).
+- **README:** Infrastructure-Vm-Users' README index documents the
+  create/remove operator flows and the CI bar this step wires.
 
 ```mermaid
 flowchart LR
@@ -248,6 +275,9 @@ Section 4. Prove green before the fork is deleted in 3.5.
 - **Tests:** E2E users layer green on a disposable VM with
   `UsersFlow=ansible` resolving to Vm-Users ops; `custom-powershell`
   unchanged; the runners-ansible flow still resolves to Common-Ansible.
+- **README:** Infrastructure-E2E's README/docs describe the
+  users-ansible flow resolving under `$UsersPath`, retiring the
+  "Ansible is a separate third repo" framing for the user domain.
 
 ```mermaid
 flowchart LR
@@ -267,6 +297,8 @@ Common-Ansible and drop the `VmUsers` references from its docs.
 - **Reason:** A fork kept past proof becomes a second source of truth.
 - **Tests:** Common-Ansible CI green with no user domain present; grep
   confirms no `VmUsers`-specific code remains.
+- **README:** Remove the create/remove-users operator-flow sections and
+  every `VmUsers` reference from this repo's README and index.
 
 ```mermaid
 flowchart LR
@@ -307,6 +339,10 @@ resolvers actually move out.
   severing its build-time dependency on the runner-tarball resolvers.
 - **Tests:** molecule per moved role; register/deregister integration
   against a disposable runner target with a scoped token.
+- **README:** Infrastructure-GitHubRunners' README gains the moved
+  runner roles/playbooks and documents how the flow reaches the
+  substrate host file server through the `CA_*` contract; this repo's
+  README still documents the retained fork (removed in 4.4).
 
 ```mermaid
 flowchart LR
@@ -321,6 +357,8 @@ flowchart LR
 
 - **Reason:** Same bar and operator docs as the user owner.
 - **Tests:** GitHubRunners CI green.
+- **README:** Infrastructure-GitHubRunners' README index documents the
+  register/deregister/status operator flows and the CI bar.
 
 ```mermaid
 flowchart LR
@@ -345,6 +383,10 @@ green before the fork is deleted in 4.4.
   target with `RunnersFlow=ansible` resolving to GitHubRunners ops;
   `custom-powershell` unchanged; no E2E reference to Common-Ansible ops
   remains.
+- **README:** Infrastructure-E2E's README/docs describe the
+  runners-ansible flow resolving under `$RunnersPath` and the collapse
+  of `$AnsiblePath` into the per-domain owner paths; no Common-Ansible
+  reference remains.
 
 ```mermaid
 flowchart LR
@@ -361,6 +403,9 @@ flowchart LR
 - **Reason:** Single source of truth once the owner is proven.
 - **Tests:** Common-Ansible CI green as pure substrate; no runner code or
   `GitHubRunners` references remain.
+- **README:** Remove the runner operator-flow sections and every
+  `GitHubRunners` reference from this repo's README, leaving substrate +
+  toolchains documented.
 
 ```mermaid
 flowchart LR
@@ -387,6 +432,9 @@ one capability Ansible does not give for free, per
   only in their resolve/version logic.
 - **Tests:** molecule covering install, idempotent re-run, version swap
   (old symlinks/profile removed), and uninstall-removed-versions.
+- **README:** Document the host-push toolchain role pattern in this
+  repo's README (and/or a role README under `roles/`) so the JDK/.NET
+  roles can reference it.
 
 ```mermaid
 flowchart TD
@@ -406,6 +454,8 @@ Port `JdkProvider` (Adoptium resolve + install/uninstall) onto 5.1.
 - **Reason:** First real consumer of the section-1 pattern; proves parity
   with the reconciler.
 - **Tests:** molecule - install a pinned JDK, swap versions, uninstall.
+- **README:** `jdk` role README (purpose, variables, the Adoptium
+  resolve/install behaviour it adds on the 5.1 pattern).
 
 ```mermaid
 flowchart LR
@@ -416,6 +466,8 @@ flowchart LR
 
 - **Reason:** Second section-1 toolchain; parity with the SDK provider.
 - **Tests:** molecule - install, version swap, uninstall.
+- **README:** `dotnet_sdk` role README (resolve/install behaviour on the
+  5.1 pattern).
 
 ```mermaid
 flowchart LR
@@ -431,6 +483,8 @@ torn down before the SDK on removal.
   guarantees.
 - **Tests:** molecule - install a tool, remove the SDK, assert the tool is
   removed first.
+- **README:** `dotnet_tools` role README, noting the parent/child
+  teardown ordering (tools removed before the SDK).
 
 ```mermaid
 flowchart LR
@@ -450,6 +504,9 @@ naming honest (see
   on which box" (a deploying consumer).
 - **Tests:** Integration - run the flow against a disposable VM and assert
   the toolchain is present and on PATH.
+- **README:** Document the toolchain targeting flow (playbook +
+  inventory) in the consumer repo's README; this repo's README only
+  references the reusable roles it consumes.
 
 ```mermaid
 flowchart LR
@@ -472,6 +529,9 @@ production runner with parity on install/swap/uninstall.
   be written, not implied.
 - **Tests:** Documentation only; no code change. The reconciler stays
   active and tested in its repo.
+- **README:** Record the cutover criterion in this feature's docs
+  (problem.md/README); the reconciler's retirement is a later feature,
+  so its repo README is unchanged here.
 
 ```mermaid
 flowchart LR
@@ -493,6 +553,8 @@ candidate `0.9.0-1` on the target's Ubuntu 24.04).
   a durable, re-provision-safe way.
 - **Tests:** molecule - shellcheck absent then present and on PATH;
   idempotent re-run.
+- **README:** `toolchain_apt` role README (the section-2 pattern and the
+  shellcheck-pinned use it ships with).
 
 ```mermaid
 flowchart LR
@@ -511,6 +573,9 @@ tarball + install.sh).
   rather than depending on the action's runtime install.
 - **Tests:** molecule - bats absent then present and on PATH; a trivial
   `.bats` file runs.
+- **README:** Document the bats install via the section-2 role (the
+  `toolchain_apt` role README's use list, or a short note where the
+  section-2 roles are described).
 
 ```mermaid
 flowchart LR
@@ -532,6 +597,8 @@ runner service user to the `docker` group.
 - **Tests:** molecule - daemon reachable (`docker ps`), the target user is
   in the `docker` group, idempotent re-run. Note the docker-in-docker
   caveat for the molecule driver in the scenario.
+- **README:** `docker` role README (repo/engine/service/group steps and
+  the docker-in-docker molecule caveat).
 
 ```mermaid
 flowchart TD
@@ -556,6 +623,9 @@ PS validation ignores the new block.
   read by the Ansible flow.
 - **Tests:** Schema/validation unit tests for the new block; a malformed
   section fails with a clear message.
+- **README:** Document the three-section `toolchains` config block (its
+  shape and per-section validation) where the per-VM config schema is
+  described.
 
 ```mermaid
 classDiagram
@@ -578,6 +648,9 @@ it.
 - **Reason:** Applies the work to the actual red runner.
 - **Tests:** Post-run probe on the VM: shellcheck/bats/docker present, on
   PATH, daemon reachable, runner user in docker group.
+- **README:** Note the `ubuntu-02-ci` toolchain declaration in the
+  consumer repo's README/config docs that own the production VM
+  definitions.
 
 ```mermaid
 flowchart LR
@@ -593,6 +666,9 @@ PR and confirm all pass on the self-hosted runner.
 - **Reason:** Closes the loop on the originating failure.
 - **Tests:** The three checks pass on the PR; record the run links in the
   feature README.
+- **README:** Record the green `ci-bash` / `ci-yaml` / `ci-dotnet` run
+  links in this feature's README, closing the loop on the originating
+  failure.
 
 ```mermaid
 flowchart LR
