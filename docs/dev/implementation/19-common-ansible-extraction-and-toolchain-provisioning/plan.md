@@ -189,7 +189,7 @@ Relocate `vm_users_entry`, `groups`, `sudoers`, `users` (with molecule),
 `create-users.yml`, `remove-users.yml`,
 `playbooks/tasks/_ensure-acl-present.yml`, the user wrappers, and
 `_build-extra-vars-users.sh`. They consume the substrate via 3.1. The
-copies remain in Common-Ansible as a fork until Step 3.4.
+copies remain in Common-Ansible as a fork until Step 3.5.
 
 - **Reason:** Puts the user domain with its owner while leaving
   Common-Ansible runnable, satisfying the keep-a-fork constraint.
@@ -223,7 +223,36 @@ flowchart LR
   CI --> GREEN[green checks]
 ```
 
-### Step 3.4 - Remove the user fork from Common-Ansible
+### Step 3.4 - Re-point the E2E users-ansible flow at Vm-Users
+
+Update Infrastructure-E2E so the `ansible` users flow resolves
+`create-users.sh` / `remove-users.sh` under `$UsersPath`
+(Infrastructure-Vm-Users) instead of the shared `$AnsiblePath` ->
+Common-Ansible. Split the "one checkout serves both domains" assumption:
+the users-ansible flow now resolves within its owner repo, while the
+runners-ansible flow keeps using the Common-Ansible checkout until
+Section 4. Prove green before the fork is deleted in 3.5.
+
+- **Reason:** Step 3.5 deletes Common-Ansible's user ops, so E2E must
+  already dispatch to the owner repo or the ansible users flow breaks.
+  Folding the path into `$UsersPath` also retires the "Ansible is a
+  separate third repo" framing now that both user implementations live
+  in Vm-Users.
+- **Tests:** E2E users layer green on a disposable VM with
+  `UsersFlow=ansible` resolving to Vm-Users ops; `custom-powershell`
+  unchanged; the runners-ansible flow still resolves to Common-Ansible.
+
+```mermaid
+flowchart LR
+  subgraph VU[Infrastructure-Vm-Users]
+    PS[create/remove-users.ps1]
+    ANS[create/remove-users.sh]
+  end
+  E2E[E2E UsersFlow] -->|custom-powershell| PS
+  E2E -->|ansible| ANS
+```
+
+### Step 3.5 - Remove the user fork from Common-Ansible
 
 Once Vm-Users is proven, delete the user roles/playbooks/wrappers from
 Common-Ansible and drop the `VmUsers` references from its docs.
@@ -251,7 +280,7 @@ playbooks and their task includes, the runner wrappers,
 `_ensure-runner-tarball.ps1`, `_resolve-runner-version.ps1`, and
 `setup-runners-secrets.*`. They consume the substrate (3.1) and declare
 `GitHubRunners` + token + host-file-server via the contract (2.1). Fork
-retained in Common-Ansible until 4.3.
+retained in Common-Ansible until 4.4.
 
 - **Reason:** Runner domain to its owner; the host file server itself
   stays substrate and is reached through the contract.
@@ -277,7 +306,36 @@ flowchart LR
   GR[GitHubRunners] --> CI[ci + molecule] --> GREEN[green]
 ```
 
-### Step 4.3 - Remove the runner fork from Common-Ansible
+### Step 4.3 - Re-point the E2E runners-ansible flow at GitHubRunners
+
+Update Infrastructure-E2E so the `ansible` runners flow resolves
+`register-runners.sh` (and the status / deregister wrappers) under
+`$RunnersPath` (Infrastructure-GitHubRunners) instead of `$AnsiblePath`
+-> Common-Ansible. With Section 3 already off the shared path, this
+removes the last E2E dependency on a Common-Ansible checkout, so
+`$AnsiblePath` / `$WslDistro`-as-a-third-repo can be retired. Prove
+green before the fork is deleted in 4.4.
+
+- **Reason:** Step 4.4 deletes Common-Ansible's runner ops, so E2E must
+  already dispatch to GitHubRunners or the ansible runners flow breaks.
+  Completes the collapse of `$AnsiblePath` into the per-domain owner
+  paths.
+- **Tests:** E2E runner-lifecycle layer green on a disposable runner
+  target with `RunnersFlow=ansible` resolving to GitHubRunners ops;
+  `custom-powershell` unchanged; no E2E reference to Common-Ansible ops
+  remains.
+
+```mermaid
+flowchart LR
+  subgraph GR[Infrastructure-GitHubRunners]
+    PS[register/deregister-runners.ps1]
+    ANS[register-runners.sh + wrappers]
+  end
+  E2E[E2E RunnersFlow] -->|custom-powershell| PS
+  E2E -->|ansible| ANS
+```
+
+### Step 4.4 - Remove the runner fork from Common-Ansible
 
 - **Reason:** Single source of truth once the owner is proven.
 - **Tests:** Common-Ansible CI green as pure substrate; no runner code or
