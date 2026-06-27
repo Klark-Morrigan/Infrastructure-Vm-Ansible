@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
-# Tests for ops/_build-extra-vars-inventory.sh - per-domain helper
+# Tests for ops/virtual-machines/_build-extra-vars-inventory.sh - per-domain helper
 # emitting vm_provisioner_config. Pure transform; jq is the only
 # external dep, run for real.
 # Run with: bats Tests/ops/_build-extra-vars-inventory.bats
 
-SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars-inventory.sh"
+SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops/virtual-machines" && pwd)/_build-extra-vars-inventory.sh"
 
 # shellcheck source=Tests/ops/_bats-helpers.sh
 source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"

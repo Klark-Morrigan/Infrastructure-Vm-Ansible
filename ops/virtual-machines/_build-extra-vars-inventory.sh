@@ -12,9 +12,9 @@
 set -euo pipefail
 
 # shellcheck source=ops/_validate-extra-vars-input.sh
-source "${BASH_SOURCE[0]%/*}/_validate-extra-vars-input.sh"
+source "${BASH_SOURCE[0]%/*}/../_validate-extra-vars-input.sh"
 # shellcheck source=ops/_die-on-unknown-flag.sh
-source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+source "${BASH_SOURCE[0]%/*}/../_die-on-unknown-flag.sh"
 
 provisioner_path=""
 

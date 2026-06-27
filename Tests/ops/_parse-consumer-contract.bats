@@ -19,20 +19,47 @@ setup() {
     # Start every test from a clean contract environment so a value the
     # harness happens to export (e.g. a real GH_TOKEN) cannot mask a
     # default-or-reject assertion.
-    unset CA_EXTRA_VAULTS CA_NEEDS_HOST_FILE_SERVER CA_REQUIRES_TOKEN GH_TOKEN
+    unset CA_INVENTORY_VAULT CA_EXTRA_VAULTS CA_NEEDS_HOST_FILE_SERVER \
+          CA_REQUIRES_TOKEN GH_TOKEN
+
+    # The inventory vault is the one required field; tests that are not
+    # specifically about its absence set it so the rest of the contract is
+    # exercised against a valid baseline.
+    export CA_INVENTORY_VAULT="VmProvisioner"
 }
 
 teardown() {
     _bats_cleanup_temp
 }
 
-@test "applies the documented defaults when no contract variable is set" {
+@test "applies the documented defaults when only the required inventory vault is set" {
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 0 ]
-    # No extra vaults (empty value), both toggles off - the "none" default.
+    # Inventory vault echoed back; no extra vaults (empty value), both
+    # toggles off - the "none" default.
+    [[ "$(grep '^INVENTORY_VAULT=' <<<"${output}")" == "INVENTORY_VAULT=VmProvisioner" ]]
     [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=" ]]
     [[ "$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${output}")" == "NEEDS_HOST_FILE_SERVER=0" ]]
     [[ "$(grep '^REQUIRES_TOKEN=' <<<"${output}")" == "REQUIRES_TOKEN=0" ]]
+}
+
+@test "rejects a contract with no inventory vault declared" {
+    # CA_INVENTORY_VAULT is the one required field: the bridge always
+    # reads an inventory and must name no vault itself, so an absent
+    # declaration is rejected before any vault read.
+    unset CA_INVENTORY_VAULT
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"CA_INVENTORY_VAULT"* ]]
+}
+
+@test "echoes a non-default inventory vault name verbatim" {
+    # The bridge reads whatever vault the consumer names - the substrate
+    # is not pinned to VmProvisioner.
+    export CA_INVENTORY_VAULT="FleetVaultX"
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 0 ]
+    [[ "$(grep '^INVENTORY_VAULT=' <<<"${output}")" == "INVENTORY_VAULT=FleetVaultX" ]]
 }
 
 @test "parses a single extra vault" {

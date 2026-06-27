@@ -22,7 +22,7 @@
 set -euo pipefail
 
 # shellcheck source=ops/imports/_log.sh
-source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+source "${BASH_SOURCE[0]%/*}/../imports/_log.sh"
 
 router_ip="${1:?_assert-router-reachable.sh: router IP required}"
 probe_port="${2:-22}"

@@ -30,8 +30,8 @@ BeforeAll {
 
     . "$PSScriptRoot\..\..\ops\_resolve-runner-version.ps1"
     . "$PSScriptRoot\..\..\ops\_ensure-runner-tarball.ps1"
-    . "$PSScriptRoot\..\..\ops\_start-host-file-server.ps1"
-    . "$PSScriptRoot\..\..\ops\_stop-host-file-server.ps1"
+    . "$PSScriptRoot\..\..\ops\virtual-machines\_start-host-file-server.ps1"
+    . "$PSScriptRoot\..\..\ops\virtual-machines\_stop-host-file-server.ps1"
 }
 
 Describe 'Resolve-RunnerVersion' {

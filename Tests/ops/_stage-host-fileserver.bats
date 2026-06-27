@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for ops/_stage-host-fileserver.sh - the GitHubRunners opt-in
+# Tests for ops/virtual-machines/_stage-host-fileserver.sh - the GitHubRunners opt-in
 # branch of the bridge. The helper drives three pwsh.exe round-trips
 # (resolve version, ensure tarball, start listener) and emits three
 # KEY=value lines on stdout for the bridge to parse.
@@ -11,7 +11,7 @@
 # helper's contract output.
 # Run with: bats Tests/ops/_stage-host-fileserver.bats
 
-SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_stage-host-fileserver.sh"
+SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops/virtual-machines" && pwd)/_stage-host-fileserver.sh"
 
 # shellcheck source=Tests/ops/_bats-helpers.sh
 source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"

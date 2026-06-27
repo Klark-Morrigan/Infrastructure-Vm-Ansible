@@ -19,7 +19,7 @@ reconciles) and points here for the shared posture.
 
 ## `hosts: vm_provisioner_hosts`
 
-The bash bridge (`ops/_build-inventory.sh`) drops every host the
+The bash bridge (`ops/virtual-machines/_build-inventory.sh`) drops every host the
 operator's `provisioner.json` declares into this group. Every
 operator-facing playbook reconciles every provisioned VM by default;
 operators scope down with `-l <vm>` when they want a subset.

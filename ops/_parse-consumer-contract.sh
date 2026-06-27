@@ -11,31 +11,44 @@
 # seam that lets the substrate stay ignorant of any specific consumer's
 # identity.
 #
-# Contract (consumer-facing input; every variable optional, documented
-# default "none"):
-#   CA_EXTRA_VAULTS            Vault names to read BEYOND the always-on
-#                              VmProvisioner vault. Whitespace- or
-#                              comma-separated (e.g. "VmUsers" or
+# Contract (consumer-facing input):
+#   CA_INVENTORY_VAULT         REQUIRED. The vault holding the fleet
+#                              inventory (the base VM list and addresses)
+#                              the bridge reads on every run. Named by the
+#                              consumer rather than the bridge, so no vault
+#                              NAME is hardcoded in the substrate. This
+#                              removes name-coupling only: the bridge still
+#                              assumes the <Name>Config-<suffix> secret
+#                              convention and the vm_provisioner_config
+#                              inventory schema (and the Hyper-V router
+#                              resolution keyed on it). Decoupling those
+#                              shapes is separate, larger work. The wrapper
+#                              passes e.g. "VmProvisioner".
+#   CA_EXTRA_VAULTS            Optional, default "none". Vault names to
+#                              read BEYOND the inventory vault. Whitespace-
+#                              or comma-separated (e.g. "VmUsers" or
 #                              "VmUsers,GitHubRunners"). Unset/empty ->
 #                              no extra vaults.
-#   CA_NEEDS_HOST_FILE_SERVER  "1" to have the bridge stage the host file
-#                              server; any other value (incl. unset) ->
-#                              off.
-#   CA_REQUIRES_TOKEN          "1" if the run needs a GitHub token,
-#                              supplied out-of-band via GH_TOKEN; any
-#                              other value (incl. unset) -> off.
+#   CA_NEEDS_HOST_FILE_SERVER  Optional. "1" to have the bridge stage the
+#                              host file server; any other value (incl.
+#                              unset) -> off.
+#   CA_REQUIRES_TOKEN          Optional. "1" if the run needs a GitHub
+#                              token, supplied out-of-band via GH_TOKEN;
+#                              any other value (incl. unset) -> off.
 #
 # Output (stdout, one KEY=value per line - the normalised contract the
 # bridge reads back):
+#   INVENTORY_VAULT=<name>
 #   EXTRA_VAULTS=<space-separated vault list, empty when none>
 #   NEEDS_HOST_FILE_SERVER=<0|1>
 #   REQUIRES_TOKEN=<0|1>
 #
 # Exit status:
 #   0  contract parsed and internally consistent
-#   2  inconsistent contract (a required token is absent) - rejected
-#      here so a misconfigured caller fails before any vault read rather
-#      than emitting an empty token to a downstream play.
+#   2  invalid contract - a missing required inventory vault, or a
+#      required token with none supplied. Rejected here so a misconfigured
+#      caller fails before any vault read rather than emitting an empty
+#      token or reading a nameless vault downstream.
 #
 # Run directly (exec'd, not sourced): the bridge captures the normalised
 # lines on stdout, and under its `set -e` a rejection (exit 2) aborts the
@@ -45,6 +58,20 @@ set -euo pipefail
 
 # shellcheck source=ops/imports/_log.sh
 source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+
+# ---------------------------------------------------------------------------
+# Inventory vault. Required: the bridge always reads an inventory, and the
+# whole point of the contract is that the substrate names no vault itself
+# - so the consumer must declare which vault holds the fleet. A missing
+# declaration is rejected here, before any vault read, rather than the
+# bridge silently falling back to a baked-in name (which would re-couple
+# the substrate to one repo's vault convention).
+# ---------------------------------------------------------------------------
+inventory_vault="${CA_INVENTORY_VAULT:-}"
+if [[ -z "${inventory_vault}" ]]; then
+    log_err "CA_INVENTORY_VAULT must be set to the vault holding the fleet inventory"
+    exit 2
+fi
 
 # ---------------------------------------------------------------------------
 # Toggles. Exactly "1" means on, matching the opt-in idiom already used
@@ -91,6 +118,7 @@ read -r -a extra_vaults_arr <<<"${extra_vaults_raw//,/ }" || true
 # Emit the normalised contract. The bridge greps these keys back out, the
 # same KEY=value-on-stdout contract _stage-host-fileserver.sh already uses.
 # ---------------------------------------------------------------------------
+printf 'INVENTORY_VAULT=%s\n'        "${inventory_vault}"
 printf 'EXTRA_VAULTS=%s\n'           "${extra_vaults_arr[*]}"
 printf 'NEEDS_HOST_FILE_SERVER=%s\n' "${needs_host_file_server}"
 printf 'REQUIRES_TOKEN=%s\n'         "${requires_token}"

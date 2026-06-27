@@ -113,12 +113,28 @@ vault, but takes its name from `CA_INVENTORY_VAULT` rather than naming it;
 extra vaults flow through as generic `--vault-config Name=path` pairs the
 extra-vars composer dispatches by name.
 
+Group the helpers that still know the fleet's shape under an
+`ops/virtual-machines/` module: the inventory builder, the inventory
+extra-vars fragment, the reachability probe, and the host file server
+move there, and the Hyper-V/ICS/netsh-portproxy router resolution is
+lifted out of `_run-playbook.sh` into a sourced `_resolve-router.sh` in
+that module. The orchestrator sources the resolver instead of inlining
+it, so it carries no topology knowledge itself.
+
 - **Reason:** Removes the substrate's knowledge of any specific
   consumer's or provider's vault names - the dependency-inversion fix
-  that earns the `Common-` prefix.
+  that earns the `Common-` prefix. Concentrating the remaining
+  fleet-shape coupling (the `vm_provisioner_config` schema, the
+  `<Name>Config-<suffix>` secret convention, the Hyper-V router
+  topology) in `ops/virtual-machines/` makes it a visible, contained
+  seam rather than scattering it through the otherwise generic bridge -
+  the on-ramp for a later move to a fully fleet-agnostic substrate.
 - **Tests:** bats over the bridge with simulated contracts; the existing
   create-users and register-runners flows still dispatch correctly via
-  their updated wrappers (Step 2.3) under integration tests.
+  their updated wrappers (Step 2.3) under integration tests. The
+  per-script bats (inventory, router reachability, staging, inventory
+  extra-vars) and the host-file-server Pester suite stay green from
+  their new `ops/virtual-machines/` location.
 
 ### Step 2.3 - Port the existing wrappers onto the contract
 

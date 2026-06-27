@@ -424,54 +424,77 @@ The bash bridge between operator scripts under `ops/` and
 `ansible-playbook` is split across single-purpose helpers under
 `ops/` with a leading `_` (the "called by operator entries, not
 typed by a human" convention). Each is unit-testable against just
-its own external boundary:
+its own external boundary.
+
+The helpers that know the VM fleet's shape - inventory building, the
+Hyper-V/ICS/portproxy router resolution, and the host file server -
+live together under [`ops/virtual-machines/`](ops/virtual-machines/).
+Grouping them keeps the estate-specific coupling (the
+`vm_provisioner_config` schema, the `<Name>Config-<suffix>` secret
+convention, and the Hyper-V router topology) in one named place rather
+than scattered through the otherwise consumer-agnostic bridge - a
+visible, contained seam for any later move toward a fully fleet-agnostic
+substrate. The generic helpers (contract parse, vault read, extra-vars
+compose, the orchestrator itself) stay at the `ops/` root:
 
 - [`ops/_parse-consumer-contract.sh`](ops/_parse-consumer-contract.sh)
   - consumer contract parser. A wrapper declares what the run needs
   through `CA_*` environment variables rather than the bridge
-  hardcoding each consumer's vaults and toggles; this helper normalises
-  that declaration into a stable parsed form. Inputs (all optional,
-  documented default "none"): `CA_EXTRA_VAULTS` (vault names beyond the
-  always-on `VmProvisioner`, whitespace- or comma-separated),
-  `CA_NEEDS_HOST_FILE_SERVER` (`1` opts in), and `CA_REQUIRES_TOKEN`
-  (`1` declares a GitHub token is needed, supplied out-of-band via
-  `GH_TOKEN`). It emits three `KEY=value` lines on stdout
-  (`EXTRA_VAULTS=`, `NEEDS_HOST_FILE_SERVER=`, `REQUIRES_TOKEN=`) and
-  rejects the one inconsistent combination the contract can express - a
-  required token with none supplied - with a non-zero exit before any
-  vault read. Keeping this parse in a single-purpose sibling is the
-  seam that lets the substrate serve unknown future consumers without
-  importing their identities.
+  hardcoding any vault name or toggle; this helper normalises that
+  declaration into a stable parsed form. Inputs: `CA_INVENTORY_VAULT`
+  (required - the vault holding the fleet inventory, named by the
+  consumer so the substrate hardcodes no vault, not even the
+  inventory's; the wrappers pass `VmProvisioner`); and the optional,
+  default-"none" `CA_EXTRA_VAULTS` (vault names beyond the inventory
+  vault, whitespace- or comma-separated), `CA_NEEDS_HOST_FILE_SERVER`
+  (`1` opts in), and `CA_REQUIRES_TOKEN` (`1` declares a GitHub token is
+  needed, supplied out-of-band via `GH_TOKEN`). It emits four
+  `KEY=value` lines on stdout (`INVENTORY_VAULT=`, `EXTRA_VAULTS=`,
+  `NEEDS_HOST_FILE_SERVER=`, `REQUIRES_TOKEN=`) and rejects an invalid
+  contract - a missing required inventory vault, or a required token
+  with none supplied - with a non-zero exit before any vault read.
+  Keeping this parse in a single-purpose sibling is the seam that lets
+  the substrate serve unknown future consumers without importing their
+  identities.
 - [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh) - vault
   reader. Shells out to `pwsh.exe` to fetch a named secret via the
   `Infrastructure.Secrets` wrapper (`Get-InfrastructureSecret`, never
   bare `Get-Secret` — single provider-swap point per problem.md),
   strips CRLF + UTF-8 BOM, validates JSON, prints the payload on
   stdout. Only helper that talks to the Windows side.
-- [`ops/_build-inventory.sh`](ops/_build-inventory.sh) - pure
-  transform. Reads `vm_provisioner_config` on stdin and writes
+- [`ops/virtual-machines/_build-inventory.sh`](ops/virtual-machines/_build-inventory.sh)
+  - pure transform. Reads `vm_provisioner_config` on stdin and writes
   Ansible JSON inventory (group `vm_provisioner_hosts`, host key
-  `vmName`) on stdout.
+  `vmName`) on stdout. Lives in the `ops/virtual-machines/` module with
+  the rest of the VM-fleet code (see the note at the top of this
+  section).
 - [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - extra-
-  vars orchestrator. Owns no payload domain itself; accepts the
-  union of helper flags and dispatches to one per-payload-domain
-  helper per domain present, then merges their JSON fragments via
-  `jq -s add`. Required flags: `--provisioner-config <file>` and
-  `--users-config <file>`. The runners-domain flags split into two
-  paired groups, both optional:
-  - **runners pair**: `--runners-config <file>` + `--github-token
-    <value>` — the GitHubRunners-vault read result. Carries
-    everything either direction (register / deregister) needs.
-  - **file-server pair**: `--host-base-url <url>` + `--runner-version
-    <ver>` — the bridge-resolved tarball download URL the register
-    flow adds on top. The deregister flow omits both keys (its VMs
-    fetch nothing).
-  Within each pair the two flags arrive together or not at all;
-  partial sets are rejected before any helper runs. The file-server
-  pair has no meaning without the runners pair and is rejected if
-  supplied alone. The per-domain helpers below own their own
-  validation and bats coverage:
-  - [`ops/_build-extra-vars-inventory.sh`](ops/_build-extra-vars-inventory.sh)
+  vars composer. Owns no payload domain itself, but owns the one
+  piece of domain knowledge the orchestrator must not: which vault
+  feeds which per-domain fragment helper. The bridge hands it the
+  always-on provisioner config plus every contract-declared vault as a
+  generic `--vault-config <Name>=<path>` pair, and the composer routes
+  each Name to its helper, then merges the fragments via `jq -s add`.
+  Inputs:
+  - `--provisioner-config <file>` (required) — the inventory the bridge
+    read from the contract-declared vault. A flag name, not a vault
+    name: the composer never learns which vault it came from.
+  - `--vault-config <Name>=<path>` (repeatable) — one per extra vault.
+    `VmUsers` routes to the users helper; `GitHubRunners` to the
+    runners helper. An unrecognised Name is a contract typo or a
+    domain with no helper yet and is rejected, never silently dropped.
+  - `--github-token <value>` — routed to the runners helper. The
+    token pairs with the `GitHubRunners` vault: either alone is
+    rejected (a token with no consumer, or a runners vault that cannot
+    register without one).
+  - `--host-base-url <url>` + `--runner-version <ver>` — the
+    bridge-resolved tarball download URL the register flow adds on
+    top. The pair arrives together or not at all, and has no meaning
+    without the `GitHubRunners` vault; partial or orphaned sets are
+    rejected before any helper runs.
+  The per-domain helpers below own their own validation and bats
+  coverage:
+  - [`ops/virtual-machines/_build-extra-vars-inventory.sh`](ops/virtual-machines/_build-extra-vars-inventory.sh)
     — emits `vm_provisioner_config`. Always-on; the inventory source
     every payload domain shares.
   - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
@@ -489,35 +512,44 @@ its own external boundary:
   argv. The GitHub token is the lone exception, passed by value
   because the entry script already holds it in a shell variable;
   argv on Linux is private to the owning user's process tree.
-  Future payload domains (e.g. toolchain delivery: JDK / .NET SDK /
-  file copy) land as a peer `_build-extra-vars-<domain>.sh` plus a
-  dispatch arm in the orchestrator — no other call site changes.
-- [`ops/_run-playbook.sh`](ops/_run-playbook.sh) - thin
-  orchestrator. Validates args, sets up a per-invocation
-  `mktemp -d` tree (`chmod 700`, files `chmod 600`, cleaned up by
-  `EXIT` trap), activates `.venv`, drives the helpers in order,
-  and dispatches `ansible-playbook` against the requested playbook
-  path. Reads two vaults unconditionally (`VmProvisioner`,
-  `VmUsers`) and adds a third (`GitHubRunners`) when the caller
-  exports `NEEDS_GITHUB_RUNNERS=1` plus `GH_TOKEN=...` - the
-  opt-in gate keeps the create-users / remove-users entry points
-  free of an unused `pwsh.exe` round-trip. A second, independent
-  gate `NEEDS_HOST_FILE_SERVER=1` (set by the register entry
-  alongside `NEEDS_GITHUB_RUNNERS=1`, omitted by the deregister
-  entry) controls the Windows-side staging: when set, the bridge
-  delegates to `_stage-host-fileserver.sh` and (via the EXIT trap)
-  stops the listener it backgrounded on every exit path; when
-  unset, neither the listener nor the corresponding stop call run,
-  and the file-server-pair extra-vars keys are genuinely absent.
-  `NEEDS_HOST_FILE_SERVER=1` without `NEEDS_GITHUB_RUNNERS=1` is
-  rejected fast - the listener has no consumer without the
-  runner_binary role. `GH_TOKEN` is cleared from the bridge
-  environment before `ansible-playbook` runs; the downstream play
-  receives the token via the chmod-600 extra-vars file only. Any
-  args after the playbook path are forwarded verbatim to
-  `ansible-playbook` (so `--tags`, `--limit`, `--check`, `-v`,
-  etc. all work without changes to the bridge).
-- [`ops/_stage-host-fileserver.sh`](ops/_stage-host-fileserver.sh)
+  Concentrating the vault-name -> helper map here (the layer that
+  already dispatches per domain) is what lets the orchestrator stay
+  ignorant of any specific consumer. Future payload domains (e.g.
+  toolchain delivery: JDK / .NET SDK / file copy) land as a peer
+  `_build-extra-vars-<domain>.sh` plus a dispatch arm here — the
+  bridge already forwards every declared vault verbatim, so no other
+  call site changes.
+- [`ops/_run-playbook.sh`](ops/_run-playbook.sh) - thin,
+  consumer-agnostic orchestrator. Validates args, parses the consumer
+  contract (via `_parse-consumer-contract.sh`), sets up a
+  per-invocation `mktemp -d` tree (`chmod 700`, files `chmod 600`,
+  cleaned up by `EXIT` trap), activates `.venv`, drives the helpers in
+  order, and dispatches `ansible-playbook` against the requested
+  playbook path. Reads the contract-declared inventory vault
+  (`CA_INVENTORY_VAULT`) unconditionally - the fleet every dispatch
+  targets - deriving its secret as `<Name>Config-<suffix>`, and then
+  reads each vault the contract's `CA_EXTRA_VAULTS` declared,
+  generically, into its own tmpdir file - so create-users pays only for
+  `VmUsers` and register-runners only for `GitHubRunners`, and the
+  bridge names no vault at all (inventory provider or consumer alike).
+  Each declared extra vault is forwarded to the composer as a generic
+  `--vault-config <Name>=<path>` pair. The contract's
+  `CA_NEEDS_HOST_FILE_SERVER=1` controls the Windows-side staging:
+  when set, the bridge delegates to `_stage-host-fileserver.sh` and
+  (via the EXIT trap) stops the listener it backgrounded on every exit
+  path; when unset, neither the listener nor the stop call run, and the
+  file-server-pair extra-vars keys are genuinely absent. The host file
+  server downloads the runner tarball from the GitHub API, so
+  `CA_NEEDS_HOST_FILE_SERVER=1` requires `CA_REQUIRES_TOKEN=1` (a
+  generic capability coupling, not consumer knowledge) and is rejected
+  fast otherwise. `GH_TOKEN` is lifted to a local when the contract
+  requires a token and then cleared from the bridge environment
+  unconditionally before `ansible-playbook` runs; the downstream play
+  receives the token via the chmod-600 extra-vars file only. Any args
+  after the playbook path are forwarded verbatim to `ansible-playbook`
+  (so `--tags`, `--limit`, `--check`, `-v`, etc. all work without
+  changes to the bridge).
+- [`ops/virtual-machines/_stage-host-fileserver.sh`](ops/virtual-machines/_stage-host-fileserver.sh)
   - GitHubRunners opt-in branch. Drives the three pwsh.exe
   round-trips (resolve version, ensure tarball, start listener),
   picks the first VM's `ipAddress` from the provisioner config for
@@ -536,7 +568,7 @@ its own external boundary:
   downloading from `github.com` on cache miss and purging stale
   versions in the same cache directory. Mirrors
   `Invoke-RunnerTarballEnsure` in Infrastructure.GitHub.
-- [`ops/_start-host-file-server.ps1`](ops/_start-host-file-server.ps1)
+- [`ops/virtual-machines/_start-host-file-server.ps1`](ops/virtual-machines/_start-host-file-server.ps1)
   - long-lived listener. Binds an `HttpListener` to the host adapter
   whose IP shares a /24 with the target VM (same algorithm as
   `Start-VmFileServer` in Infrastructure.HyperV), serves any file in
@@ -544,19 +576,31 @@ its own external boundary:
   then `PID=<pid>` on stdout, and blocks until killed. Multi-file
   serving leaves room for a future toolchain-delivery feature to
   stage extra payloads in the same dir.
-- [`ops/_stop-host-file-server.ps1`](ops/_stop-host-file-server.ps1)
+- [`ops/virtual-machines/_stop-host-file-server.ps1`](ops/virtual-machines/_stop-host-file-server.ps1)
   - idempotent stop helper. Force-stops the listener process by PID
   and waits for exit; a missing PID is treated as already-stopped.
+- [`ops/virtual-machines/_resolve-router.sh`](ops/virtual-machines/_resolve-router.sh)
+  - router/NAT resolution, sourced by the bridge. `resolve_router`
+  finds the `kind: router` row, resolves its upstream IP (static from
+  the vault or Hyper-V KVP), applies the WSL host-portproxy redirect to
+  the SSH endpoint, exports `ROUTER_*` / `SSHPASS` for the inventory
+  builder and host-file-server staging, and runs the reachability
+  pre-flight via
+  [`ops/virtual-machines/_assert-router-reachable.sh`](ops/virtual-machines/_assert-router-reachable.sh).
+  Sourced (not exec'd) because it must set those env vars in the
+  bridge's own shell and never route the router password through a
+  child's stdout. A no-op on single-switch fleets.
 
 External contract (consumed by feature playbooks): the extra-vars
-document always has the two top-level keys `vm_provisioner_config`
-and `vm_users_config`. Additionally, `github_runners_config` and
-`github_token` are present whenever the caller opts into the
-GitHubRunners vault read (`NEEDS_GITHUB_RUNNERS=1`), and
-`host_file_server_base_url` + `runner_version` are present only
-when the caller also opts into the host file server
-(`NEEDS_HOST_FILE_SERVER=1`, register flow only). The inventory
-has one group `vm_provisioner_hosts` keyed by `vmName`.
+document always has the top-level key `vm_provisioner_config` (the
+shared inventory). Every other key is present only when the contract
+declared the vault that feeds it: `vm_users_config` when
+`CA_EXTRA_VAULTS` names `VmUsers`; `github_runners_config` +
+`github_token` when it names `GitHubRunners` (with
+`CA_REQUIRES_TOKEN=1`); and `host_file_server_base_url` +
+`runner_version` only when the caller also opts into the host file
+server (`CA_NEEDS_HOST_FILE_SERVER=1`, register flow only). The
+inventory has one group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
 extra-vars composition); [`ops/_bootstrap-controller-wsl.sh`](ops/_bootstrap-controller-wsl.sh)

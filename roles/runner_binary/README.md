@@ -38,7 +38,7 @@ The role reads three extra-vars supplied by the bash bridge
   `runner_service`, not by this role.
 - `host_file_server_base_url` - base URL of the Windows-side HTTP
   listener bound to the Hyper-V switch IP by
-  [`ops/_start-host-file-server.ps1`](../../ops/_start-host-file-server.ps1).
+  [`ops/virtual-machines/_start-host-file-server.ps1`](../../ops/virtual-machines/_start-host-file-server.ps1).
   The role pulls the tarball from
   `<base_url>/actions-runner-linux-x64-<version>.tar.gz`.
 - `runner_version` - the resolved `actions/runner` version string

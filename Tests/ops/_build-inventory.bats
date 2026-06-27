@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for ops/_build-inventory.sh - the pure stdin -> stdout
+# Tests for ops/virtual-machines/_build-inventory.sh - the pure stdin -> stdout
 # transform that turns vm_provisioner_config into Ansible JSON
 # inventory. Its only runtime deps are jq (the real one is used) and the
 # shared logger it sources via _log.sh; _bats_init_temp stands up the
@@ -8,7 +8,7 @@
 # assertions brittle.
 # Run with: bats Tests/ops/_build-inventory.bats
 
-SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-inventory.sh"
+SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops/virtual-machines" && pwd)/_build-inventory.sh"
 
 # shellcheck source=Tests/ops/_bats-helpers.sh
 source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for ops/_assert-router-reachable.sh - the router reachability
+# Tests for ops/virtual-machines/_assert-router-reachable.sh - the router reachability
 # pre-flight probe. Scope: the helper's nc/ssh boundary. nc and ssh are
 # replaced with stubs whose exit code (nc) and stdout banner (ssh) are
 # driven per test, so the segment classification (TCP vs banner vs OK)
@@ -7,7 +7,7 @@
 # Run with: bats Tests/ops/_assert-router-reachable.bats
 
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-PROBE="${REPO_ROOT}/ops/_assert-router-reachable.sh"
+PROBE="${REPO_ROOT}/ops/virtual-machines/_assert-router-reachable.sh"
 
 # shellcheck source=Tests/ops/_bats-helpers.sh
 source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"

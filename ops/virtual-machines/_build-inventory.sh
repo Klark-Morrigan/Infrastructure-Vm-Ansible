@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # shellcheck source=ops/imports/_log.sh
-source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+source "${BASH_SOURCE[0]%/*}/../imports/_log.sh"
 
 # ---------------------------------------------------------------------------
 # 1. Slurp stdin. The whole document is small (an array of VM defs);

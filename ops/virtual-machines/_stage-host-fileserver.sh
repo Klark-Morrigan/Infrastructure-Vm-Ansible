@@ -28,14 +28,14 @@
 set -euo pipefail
 
 # shellcheck source=ops/imports/_log.sh
-source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
+source "${BASH_SOURCE[0]%/*}/../imports/_log.sh"
 # shellcheck source=ops/_die-on-unknown-flag.sh
-source "${BASH_SOURCE[0]%/*}/_die-on-unknown-flag.sh"
+source "${BASH_SOURCE[0]%/*}/../_die-on-unknown-flag.sh"
 
 # _to_windows_path (shared from Common-Automation). The imports/ adapter
 # owns the cross-repo resolution.
 # shellcheck source=ops/imports/_to-windows-path.sh
-source "${BASH_SOURCE[0]%/*}/imports/_to-windows-path.sh"
+source "${BASH_SOURCE[0]%/*}/../imports/_to-windows-path.sh"
 
 provisioner_path=""
 token=""
@@ -99,7 +99,11 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #    progress lines under -v) so only the version reaches stdout.
 # ---------------------------------------------------------------------------
 log_info "Resolving latest actions/runner version via GitHub API ..."
-resolve_ps1="$(_to_windows_path "${script_dir}/_resolve-runner-version.ps1")"
+# The runner-tarball resolvers stay one level up at ops/ (runner domain,
+# Bucket C - they move to Infrastructure-GitHubRunners in section 4);
+# only the host file server itself is VM substrate and lives here. Hence
+# the ../ for these two and a plain sibling path for the listener below.
+resolve_ps1="$(_to_windows_path "${script_dir}/../_resolve-runner-version.ps1")"
 # Capture pwsh.exe's stderr - where _resolve-runner-version.ps1 writes its
 # error, e.g. "401 - check the GH_TOKEN scopes" for a bad/expired token -
 # to a temp file instead of discarding it, so a failure surfaces the cause
@@ -129,7 +133,7 @@ fi
 #    the same dir without touching this script.
 # ---------------------------------------------------------------------------
 log_info "Ensuring runner tarball ${runner_version} is cached (downloads ~100MB on a cache miss) ..."
-ensure_ps1="$(_to_windows_path "${script_dir}/_ensure-runner-tarball.ps1")"
+ensure_ps1="$(_to_windows_path "${script_dir}/../_ensure-runner-tarball.ps1")"
 tar_path="$(pwsh.exe -NoProfile -NoLogo \
     -File "${ensure_ps1}" \
     -Version "${runner_version}" 2>/dev/null \

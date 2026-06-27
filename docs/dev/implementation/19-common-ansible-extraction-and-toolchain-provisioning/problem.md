@@ -49,8 +49,8 @@ consumers.
   host-push model is therefore about caching heavy artifacts and version
   determinism, not air-gapping.
 - This Ansible repo already pushes a host-staged artifact (the runner
-  tarball) to VMs via a host file server (`ops/_stage-host-fileserver.sh`,
-  `ops/_start-host-file-server.ps1`). The "host-prefetched and pushed"
+  tarball) to VMs via a host file server (`ops/virtual-machines/_stage-host-fileserver.sh`,
+  `ops/virtual-machines/_start-host-file-server.ps1`). The "host-prefetched and pushed"
   pattern is thus already proven in Ansible here.
 
 ## What is changing
@@ -93,15 +93,20 @@ needs.
 - Controller bootstrap: `bootstrap-controller.ps1/.bat`,
   `_bootstrap-controller-wsl.sh`, `_set-wsl-automount-metadata.ps1`,
   `_ansible-env.sh`.
-- Dispatch bridge and inventory/extra-vars core: `_run-playbook.sh`,
-  `_read-vault-config.sh`, `_build-inventory.sh`, `_build-extra-vars.sh`,
-  `_build-extra-vars-inventory.sh`, `_validate-extra-vars-input.sh`,
-  `_die-on-unknown-flag.sh`.
-- Networking preflight: `_assert-router-reachable.sh`.
-- Host file server - the section-1 host-push mechanism, today only the
-  runner tarball uses it; section-1 toolchains (JDK, .NET) reuse it:
-  `_stage-host-fileserver.sh`, `_start-host-file-server.ps1`,
-  `_stop-host-file-server.ps1`.
+- Dispatch bridge and generic extra-vars core: `_run-playbook.sh`,
+  `_read-vault-config.sh`, `_build-extra-vars.sh`,
+  `_validate-extra-vars-input.sh`, `_die-on-unknown-flag.sh`.
+- VM-fleet module under `ops/virtual-machines/` - the helpers that know
+  the fleet's shape (the `vm_provisioner_config` schema and the Hyper-V
+  router topology), grouped so that estate-specific coupling stays in
+  one named place out of the consumer-agnostic bridge:
+  `_build-inventory.sh`, `_build-extra-vars-inventory.sh`,
+  `_resolve-router.sh` (the router/NAT resolution lifted out of
+  `_run-playbook.sh`), `_assert-router-reachable.sh`, and the host file
+  server (`_stage-host-fileserver.sh`, `_start-host-file-server.ps1`,
+  `_stop-host-file-server.ps1`) - the section-1 host-push mechanism,
+  today only the runner tarball uses it; section-1 toolchains (JDK,
+  .NET) reuse it.
 - Apt helper (the new section-2 roles need it): `_ensure-apt-command.sh`.
 - Common-Automation adapter: `ops/imports/*` (`_log.sh`,
   `_common-automation-root.sh`, `_to-windows-path.sh`).
