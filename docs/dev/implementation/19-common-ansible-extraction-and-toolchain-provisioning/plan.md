@@ -289,8 +289,22 @@ playbooks and their task includes, the runner wrappers,
 `GitHubRunners` + token + host-file-server via the contract (2.1). Fork
 retained in Common-Ansible until 4.4.
 
+Decouple the host file server from the runner-tarball resolvers as part
+of this move. `ops/virtual-machines/_stage-host-fileserver.sh` stays
+substrate but currently calls `../_resolve-runner-version.ps1` and
+`../_ensure-runner-tarball.ps1` - the two `.ps1` relocating to
+GitHubRunners above. Once they leave, those `../` references dangle, so
+the staging helper must stop hardcoding runner-tarball resolution:
+parameterize it so the consumer supplies the version and the staged
+artifact (the file server itself serves any file; only the "which
+runner tarball" knowledge is runner-domain). This coupling pre-dates the
+`ops/virtual-machines/` grouping (2.2) - the grouping only made the seam
+a concrete cross-`../` one - but it is resolved here, where the
+resolvers actually move out.
+
 - **Reason:** Runner domain to its owner; the host file server itself
-  stays substrate and is reached through the contract.
+  stays substrate and is reached through the contract - which requires
+  severing its build-time dependency on the runner-tarball resolvers.
 - **Tests:** molecule per moved role; register/deregister integration
   against a disposable runner target with a scoped token.
 
