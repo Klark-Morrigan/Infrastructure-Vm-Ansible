@@ -100,21 +100,6 @@ a documented default of "none".
   variable, applies the documented defaults when unset, and errors on an
   inconsistent combination (token required but absent).
 
-```mermaid
-classDiagram
-  class Wrapper {
-    +CA_EXTRA_VAULTS
-    +CA_NEEDS_HOST_FILE_SERVER
-    +CA_REQUIRES_TOKEN
-  }
-  class Bridge {
-    +readVmProvisioner() always
-    +readExtraVaults(list)
-    +startFileServer(flag)
-  }
-  Wrapper --> Bridge : declares needs
-```
-
 ### Step 2.2 - Refactor the bridge to honor the contract
 
 Replace the hardcoded `VmUsers` / `GitHubRunners` reads and the
