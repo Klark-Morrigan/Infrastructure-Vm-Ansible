@@ -29,7 +29,7 @@ platforms:
     # such file or directory`. The Dockerfile in this scenario directory
     # installs systemd + systemd-sysv + sudo + python3 on top of the
     # base; build it once via `docker build -t
-    # infrastructure-vm-ansible/runner-service-systemd:24.04
+    # common-ansible/runner-service-systemd:24.04
     # -f Tests/molecule/runner_service/<scenario>/Dockerfile <ctx>`
     # before running the scenario (see Tests/molecule/runner_service/
     # README.md or repeat the build inline). `pre_build_image: true`
@@ -39,7 +39,7 @@ platforms:
     # Windows-side credential helper and fails inside WSL with
     # `OSError: [Errno 8] Exec format error:
     # '/usr/bin/docker-credential-desktop.exe'`.
-    image: infrastructure-vm-ansible/runner-service-systemd:24.04
+    image: common-ansible/runner-service-systemd:24.04
     pre_build_image: true
     command: /sbin/init
     privileged: true

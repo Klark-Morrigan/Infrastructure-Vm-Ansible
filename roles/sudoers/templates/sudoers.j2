@@ -5,7 +5,7 @@
   malformed entries before the atomic swap, so a typo fails the play
   rather than landing in /etc/sudoers.d/.
 -#}
-# Managed by Infrastructure-VM-Ansible roles/sudoers - do not edit by hand.
+# Managed by Common-Ansible roles/sudoers - do not edit by hand.
 # Source: VmUsersConfig vault entry for {{ inventory_hostname }}, user
 # {{ item.username }}.
 {% for rule in item.sudoersRules -%}

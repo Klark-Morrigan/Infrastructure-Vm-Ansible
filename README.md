@@ -1,4 +1,4 @@
-# Infrastructure-VM-Ansible
+# Common-Ansible
 
 Ansible controller repo for reconciling OS groups, users, and sudoers on
 provisioned VMs. Invoked from Windows via a PowerShell -> WSL bridge that
@@ -142,7 +142,7 @@ without actually installing anything). Two safe workarounds:
 Note that `tee bootstrap.log` writes to the calling shell's current
 directory, not the repo - so the file lands at the location PowerShell
 reports in its prompt (typically `C:\Users\<you>\`), not at
-`C:\a_Code\Infrastructure-VM-Ansible\`. Look there if the log seems
+`C:\a_Code\Common-Ansible\`. Look there if the log seems
 to have vanished.
 
 If a bootstrap run is interrupted (Ctrl+C, network blip during
@@ -153,7 +153,7 @@ is reused, pip pins are no-ops when current, `ansible-galaxy
 The only state worth manually clearing is a half-built `.venv` that
 has `bin/python` but no `bin/pip` (left behind by the pre-fix
 `python3 -m venv` bug); in that case
-`rm -rf /mnt/c/a_Code/Infrastructure-VM-Ansible/.venv` then re-run
+`rm -rf /mnt/c/a_Code/Common-Ansible/.venv` then re-run
 bootstrap to recreate it cleanly.
 
 ## Vault setup

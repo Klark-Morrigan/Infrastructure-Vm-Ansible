@@ -6,7 +6,7 @@
 
 galaxy_info:
   role_name: groups
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Reconcile declared OS groups on a target VM from the VmUsersConfig
     vault entry for the host. First role in the create-users play; runs

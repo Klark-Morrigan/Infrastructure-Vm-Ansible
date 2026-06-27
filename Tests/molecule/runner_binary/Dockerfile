@@ -26,7 +26,7 @@
 #
 # Build once via:
 #   docker build \
-#       -t infrastructure-vm-ansible/runner-binary-base:24.04 \
+#       -t common-ansible/runner-binary-base:24.04 \
 #       -f Tests/molecule/runner_binary/Dockerfile \
 #       Tests/molecule/runner_binary
 # Both scenarios consume the resulting tag via `pre_build_image: true`.

@@ -5,7 +5,7 @@
 
 galaxy_info:
   role_name: runner_entry_resolve
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Resolve the GitHubRunnersConfig slice for the current host into the
     shared `vm_runner_entries` fact. Consumed via meta dependency by

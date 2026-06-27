@@ -5,7 +5,7 @@
 
 galaxy_info:
   role_name: users
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Reconcile declared OS users on a target VM from the VmUsersConfig
     vault entry for the host. Runs after roles/groups so any primary

@@ -5,7 +5,7 @@
 
 galaxy_info:
   role_name: vm_users_entry
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Resolve the VmUsersConfig entry for the current host into the
     shared `vm_users_entry` fact. Consumed via meta dependency by

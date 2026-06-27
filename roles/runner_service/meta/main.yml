@@ -6,7 +6,7 @@
 
 galaxy_info:
   role_name: runner_service
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Reconcile the systemd service for a self-hosted GitHub Actions
     runner. Third role in the register-runners play; runs after

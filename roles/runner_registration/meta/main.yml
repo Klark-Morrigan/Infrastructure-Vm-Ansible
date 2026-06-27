@@ -5,7 +5,7 @@
 
 galaxy_info:
   role_name: runner_registration
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Reconcile a self-hosted GitHub Actions runner's registration state
     against the GitHub repo and the on-disk .runner marker. Second role

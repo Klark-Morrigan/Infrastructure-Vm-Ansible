@@ -64,7 +64,7 @@ Both files are deleted by the bridge's `trap EXIT`.
 Three checked-in files replace the `jq` step in the bridge:
 
 ```
-Infrastructure-VM-Ansible/
+Common-Ansible/
 ├── ansible.cfg                                # plugin discovery + default inventory
 ├── inventory/
 │   ├── vm_provisioner.yml                     # plugin config (checked in)

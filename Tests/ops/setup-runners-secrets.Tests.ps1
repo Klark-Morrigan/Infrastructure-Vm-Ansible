@@ -4,7 +4,7 @@ BeforeAll {
     # real two-repo sibling layout and copy the wrapper into it:
     #
     #   <root>/
-    #     Infrastructure-VM-Ansible/ops/setup-runners-secrets.ps1
+    #     Common-Ansible/ops/setup-runners-secrets.ps1
     #     Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1
     #
     # The fake delegate is a tiny .ps1 that records its bound parameters
@@ -18,7 +18,7 @@ BeforeAll {
             [switch] $WithGitHubRunnersSibling
         )
 
-        $opsDir = Join-Path $Root 'Infrastructure-VM-Ansible/ops'
+        $opsDir = Join-Path $Root 'Common-Ansible/ops'
         New-Item -ItemType Directory -Path $opsDir -Force | Out-Null
         $wrapper = Join-Path $opsDir 'setup-runners-secrets.ps1'
         Copy-Item -Path "$PSScriptRoot\..\..\ops\setup-runners-secrets.ps1" `

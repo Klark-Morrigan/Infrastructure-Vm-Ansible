@@ -4,7 +4,7 @@
 
 galaxy_info:
   role_name: sudoers
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Reconcile /etc/sudoers.d/<username> drop-ins on a target VM from
     each user's sudoersRules array in the VmUsersConfig vault entry.

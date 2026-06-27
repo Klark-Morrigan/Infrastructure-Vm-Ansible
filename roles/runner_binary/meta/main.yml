@@ -5,7 +5,7 @@
 
 galaxy_info:
   role_name: runner_binary
-  author: Infrastructure-VM-Ansible
+  author: Common-Ansible
   description: >-
     Reconcile the actions/runner tarball cache and per-runner extracted
     directory on a target VM from the GitHubRunnersConfig vault entries.

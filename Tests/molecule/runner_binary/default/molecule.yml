@@ -34,7 +34,7 @@ platforms:
     # both the default and remove scenarios via the same image tag;
     # build once via
     #   docker build \
-    #       -t infrastructure-vm-ansible/runner-binary-base:24.04 \
+    #       -t common-ansible/runner-binary-base:24.04 \
     #       -f Tests/molecule/runner_binary/Dockerfile \
     #       Tests/molecule/runner_binary
     # `pre_build_image: true` tells the docker driver to consume the
@@ -42,7 +42,7 @@ platforms:
     # community.docker.docker_image build path which on this
     # workstation tries the Docker Desktop Windows-side credential
     # helper and fails inside WSL.
-    image: infrastructure-vm-ansible/runner-binary-base:24.04
+    image: common-ansible/runner-binary-base:24.04
     pre_build_image: true
     command: /bin/sleep infinity
     tmpfs:

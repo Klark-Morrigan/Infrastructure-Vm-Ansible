@@ -28,10 +28,10 @@ platforms:
   - name: instance
     # Reuse the runner_service scenarios' baked image (python3 + sudo).
     # Build it once before running:
-    #   docker build -t infrastructure-vm-ansible/runner-service-systemd:24.04
+    #   docker build -t common-ansible/runner-service-systemd:24.04
     #     -f Tests/molecule/runner_service/default/Dockerfile
     #     Tests/molecule/runner_service/default
-    image: infrastructure-vm-ansible/runner-service-systemd:24.04
+    image: common-ansible/runner-service-systemd:24.04
     pre_build_image: true
     command: /bin/sleep infinity
     tmpfs:

@@ -42,7 +42,7 @@ platforms:
     # `command:` is /bin/sleep, not /sbin/init). One image, two
     # scenario directories - cheaper inner loop, one place to update
     # when the base bumps. Build it once via
-    #   docker build -t infrastructure-vm-ansible/runner-service-systemd:24.04
+    #   docker build -t common-ansible/runner-service-systemd:24.04
     #       -f Tests/molecule/runner_service/default/Dockerfile
     #       Tests/molecule/runner_service/default
     # before running the scenario. `pre_build_image: true` consumes
@@ -51,7 +51,7 @@ platforms:
     # workstation tries the Docker Desktop Windows-side credential
     # helper and fails inside WSL with `OSError: [Errno 8] Exec
     # format error: '/usr/bin/docker-credential-desktop.exe'`.
-    image: infrastructure-vm-ansible/runner-service-systemd:24.04
+    image: common-ansible/runner-service-systemd:24.04
     pre_build_image: true
     command: /bin/sleep infinity
     tmpfs:

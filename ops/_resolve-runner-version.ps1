@@ -46,7 +46,7 @@ function Resolve-RunnerVersion {
     $uri = 'https://api.github.com/repos/actions/runner/releases/latest'
     $headers = @{
         'Authorization' = "Bearer $Token"
-        'User-Agent'    = 'Infrastructure-VM-Ansible'
+        'User-Agent'    = 'Common-Ansible'
         'Accept'        = 'application/vnd.github+json'
     }
 

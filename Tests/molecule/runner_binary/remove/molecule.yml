@@ -25,7 +25,7 @@ platforms:
     # See the default scenario's molecule.yml for the rationale; same
     # python3-baked image, same pre_build_image flow. Single shared
     # Dockerfile at Tests/molecule/runner_binary/Dockerfile.
-    image: infrastructure-vm-ansible/runner-binary-base:24.04
+    image: common-ansible/runner-binary-base:24.04
     pre_build_image: true
     command: /bin/sleep infinity
     tmpfs:
