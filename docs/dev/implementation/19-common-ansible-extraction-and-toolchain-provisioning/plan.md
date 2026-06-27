@@ -62,18 +62,6 @@ Update the five `.menu` files that name the repo (`supersets.psd1`,
 - **Tests:** The menu loads without error; `Build-Supersets.ps1` for the
   affected superset completes and emits a graph that lists Common-Ansible.
 
-```mermaid
-flowchart LR
-  subgraph menu[.menu]
-    S[supersets.psd1]
-    M[menus.psd1]
-    CO[cluster-order.psd1]
-    MD[manual-dependencies.psd1]
-    GS[Get-ScenarioMenus.ps1]
-  end
-  menu --> B[Build-Supersets.ps1] --> GR[(superset graph)]
-```
-
 ### Step 1.3 - Update cross-repo references to the repo
 
 Find and update any sibling repo that referenced the old name (remotes,
