@@ -249,9 +249,12 @@ problem appears - recorded in [Out of scope](#out-of-scope).
 
 The `Common-Ansible` extraction mirrors the existing `Common-Automation`
 (reusable CI) and `Common-PowerShell` (shared cmdlets) substrate pattern:
-a reusable-roles repo consumed by `Infrastructure-Vm-Users`,
+a reusable-roles-plus-bridge repo consumed by `Infrastructure-Vm-Users`,
 `Infrastructure-GitHubRunners`, and (for toolchains) the provisioning
-flow, via `requirements.yml` git-sourced roles/collections.
+flow as a scoped sibling checkout. The roles depend on the dispatch
+bridge's extra-vars/inventory contract and are not standalone, so roles
+and bridge are consumed together from one checkout, not as a separately
+published collection.
 
 ## Constraints
 

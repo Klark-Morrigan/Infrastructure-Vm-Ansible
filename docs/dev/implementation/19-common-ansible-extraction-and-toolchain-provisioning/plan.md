@@ -18,6 +18,7 @@ single committable act with its reason, tests, and a diagram.
 - [Section 7 - bats role](#section-7---bats-role)
 - [Section 8 - docker role](#section-8---docker-role)
 - [Section 9 - Config schema, wire the runner VM, verify green](#section-9---config-schema-wire-the-runner-vm-verify-green)
+- [Section 10 - Ordered cross-repo merge](#section-10---ordered-cross-repo-merge)
 
 ## Conventions
 
@@ -189,27 +190,40 @@ its owner, consuming Common-Ansible for the substrate.
 
 ### Step 3.1 - Establish the Common-Ansible consumption mechanism
 
-Decide and wire how a consumer pulls Common-Ansible's reusable roles and
-ops: package the reusable roles as an Ansible collection (or git-sourced
-roles) referenced from the consumer's `requirements.yml`, pinned to a
-tag. Document the bootstrap that fetches it.
+Wire how a consumer pulls Common-Ansible's reusable roles and ops: a
+single **sibling checkout**. The roles are not standalone - they read the
+dispatch bridge's extra-vars and inventory contract (`vm_users_config`,
+`host_file_server_base_url`, the `vm_users_entry` fact, etc.) - so roles
+and bridge are one substrate, consumed together from one resolved root
+(resolver mirrors `ops/imports/_common-automation-root.sh`, overridable
+via `COMMON_ANSIBLE_ROOT`). The consumer adds `<root>/roles` to
+`ANSIBLE_ROLES_PATH` and references substrate roles by short name; the
+controller venv and ops bridge are reused in place. A published Galaxy
+collection was rejected because it could carry only the roles (the bridge
+cannot ship in one - the controller bootstrap that builds the venv that
+runs `ansible-galaxy` is itself part of the bridge), and roles have no
+value without the bridge.
 
 - **Reason:** Every consumer repo (Sections 3, 4, and the toolchain flow)
-  needs one agreed, pinned reuse path; deciding it once here avoids
-  per-repo drift.
+  needs one agreed reuse path; deciding it once here avoids per-repo
+  drift. One mechanism for the indivisible roles-plus-bridge substrate
+  beats splitting it across two transports.
 - **Tests:** A clean controller bootstrap in Infrastructure-Vm-Users
-  resolves and installs the pinned Common-Ansible artifact; a smoke
-  playbook that includes a substrate role runs.
-- **README:** Document the bootstrap/consumption path in
-  Infrastructure-Vm-Users' README; note the reusable-role packaging
-  (collection or git-sourced roles) in this repo's README.
+  resolves the substrate sibling and reuses its controller; a smoke
+  playbook that includes a substrate role by short name passes
+  `ansible-playbook --syntax-check` with the sibling's `roles/` on
+  `ANSIBLE_ROLES_PATH`.
+- **README:** Document the sibling-checkout consumption path and bootstrap
+  in Infrastructure-Vm-Users' README; describe the roles-plus-bridge
+  "consume the substrate" model (and why not a Galaxy collection) in this
+  repo's README.
 
 ```mermaid
 flowchart LR
   subgraph VU[Infrastructure-Vm-Users]
-    REQ[requirements.yml] -->|pinned tag| PULL[ansible-galaxy install]
+    RES[_common-ansible-root.sh] -->|ANSIBLE_ROLES_PATH + ops path| USE[short-name roles + bridge]
   end
-  PULL --> CA[(Common-Ansible roles + ops)]
+  RES -. sibling checkout .-> CA[(Common-Ansible roles + ops)]
 ```
 
 ### Step 3.2 - Move the user roles, playbooks, and wrappers into Vm-Users
@@ -675,4 +689,43 @@ flowchart LR
   VM[ubuntu-02-ci ready] --> CB[ci-bash green]
   VM --> CY[ci-yaml green]
   VM --> CD[ci-dotnet green]
+```
+
+## Section 10 - Ordered cross-repo merge
+
+The closing step. Up to here each repo's branch carries its own step
+commits; this is where every repo's PR is finalized and merged in
+dependency order. Scoped checkout consumes the substrate from a
+Common-Ansible sibling on `master`, so there is no artifact to publish -
+the ordering is what matters.
+
+### Step 10.1 - Finalize and merge each repo PR in dependency order
+
+Merge Common-Ansible first so the substrate (roles + bridge) is on
+`master`, then the consumers - Infrastructure-Vm-Users,
+Infrastructure-GitHubRunners, the toolchain consumer, and
+Infrastructure-E2E - each of which resolves the substrate from a
+Common-Ansible sibling checked out to `master`.
+
+- **Reason:** Consumers consume Common-Ansible as a sibling checkout of
+  `master` (no published artifact), so substrate changes must land on
+  `master` before a consumer relies on them - otherwise a consumer's
+  ansible-lint / flows cannot resolve the substrate roles and bridge.
+  Ordered merge is the sequencing the cross-repo dependency forces.
+- **Tests:** Each repo's CI is green post-merge; with Common-Ansible on
+  `master`, every consumer's ci-yaml ansible-lint resolves the substrate
+  roles from the sibling checkout (the consumer CI checks out
+  Common-Ansible alongside and puts its `roles/` on `ANSIBLE_ROLES_PATH`,
+  wired in each consumer's CI step).
+- **README:** Record the final ordered-merge run links in this feature's
+  README. There is no release/publish doc - scoped checkout has no
+  published artifact.
+
+```mermaid
+flowchart LR
+  CA[Common-Ansible PR] -->|merge to master| M[(substrate on master)]
+  M --> VU[Vm-Users PR]
+  M --> GR[GitHubRunners PR]
+  VU --> CONS[toolchain + E2E PRs]
+  GR --> CONS
 ```

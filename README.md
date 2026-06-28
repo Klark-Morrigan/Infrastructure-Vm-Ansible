@@ -21,6 +21,7 @@ was extended by the feature step that earned it.
 - [Deregister runners](#deregister-runners)
 - [Bridge contract](#bridge-contract)
 - [Tests and lint](#tests-and-lint)
+- [Consuming the substrate](#consuming-the-substrate)
 - [Roles](#roles)
 - [Feature folders](#feature-folders)
 
@@ -711,6 +712,38 @@ the mock). Per-role remove behaviour stays under the molecule
 scenarios; this smoke test owns only the playbook-level wiring.
 Invoke with `wsl ansible-playbook Tests/ansible/test-deregister-runners-playbook.yml -i localhost,`
 inside the repo's venv.
+
+## Consuming the substrate
+
+The reusable roles in [`roles/`](roles/) are **not standalone** - they
+read the extra-vars and inventory the dispatch bridge composes
+(`vm_users_config`, `github_runners_config`, `host_file_server_base_url`,
+the `vm_users_entry` / `vm_runner_entries` facts). Roles and bridge are
+therefore one cohesive substrate and are consumed **together, through a
+single sibling checkout** - not split across two transports.
+
+A consumer keeps Common-Ansible checked out alongside it (under the same
+parent, e.g. `c:\a_Code\Common-Ansible`) and resolves that root once -
+the same adapter pattern
+[`ops/imports/_common-automation-root.sh`](ops/imports/_common-automation-root.sh)
+already uses for Common-Automation, overridable with
+`COMMON_ANSIBLE_ROOT`. From that one root it gets both:
+
+- **roles** - by adding `<root>/roles` to `ANSIBLE_ROLES_PATH`, so
+  playbooks reference substrate roles by their short name (e.g.
+  `groups`); and
+- **the ops bridge** - by sourcing/exec'ing `<root>/ops/` (the
+  controller bootstrap and `_run-playbook.sh` dispatch).
+
+Infrastructure-Vm-Users is the reference consumer. A published Galaxy
+collection was considered and rejected: a collection can carry only the
+roles (the ops bridge cannot ship in one - the controller bootstrap that
+builds the venv that runs `ansible-galaxy` is itself part of the bridge),
+and the roles have no value without the bridge, so a collection would
+split one indivisible substrate into two transports for no gain. If a
+genuinely standalone role library emerges later (e.g. the section-2/3
+toolchain roles, which need no bridge contract), that subset is a fair
+candidate to publish on its own.
 
 ## Roles
 
