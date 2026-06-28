@@ -17,8 +17,7 @@
     a wrapper declares it via `CA_EXTRA_VAULTS=GitHubRunners`. Forking
     the writer before the vault
     contract genuinely diverges would just create a second place to
-    keep in lock-step with the first (same posture as
-    `ops/setup-secrets.ps1` toward Vm-Users).
+    keep in lock-step with the first.
 
     A follow-up feature replaces this wrapper with a first-class
     implementation when the vault contract diverges (or
@@ -79,8 +78,8 @@ if ($PSCmdlet.ParameterSetName -eq 'File' `
 }
 
 # Sibling checkout convention: Infrastructure-GitHubRunners lives next
-# to this repo under the same parent directory. Same lookup pattern
-# `ops/setup-secrets.ps1` uses for Infrastructure-Vm-Users.
+# to this repo under the same parent directory, resolved relative to
+# this script's own location.
 $repoRoot     = Split-Path -Parent $PSScriptRoot
 $runnersPs1   = [IO.Path]::Combine(
     $repoRoot, '..',

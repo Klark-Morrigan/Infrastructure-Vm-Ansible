@@ -1,12 +1,10 @@
 # Playbook conventions
 
 Shared rationale for the operator-facing playbooks under `playbooks/`
-([create-users.yml](../../playbooks/create-users.yml),
-[remove-users.yml](../../playbooks/remove-users.yml),
-[register-runners.yml](../../playbooks/register-runners.yml), and the
-deregister-runners playbook landing under feature 09). Each playbook's
-header keeps only its per-playbook rationale (role order, what it
-reconciles) and points here for the shared posture.
+([register-runners.yml](../../playbooks/register-runners.yml) and
+[deregister-runners.yml](../../playbooks/deregister-runners.yml)). Each
+playbook's header keeps only its per-playbook rationale (role order, what
+it reconciles) and points here for the shared posture.
 
 ## Index
 
@@ -50,9 +48,9 @@ to the role name. Operators scope a partial run with
 Roles do not coordinate across tag scopes - skipping a role on the
 register direction (e.g. `--tags runner_binary` only) leaves the next
 role's preconditions unsatisfied, and the role will fail loudly rather
-than silently mis-reconcile. The remove direction is symmetric:
-skipping `users` while running `groups` hits the role's
-non-empty-group skip path, which is the intended safety net.
+than silently mis-reconcile. The deregister direction is symmetric:
+each remove-path role guards its own state (e.g. a missing service unit
+is treated as already-removed) rather than assuming a sibling ran first.
 
 ## `acl` prerequisite for unprivileged become
 
@@ -91,11 +89,10 @@ dependencies in either direction.
 
 Reason: Ansible's meta dependencies always run the dep's
 `tasks/main.yml` and ignore the entry role's `tasks_from` selector.
-A meta dep like `sudoers -> users` in the create-direction would
-silently re-create users mid-teardown when the remove playbook
-imports `sudoers` with `tasks_from: remove`. Symmetric trap for
-runner roles vs. feature 09's deregister flow.
+A meta dep like `runner_service -> runner_registration` in the register
+direction would silently re-register a runner mid-teardown when the
+deregister playbook imports `runner_service` with `tasks_from: remove`.
 
 The only meta deps the roles do carry are direction-neutral helpers
-(`vm_users_entry`, `runner_entry_resolve`) that set shared facts but
-do not own playbook-level ordering.
+(`runner_entry_resolve`) that set shared facts but do not own
+playbook-level ordering.

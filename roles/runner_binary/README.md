@@ -78,9 +78,9 @@ only `chgrp` to a group it belongs to, so the per-user group has to be the
 user's own. That invariant is normally implicit (useradd's per-user group),
 but a target whose `useradd` defaults new users into a shared group (e.g.
 `users`, gid 100) breaks it - the role establishes it explicitly rather than
-trusting the target's default. A primary group is not touched by the
-[`users`](../users/README.md) role's `append: false` supplementary
-reconciliation, so it survives a later create-users run.
+trusting the target's default. A primary group is not touched by a
+user-reconciliation run's `append: false` supplementary group handling,
+so it survives a later user reconcile.
 
 Both phases run with `become: true`. Ownership is the runner service
 user end-to-end so the registration and service roles can act on the
@@ -113,9 +113,8 @@ What is **not** removed:
   re-downloading the actions-runner archive on every teardown /
   setup cycle would defeat the cache.
 - The `runnerUsername` home directory and the runner service user
-  account itself. Owned by the
-  [`users`](../users/README.md) / [`groups`](../groups/README.md)
-  roles' remove direction (feature 03), not this role.
+  account itself. Owned by the user-provisioning flow (the user owner
+  repo, Infrastructure-Vm-Users), not this role.
 - Anything outside the per-host slice. An entry whose `vmName` does
   not match `inventory_hostname` is dropped by `runner_entry_resolve`
   before the loop sees it, so a stray `/opt/runners/<name>/` on disk

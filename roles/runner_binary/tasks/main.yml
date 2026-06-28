@@ -34,10 +34,10 @@
 # users into a shared group (e.g. `users`) breaks it, and the unprivileged
 # chgrp then fails. Establish the invariant explicitly here rather than
 # trusting the target's useradd default: ensure the group exists and is the
-# user's PRIMARY group. A primary group is not touched by the users role's
-# `append: false` supplementary reconciliation, so it survives a later
-# create-users run; once it holds, every file the runner creates defaults to
-# its own group and no chgrp is needed.
+# user's PRIMARY group. A primary group is not touched by a user-
+# reconciliation run's `append: false` supplementary group handling, so it
+# survives a later user reconcile; once it holds, every file the runner
+# creates defaults to its own group and no chgrp is needed.
 - name: Ensure a per-runner primary group exists for each runner user
   ansible.builtin.group:
     name: "{{ item }}"

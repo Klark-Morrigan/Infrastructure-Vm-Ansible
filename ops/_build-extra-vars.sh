@@ -16,7 +16,7 @@
 #                                 because the substrate genuinely owns it
 #                                 (it drives the inventory for every flow).
 #   --vault-config <Name>=<path>  Repeatable: one per extra vault the
-#                                 contract declared (e.g. VmUsers=...,
+#                                 contract declared (e.g.
 #                                 GitHubRunners=...). The Name selects the
 #                                 per-domain helper below; an unrecognised
 #                                 name is a contract typo or a domain with
@@ -39,7 +39,6 @@
 #
 #   {
 #     "vm_provisioner_config":     <provisioner JSON>,  // always
-#     "vm_users_config":           <users JSON>,        // VmUsers declared
 #     "github_runners_config":     <runners JSON>,      // GitHubRunners declared
 #     "github_token":              "<value>",           // with GitHubRunners
 #     "host_file_server_base_url": "<url>",             // file-server opt-in
@@ -179,7 +178,7 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The inventory fragment is always substrate, so it stays on this composer's
-# own tree. The per-domain fragments (VmUsers / GitHubRunners) are
+# own tree. The per-domain fragments (e.g. GitHubRunners) are
 # consumer-owned once extracted, so they resolve from <consumer-root>/ops
 # when a consumer root was declared; empty keeps them on this composer's ops/
 # - the substrate's own flows and the retained forks.
@@ -195,10 +194,6 @@ fragments+=( "$("${script_dir}/virtual-machines/_build-extra-vars-inventory.sh" 
 if [[ "${#vault_paths[@]}" -gt 0 ]]; then
     for vault_name in "${!vault_paths[@]}"; do
         case "${vault_name}" in
-            VmUsers)
-                fragments+=( "$("${fragment_dir}/_build-extra-vars-users.sh" \
-                                --users-config "${vault_paths[VmUsers]}")" )
-                ;;
             GitHubRunners)
                 runners_args=(
                     --runners-config "${vault_paths[GitHubRunners]}"

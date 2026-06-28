@@ -276,7 +276,7 @@ teardown() {
     consumer="${TEST_TMP}/consumer"
     mkdir -p "${consumer}/playbooks" "${consumer}/roles"
     cp "${TEST_REPO}/playbooks/_noop.yml" "${consumer}/playbooks/own.yml"
-    export CA_EXTRA_VAULTS=VmUsers
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_CONSUMER_ROOT="${consumer}"
 
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/own.yml
@@ -298,27 +298,28 @@ teardown() {
 }
 
 @test "happy path invokes the siblings in order then dispatches ansible-playbook" {
-    # A consumer that declares CA_EXTRA_VAULTS=VmUsers (the create-users
-    # shape) reads the always-on provisioner vault plus the declared
-    # VmUsers vault, builds inventory, then composes extra-vars with the
-    # provisioner config and a generic --vault-config VmUsers pair.
-    export CA_EXTRA_VAULTS=VmUsers
+    # A consumer that declares a single extra vault
+    # (CA_EXTRA_VAULTS=Toolchains) reads the always-on provisioner vault
+    # plus the declared extra vault, builds inventory, then composes
+    # extra-vars with the provisioner config and a generic --vault-config
+    # pair. The bridge is vault-agnostic, so the name is just a sample.
+    export CA_EXTRA_VAULTS=Toolchains
 
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml --check
     [ "${status}" -eq 0 ]
 
     trace="$(cat "${TRACE_FILE}")"
     [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
-    [[ "${trace}" == *"read-vault-config:VmUsers:VmUsersConfig"* ]]
+    [[ "${trace}" == *"read-vault-config:Toolchains:ToolchainsConfig"* ]]
     [[ "${trace}" == *"build-inventory"* ]]
-    [[ "${trace}" == *"build-extra-vars:"*"--provisioner-config"*"--vault-config"*"VmUsers="* ]]
+    [[ "${trace}" == *"build-extra-vars:"*"--provisioner-config"*"--vault-config"*"Toolchains="* ]]
 
     # Order check via line numbers - awk for clarity. The pipeline is
     # provisioner read -> extra-vault read -> inventory build -> extra-vars
     # compose; any reorder would break downstream expectations.
     [ "$(awk '/^read-vault-config:VmProvisioner:/{print NR; exit}' "${TRACE_FILE}")" -lt \
-      "$(awk '/^read-vault-config:VmUsers:/{print NR; exit}' "${TRACE_FILE}")" ]
-    [ "$(awk '/^read-vault-config:VmUsers:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^read-vault-config:Toolchains:/{print NR; exit}' "${TRACE_FILE}")" ]
+    [ "$(awk '/^read-vault-config:Toolchains:/{print NR; exit}' "${TRACE_FILE}")" -lt \
       "$(awk '/^build-inventory/{print NR; exit}' "${TRACE_FILE}")" ]
     [ "$(awk '/^build-inventory/{print NR; exit}' "${TRACE_FILE}")" -lt \
       "$(awk '/^build-extra-vars:/{print NR; exit}' "${TRACE_FILE}")" ]
@@ -357,7 +358,7 @@ teardown() {
 
     trace="$(cat "${TRACE_FILE}")"
     [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
-    [[ "${trace}" != *"read-vault-config:VmUsers:"* ]]
+    [[ "${trace}" != *"read-vault-config:Toolchains:"* ]]
     [[ "${trace}" != *"read-vault-config:GitHubRunners:"* ]]
     [[ "${trace}" != *"--vault-config"* ]]
     [[ "${trace}" != *"--github-token"* ]]
@@ -600,7 +601,7 @@ STUB
 }
 
 @test "Git Bash launch re-execs the bridge under the WSL controller" {
-    # The menu (Invoke-BashScript) and create-users.bat launch this under
+    # The menu (Invoke-BashScript) and register-runners.bat launch this under
     # Git Bash, where the venv / nc / relay-redirect toolchain does not
     # exist. A MINGW/MSYS uname must re-exec self under `wsl --` rather than
     # run here. Stub uname -> MINGW and wsl.exe -> a recorder so the re-exec

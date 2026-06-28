@@ -5,8 +5,8 @@
 # runner_registration / runner_service roles. Opt-in: dispatched by
 # the extra-vars composer only when the caller declares the
 # GitHubRunners vault (CA_EXTRA_VAULTS=GitHubRunners with
-# CA_REQUIRES_TOKEN=1) and supplies GH_TOKEN, so the create-users /
-# remove-users flows never pay for it.
+# CA_REQUIRES_TOKEN=1) and supplies GH_TOKEN, so a consumer that does
+# not declare the runners vault never pays for it.
 #
 # Output (stdout):
 #   {

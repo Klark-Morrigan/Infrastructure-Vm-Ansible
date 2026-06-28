@@ -3,6 +3,5 @@
 # vm_runner_entries fact) comes from the runner_entry_resolve meta
 # dep, and that role's defaults already pin the GitHubRunnersConfig
 # fallback. Keeping the file (rather than skipping the directory)
-# follows the same convention as roles/groups, roles/users, and
-# roles/sudoers - it gives ansible-lint a defaults path to scan and
-# leaves an obvious place for a future tunable to land.
+# gives ansible-lint a defaults path to scan and leaves an obvious
+# place for a future tunable to land.

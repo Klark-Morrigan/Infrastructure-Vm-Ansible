@@ -7,7 +7,6 @@
 # covered by each helper's own bats file:
 #
 #   Tests/ops/_build-extra-vars-inventory.bats
-#   Tests/ops/_build-extra-vars-users.bats
 #   Tests/ops/_build-extra-vars-runners.bats
 #
 # This file covers what only the composer can: which vault maps to
@@ -24,13 +23,11 @@ source "${BATS_TEST_DIRNAME}/_bats-helpers.sh"
 setup() {
     _bats_init_temp buildExtraVars
     PROV="${TEST_TMP}/provisioner.json"
-    USERS="${TEST_TMP}/users.json"
     RUNNERS="${TEST_TMP}/runners.json"
 
     # Minimal valid documents so the helpers always succeed when
     # called. Tests that need richer documents overwrite these.
     printf '%s' '[{"vmName":"a","ipAddress":"10.0.0.1"}]' > "${PROV}"
-    printf '%s' '[{"vmName":"a","users":[]}]'             > "${USERS}"
     printf '%s' '[{"vmName":"a","runnerName":"r1"}]'      > "${RUNNERS}"
 }
 
@@ -45,7 +42,7 @@ teardown() {
 
     # A declared extra vault without the always-on provisioner is still
     # a usage error: the inventory fragment has no source.
-    run "${BASH_BIN}" "${SCRIPT}" --vault-config "VmUsers=${USERS}"
+    run "${BASH_BIN}" "${SCRIPT}" --vault-config "GitHubRunners=${RUNNERS}"
     [ "${status}" -eq 2 ]
 }
 
@@ -58,7 +55,7 @@ teardown() {
 @test "rejects a --vault-config value with no Name=path shape" {
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers"
+        --vault-config "GitHubRunners"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"--vault-config expects <Name>=<path>"* ]]
 }
@@ -72,16 +69,17 @@ teardown() {
     [ "$(printf '%s' "${output}" | jq -r '.vm_provisioner_config[0].vmName')" = "a" ]
 }
 
-@test "VmUsers vault -> emits the inventory and users keys" {
+@test "GitHubRunners vault -> emits the inventory and runners keys" {
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers=${USERS}"
+        --vault-config "GitHubRunners=${RUNNERS}" \
+        --github-token "ghp_example"
     [ "${status}" -eq 0 ]
-    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "vm_provisioner_config,vm_users_config" ]
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config" ]
 
     # Spot-check the merge actually pulled values from each helper.
     [ "$(printf '%s' "${output}" | jq -r '.vm_provisioner_config[0].vmName')" = "a" ]
-    [ "$(printf '%s' "${output}" | jq -r '.vm_users_config[0].vmName')" = "a" ]
+    [ "$(printf '%s' "${output}" | jq -r '.github_runners_config[0].runnerName')" = "r1" ]
 }
 
 @test "--consumer-root resolves the per-domain fragment from the consumer ops dir" {
@@ -91,18 +89,19 @@ teardown() {
     # inventory fragment stays substrate and is unaffected.
     consumer_ops="${TEST_TMP}/consumer/ops"
     mkdir -p "${consumer_ops}"
-    cat > "${consumer_ops}/_build-extra-vars-users.sh" <<'EOF'
+    cat > "${consumer_ops}/_build-extra-vars-runners.sh" <<'EOF'
 #!/usr/bin/env bash
-echo '{"vm_users_config":"from-consumer-fragment"}'
+echo '{"github_runners_config":"from-consumer-fragment"}'
 EOF
-    chmod +x "${consumer_ops}/_build-extra-vars-users.sh"
+    chmod +x "${consumer_ops}/_build-extra-vars-runners.sh"
 
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers=${USERS}" \
+        --vault-config "GitHubRunners=${RUNNERS}" \
+        --github-token "ghp_example" \
         --consumer-root "${TEST_TMP}/consumer"
     [ "${status}" -eq 0 ]
-    [ "$(printf '%s' "${output}" | jq -r '.vm_users_config')" = "from-consumer-fragment" ]
+    [ "$(printf '%s' "${output}" | jq -r '.github_runners_config')" = "from-consumer-fragment" ]
     [ "$(printf '%s' "${output}" | jq -r '.vm_provisioner_config[0].vmName')" = "a" ]
 }
 
@@ -111,39 +110,37 @@ EOF
     # not yet wired; fail loud rather than silently drop it.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "MysteryVault=${USERS}"
+        --vault-config "MysteryVault=${RUNNERS}"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"no extra-vars helper for declared vault 'MysteryVault'"* ]]
 }
 
-@test "VmUsers + GitHubRunners + full runner flags -> merged output has all six keys" {
+@test "GitHubRunners + full runner flags -> merged output has all five keys" {
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers=${USERS}" \
         --vault-config "GitHubRunners=${RUNNERS}" \
         --github-token "ghp_example" \
         --host-base-url "http://10.10.0.1:8745" \
         --runner-version "2.999.0"
     [ "${status}" -eq 0 ]
-    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,host_file_server_base_url,runner_version,vm_provisioner_config,vm_users_config" ]
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,host_file_server_base_url,runner_version,vm_provisioner_config" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_runners_config[0].runnerName')" = "r1" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
     [ "$(printf '%s' "${output}" | jq -r '.host_file_server_base_url')" = "http://10.10.0.1:8745" ]
     [ "$(printf '%s' "${output}" | jq -r '.runner_version')" = "2.999.0" ]
 }
 
-@test "GitHubRunners with token but no file-server pair emits four keys (down-direction shape)" {
+@test "GitHubRunners with token but no file-server pair emits three keys (down-direction shape)" {
     # The deregister flow lands here: GitHubRunners vault declared, host
     # file server off. The runners helper drops the two file-server
     # keys, so the merged doc has the runners config + token plus the
-    # inventory and users keys.
+    # inventory key only.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers=${USERS}" \
         --vault-config "GitHubRunners=${RUNNERS}" \
         --github-token "ghp_example"
     [ "${status}" -eq 0 ]
-    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config,vm_users_config" ]
+    [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]
     [ "$(printf '%s' "${output}" | jq -r 'has("host_file_server_base_url")')" = "false" ]
     [ "$(printf '%s' "${output}" | jq -r 'has("runner_version")')" = "false" ]
@@ -164,7 +161,6 @@ EOF
     # consumes it was not declared.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers=${USERS}" \
         --github-token "ghp_example"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"--github-token requires the GitHubRunners vault"* ]]
@@ -199,7 +195,6 @@ EOF
     # unreachable URL.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --vault-config "VmUsers=${USERS}" \
         --host-base-url "http://10.10.0.1:8745" \
         --runner-version "2.999.0"
     [ "${status}" -eq 2 ]
@@ -212,8 +207,7 @@ EOF
     # set -euo pipefail + the `$(...)` capture make this reliable
     # without explicit error handling in the composer.
     run "${BASH_BIN}" "${SCRIPT}" \
-        --provisioner-config "${TEST_TMP}/does-not-exist.json" \
-        --vault-config "VmUsers=${USERS}"
+        --provisioner-config "${TEST_TMP}/does-not-exist.json"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"provisioner-config"* ]]
     [[ "${output}" == *"not found"* ]]

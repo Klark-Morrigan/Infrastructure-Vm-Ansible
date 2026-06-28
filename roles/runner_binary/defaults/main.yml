@@ -11,6 +11,6 @@
 # `runner_version` is the input contract from the bridge (an extra-var
 # set by `_build-extra-vars-runners.sh`) and is shared with the other
 # two runner roles. Renaming it under a role-private prefix would just
-# force every call site to alias it back. Same posture as
-# vm_users_entry's facts vs ansible-lint's no-role-prefix rule.
+# force every call site to alias it back - the same no-role-prefix
+# trade-off the shared runner facts make.
 runner_version: "latest"  # noqa: var-naming[no-role-prefix]

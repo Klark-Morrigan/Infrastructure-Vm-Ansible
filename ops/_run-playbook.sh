@@ -25,8 +25,9 @@ source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
 # against a VM address from it - but the VAULT that holds it is named by a
 # specific repo (Infrastructure-Vm-Provisioner), so the consumer declares
 # it through the contract (CA_INVENTORY_VAULT) rather than the bridge
-# hardcoding it. VmUsers / GitHubRunners are declared the same way through
-# CA_EXTRA_VAULTS. Pinning the substrate to no repo's vault naming -
+# hardcoding it. Downstream consumer vaults (e.g. GitHubRunners) are
+# declared the same way through CA_EXTRA_VAULTS. Pinning the substrate to
+# no repo's vault naming -
 # inventory provider or downstream consumer alike - is the dependency
 # inversion that keeps the repo a substrate rather than a knower of its
 # own estate.
@@ -58,7 +59,7 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 # ansible-playbook, nc, and the WSL router-relay redirect below - lives in
 # the WSL controller that ops/bootstrap-controller provisions. But the
 # operator entry points launch it through Git Bash (the menu's
-# Invoke-BashScript, and create-users.bat via _find-bash.bat). Under Git
+# Invoke-BashScript, and register-runners.bat via _find-bash.bat). Under Git
 # Bash none of that toolchain exists: ansible is not on PATH, .venv/bin's
 # python3 is a Linux symlink, nc is absent, and the relay redirect is
 # skipped because /proc/version is not "microsoft". So when we detect a Git
@@ -268,8 +269,9 @@ source "${script_dir}/_ansible-env.sh"
 # 4. Vault reads. The contract-declared inventory vault is always read
 #    (the fleet the dispatch targets). Then each contract-declared extra
 #    vault is read generically into its own tmpdir file - the bridge names
-#    no vault, it reads whatever the contract listed, so create-users pays
-#    only for VmUsers and register-runners only for GitHubRunners. Each
+#    no vault, it reads whatever the contract listed, so register-runners
+#    pays only for GitHubRunners and a consumer pays only for what it
+#    declares. Each
 #    read validates its payload via jq empty before returning, so a
 #    malformed secret fails here with the vault name in the message - not
 #    later inside ansible-playbook. chmod 600 mirrors the tmpdir

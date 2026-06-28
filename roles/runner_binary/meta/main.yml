@@ -1,6 +1,5 @@
 ---
-# Role metadata. Same posture as roles/groups, roles/users, and
-# roles/sudoers: the galaxy_info block is here to satisfy ansible-lint's
+# Role metadata. The galaxy_info block is here to satisfy ansible-lint's
 # role-name / meta-no-info rules, not to publish to Galaxy.
 
 galaxy_info:

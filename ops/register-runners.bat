@@ -1,9 +1,9 @@
 @echo off
 setlocal
 rem Explorer-double-click launcher for ops/register-runners.sh. Mirror
-rem of create-users.bat / remove-users.bat: the .sh is the real entry;
-rem this .bat exists so an operator can run the register-runners flow
-rem without first opening a WSL terminal.
+rem of deregister-runners.bat: the .sh is the real entry; this .bat
+rem exists so an operator can run the register-runners flow without
+rem first opening a WSL terminal.
 rem
 rem _find-bash.bat from Common-Automation locates Git Bash robustly and
 rem sets %BASH%; reused rather than reimplemented (the lookup probes

@@ -1,7 +1,7 @@
 ---
 # Role metadata. galaxy_info present only to satisfy ansible-lint's
 # role-name / meta-no-info rules; this is a repo-internal helper, not a
-# Galaxy-published role. Same posture as roles/vm_users_entry.
+# Galaxy-published role.
 
 galaxy_info:
   role_name: runner_entry_resolve

@@ -14,8 +14,8 @@
 # host_key_checking from False to True (breaking SSH to fresh VMs at
 # the first connection), drops interpreter_python=auto_silent (extra
 # per-host warnings), and resets roles_path to its defaults (so
-# `roles: [{ role: groups }]` in playbooks/create-users.yml fails
-# with "role 'groups' was not found" because Ansible only looks
+# `roles: [{ role: runner_binary }]` in playbooks/register-runners.yml
+# fails with "role 'runner_binary' was not found" because Ansible only looks
 # under playbooks/roles/, ~/.ansible/roles/, etc. - never under the
 # repo-root roles/ directory where this project keeps them).
 #

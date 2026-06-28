@@ -75,32 +75,32 @@ teardown() {
 }
 
 @test "parses a single extra vault" {
-    export CA_EXTRA_VAULTS="VmUsers"
+    export CA_EXTRA_VAULTS="GitHubRunners"
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 0 ]
-    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=VmUsers" ]]
+    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=GitHubRunners" ]]
 }
 
 @test "normalises a comma-separated extra-vault list to space-separated" {
-    export CA_EXTRA_VAULTS="VmUsers,GitHubRunners"
+    export CA_EXTRA_VAULTS="GitHubRunners,Toolchains"
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 0 ]
-    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=VmUsers GitHubRunners" ]]
+    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=GitHubRunners Toolchains" ]]
 }
 
 @test "accepts a whitespace-separated extra-vault list" {
-    export CA_EXTRA_VAULTS="VmUsers GitHubRunners"
+    export CA_EXTRA_VAULTS="GitHubRunners Toolchains"
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 0 ]
-    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=VmUsers GitHubRunners" ]]
+    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=GitHubRunners Toolchains" ]]
 }
 
 @test "drops empty fields from a sloppy separator list" {
     # Repeated and trailing separators must not produce empty vault names.
-    export CA_EXTRA_VAULTS="VmUsers,,GitHubRunners,"
+    export CA_EXTRA_VAULTS="GitHubRunners,,Toolchains,"
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 0 ]
-    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=VmUsers GitHubRunners" ]]
+    [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=GitHubRunners Toolchains" ]]
 }
 
 @test "parses CA_NEEDS_HOST_FILE_SERVER=1 as on" {

@@ -1,9 +1,12 @@
 # Common-Ansible
 
-Ansible controller repo for reconciling OS groups, users, and sudoers on
-provisioned VMs. Invoked from Windows via a PowerShell -> WSL bridge that
-reads configuration from PowerShell SecretManagement vaults and dispatches
-to `ansible-playbook` inside a Linux venv.
+Ansible controller substrate - a PowerShell -> WSL dispatch bridge and
+reusable roles - plus the self-hosted GitHub Actions runner registration
+flow, run against provisioned VMs. Invoked from Windows via the bridge,
+which reads configuration from PowerShell SecretManagement vaults and
+dispatches to `ansible-playbook` inside a Linux venv. Consumer repos reuse
+the substrate to own their own domains (see
+[Consuming the substrate](#consuming-the-substrate)).
 
 Design history and rationale live under
 [docs/dev/implementation/](docs/dev/implementation/); each section below
@@ -15,8 +18,6 @@ was extended by the feature step that earned it.
   - [Troubleshooting: WSL default distro has no bash](#troubleshooting-wsl-default-distro-has-no-bash)
   - [Troubleshooting: capturing logs and re-running an interrupted bootstrap](#troubleshooting-capturing-logs-and-re-running-an-interrupted-bootstrap)
 - [Vault setup](#vault-setup)
-- [Create users](#create-users)
-- [Remove users](#remove-users)
 - [Register runners](#register-runners)
 - [Deregister runners](#deregister-runners)
 - [Bridge contract](#bridge-contract)
@@ -159,41 +160,10 @@ bootstrap to recreate it cleanly.
 
 ## Vault setup
 
-Operators write the `VmUsersConfig` payload to the local SecretStore
-vault `VmUsers` (secret name `VmUsersConfig`) by running:
-
-```
-pwsh ./ops/setup-secrets.ps1 -ConfigFile C:\private\vm-users-config.json
-```
-
-or by dropping the JSON file onto
-[`ops/setup-secrets.bat`](ops/setup-secrets.bat) (Explorer launcher;
-forwards the dropped path as `-ConfigFile`).
-
-[`ops/setup-secrets.ps1`](ops/setup-secrets.ps1) is a **thin wrapper**
-that delegates to
-[`Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1`](../Infrastructure-Vm-Users/hyper-v/ubuntu/setup-secrets.ps1).
-The Vm-Users script owns the schema validator, the
-SecretStore/SecretManagement install, the vault registration, and
-the `Set-Secret` write. Both repos target the same `VmUsers` vault
-and `VmUsersConfig` secret name - which is exactly what this repo's
-bash bridge in [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh)
-reads from. Forking the writer before the vault contract actually
-diverges would just create a second place to keep in lock-step;
-the wrapper buys discoverability (the entry sits next to the rest
-of `ops/`) without that cost.
-
-The wrapper expects `Infrastructure-Vm-Users` as a sibling checkout
-under the same parent directory as this repo - same convention used
-by [`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) for
-`Common-PowerShell`. A follow-up feature replaces the wrapper with a
-first-class implementation when the vault contract diverges (or
-Vm-Users is archived).
-
 The `GitHubRunnersConfig` payload (consumed by the
 [register-runners flow](#register-runners)) lands in the
 `GitHubRunners` vault under the secret name
-`GitHubRunnersConfig-<Suffix>` via a peer wrapper:
+`GitHubRunnersConfig-<Suffix>` via a wrapper:
 
 ```
 pwsh ./ops/setup-runners-secrets.ps1 `
@@ -206,109 +176,22 @@ or by dropping the JSON file onto
 launcher omits `-SecretSuffix` on purpose so pwsh prompts the operator
 for the lifecycle label at drop time rather than silently defaulting).
 
-[`ops/setup-runners-secrets.ps1`](ops/setup-runners-secrets.ps1)
-delegates to
-[`Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1`](../Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1)
-under the same sibling-checkout convention as the Vm-Users wrapper.
-Both repos target the same `GitHubRunners` vault and the same
+[`ops/setup-runners-secrets.ps1`](ops/setup-runners-secrets.ps1) is a
+**thin wrapper** that delegates to
+[`Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1`](../Infrastructure-GitHubRunners/hyper-v/ubuntu/setup-secrets.ps1),
+expecting `Infrastructure-GitHubRunners` as a sibling checkout under the
+same parent directory as this repo (same convention as
+[`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1) uses for
+`Common-PowerShell`). The GitHubRunners script owns the schema validator,
+the SecretStore/SecretManagement install, the vault registration, and the
+`Set-Secret` write. Both repos target the same `GitHubRunners` vault and
+the same
 `GitHubRunnersConfig-<Suffix>` secret name - which is exactly what
 this repo's bridge reads from when a runner wrapper declares it via
 `CA_EXTRA_VAULTS=GitHubRunners`. The
 GitHub PAT is **not** stored in this vault: it is supplied per
 register-runners invocation via the entry script's prompt (or
 `GH_TOKEN` for unattended callers).
-
-## Create users
-
-Once the controller is bootstrapped and the vault entry is in place,
-the create-users flow reconciles every host in the `VmProvisionerConfig`
-inventory with one command:
-
-```
-wsl ./ops/create-users.sh
-```
-
-or double-click [`ops/create-users.bat`](ops/create-users.bat) from
-Explorer (Git Bash launcher; mirrors the
-[`scripts/run-ci-yaml-and-bash.bat`](scripts/run-ci-yaml-and-bash.bat)
-sibling-find pattern and reuses
-[`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
-
-[`ops/create-users.sh`](ops/create-users.sh) declares its needs to the
-[bridge](#bridge-contract) through the `CA_*` contract -
-`CA_INVENTORY_VAULT=VmProvisioner` (the fleet inventory) and
-`CA_EXTRA_VAULTS=VmUsers` (the user roles' config on top), with no token
-and no host file server - then dispatches
-[`playbooks/create-users.yml`](playbooks/create-users.yml). Every flag
-after the entry point is forwarded to `ansible-playbook` verbatim, so the
-usual operator knobs work unchanged:
-
-```
-wsl ./ops/create-users.sh --check               # dry-run
-wsl ./ops/create-users.sh --tags users          # scope to one role
-wsl ./ops/create-users.sh --limit vm-1,vm-2     # scope to specific VMs
-wsl ./ops/create-users.sh -v                    # verbose play recap
-```
-
-The playbook composes the three roles in `groups -> users -> sudoers`
-order against the `vm_provisioner_hosts` inventory group; each role
-is tagged with its own name. `any_errors_fatal: false` keeps a
-transiently offline VM from stranding the rest of the fleet.
-
-## Remove users
-
-The reverse flow tears down what `create-users` reconciled. One
-command tells every host in the `VmProvisionerConfig` inventory to
-drop the declared sudoers drop-ins, accounts, and (empty) groups:
-
-```
-wsl ./ops/remove-users.sh
-```
-
-or double-click [`ops/remove-users.bat`](ops/remove-users.bat) from
-Explorer (same Git Bash launcher pattern as the create side).
-
-[`ops/remove-users.sh`](ops/remove-users.sh) declares the same `CA_*`
-contract as the create side (`CA_INVENTORY_VAULT=VmProvisioner`,
-`CA_EXTRA_VAULTS=VmUsers`) and dispatches
-[`playbooks/remove-users.yml`](playbooks/remove-users.yml)
-through the [bridge](#bridge-contract); the same operator knobs as
-the create side work unchanged:
-
-```
-wsl ./ops/remove-users.sh --check               # dry-run
-wsl ./ops/remove-users.sh --tags users          # scope to one role
-wsl ./ops/remove-users.sh --limit vm-1,vm-2     # scope to specific VMs
-wsl ./ops/remove-users.sh -v                    # verbose play recap
-```
-
-The playbook invokes each role with `tasks_from: remove` in the
-reverse order `sudoers -> users -> groups` (drop-ins first so they
-no longer reference live accounts, accounts next so userdel clears
-implicit primary groups, groups last so the empty-group check finds
-them empty). `any_errors_fatal: false` matches the create posture —
-one offline VM does not strand the rest.
-
-There is no confirmation prompt. The destructive intent is in the
-script name and the operator's choice to invoke it (decision in
-`docs/dev/implementation/03-.../problem.md`). The remove direction
-is also bounded by **declaration**, not drift: only usernames and
-group names listed in `VmUsersConfig` for the host are touched;
-out-of-config accounts, groups, and sudoers drop-ins are left alone.
-
-Two contracts worth highlighting before invoking the flow:
-
-- **Non-empty declared groups are kept, not forced.** If a declared
-  group still has members after the users pass, the groups role
-  emits a debug warning naming the remaining members and skips the
-  removal; the play exits 0. Operators who want the group gone after
-  that need to deal with the out-of-config members manually.
-- **Running processes do not block removal.** Before `userdel`, the
-  users role issues `pkill -KILL -u <username>` (rc=1 means no
-  processes and is ignored). `userdel -f -r` then deletes the
-  account and its home directory; a final assert surfaces the rare
-  case where even `-f` could not free the account (D-state task,
-  kernel-thread parent).
 
 ## Register runners
 
@@ -323,8 +206,8 @@ wsl ./ops/register-runners.sh
 ```
 
 or double-click [`ops/register-runners.bat`](ops/register-runners.bat)
-from Explorer (same Git Bash launcher pattern as the users-side
-entries).
+from Explorer (Git Bash launcher; reuses
+[`Common-Automation/scripts/_find-bash.bat`](../Common-Automation/scripts/_find-bash.bat)).
 
 [`ops/register-runners.sh`](ops/register-runners.sh) prompts for the
 GitHub PAT via `read -s` when `GH_TOKEN` is unset, then declares the full
@@ -335,8 +218,7 @@ runner contract to the [bridge](#bridge-contract):
 `CA_NEEDS_HOST_FILE_SERVER=1` (the host-file-server staging gate; register
 only, because the down path fetches nothing). It then dispatches
 [`playbooks/register-runners.yml`](playbooks/register-runners.yml)
-through the bridge. The same operator knobs as the users-side flows
-work unchanged:
+through the bridge. The usual operator knobs work unchanged:
 
 ```
 wsl ./ops/register-runners.sh --check                    # dry-run
@@ -353,8 +235,8 @@ branching on a flag.
 The playbook composes the three runner roles in
 `runner_binary -> runner_registration -> runner_service` order
 against the `vm_provisioner_hosts` inventory group; each role is
-tagged with its own name. `any_errors_fatal: false` matches the
-users-side posture - one offline VM does not strand the rest.
+tagged with its own name. `any_errors_fatal: false` keeps one offline
+VM from stranding the rest.
 
 Two contracts worth highlighting before invoking the flow:
 
@@ -493,8 +375,8 @@ compose, the orchestrator itself) stay at the `ops/` root:
     read from the contract-declared vault. A flag name, not a vault
     name: the composer never learns which vault it came from.
   - `--vault-config <Name>=<path>` (repeatable) — one per extra vault.
-    `VmUsers` routes to the users helper; `GitHubRunners` to the
-    runners helper. An unrecognised Name is a contract typo or a
+    `GitHubRunners` routes to the runners helper. An unrecognised Name
+    is a contract typo or a
     domain with no helper yet and is rejected, never silently dropped.
   - `--github-token <value>` — routed to the runners helper. The
     token pairs with the `GitHubRunners` vault: either alone is
@@ -515,8 +397,6 @@ compose, the orchestrator itself) stay at the `ops/` root:
   - [`ops/virtual-machines/_build-extra-vars-inventory.sh`](ops/virtual-machines/_build-extra-vars-inventory.sh)
     — emits `vm_provisioner_config`. Always-on; the inventory source
     every payload domain shares.
-  - [`ops/_build-extra-vars-users.sh`](ops/_build-extra-vars-users.sh)
-    — emits `vm_users_config` for the groups / users / sudoers roles.
   - [`ops/_build-extra-vars-runners.sh`](ops/_build-extra-vars-runners.sh)
     — emits `github_runners_config` + `github_token` always, plus
     `host_file_server_base_url` + `runner_version` when the
@@ -547,9 +427,9 @@ compose, the orchestrator itself) stay at the `ops/` root:
   (`CA_INVENTORY_VAULT`) unconditionally - the fleet every dispatch
   targets - deriving its secret as `<Name>Config-<suffix>`, and then
   reads each vault the contract's `CA_EXTRA_VAULTS` declared,
-  generically, into its own tmpdir file - so create-users pays only for
-  `VmUsers` and register-runners only for `GitHubRunners`, and the
-  bridge names no vault at all (inventory provider or consumer alike).
+  generically, into its own tmpdir file - so register-runners pays only
+  for `GitHubRunners` and a consumer pays only for what it declares, and
+  the bridge names no vault at all (inventory provider or consumer alike).
   Each declared extra vault is forwarded to the composer as a generic
   `--vault-config <Name>=<path>` pair. The contract's
   `CA_NEEDS_HOST_FILE_SERVER=1` controls the Windows-side staging:
@@ -621,9 +501,8 @@ compose, the orchestrator itself) stay at the `ops/` root:
 External contract (consumed by feature playbooks): the extra-vars
 document always has the top-level key `vm_provisioner_config` (the
 shared inventory). Every other key is present only when the contract
-declared the vault that feeds it: `vm_users_config` when
-`CA_EXTRA_VAULTS` names `VmUsers`; `github_runners_config` +
-`github_token` when it names `GitHubRunners` (with
+declared the vault that feeds it: `github_runners_config` +
+`github_token` when `CA_EXTRA_VAULTS` names `GitHubRunners` (with
 `CA_REQUIRES_TOKEN=1`); and `host_file_server_base_url` +
 `runner_version` only when the caller also opts into the host file
 server (`CA_NEEDS_HOST_FILE_SERVER=1`, register flow only). The
@@ -649,7 +528,7 @@ real VM is captured in the feature plan.
 
 ## Tests and lint
 
-CI is wired to two reusable workflows; nothing is copied per-repo:
+CI is wired to three reusable workflows; nothing is copied per-repo:
 
 - [`.github/workflows/ci-powershell.yml`](.github/workflows/ci-powershell.yml)
   -> `Common-PowerShell/.github/workflows/ci-powershell.yml@master`
@@ -660,23 +539,15 @@ CI is wired to two reusable workflows; nothing is copied per-repo:
 - [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml)
   -> `Common-Automation/.github/workflows/ci-yaml.yml@master` (yamllint,
   actionlint, action-validator, ansible-lint).
-- [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
-  -> `Infrastructure-E2E/.github/workflows/e2e.yml@master`. Required PR
-  check: the workstation polling agent picks up the deployment created
-  by the shared workflow, runs the full runner-lifecycle test against a
-  real Hyper-V VM with the agent's default `UsersFlow=ansible`, and
-  reports back. An Ansible role / playbook / bridge change cannot merge
-  to `master` until the new code has been proven to reconcile users and
-  bring an online runner up via this repo's `ops/create-users.sh`. The
-  agent also dispatches the runner-registration half via
-  `Set-VmRunnersForTest`: when `RunnersFlow=ansible` is set in the
-  agent's `E2EConfig` vault, the same gate drives this repo's
-  `ops/register-runners.sh` instead of
-  `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`.
-  Opt in explicitly during the first validation cycle; the default-flip
-  happens in a follow-up bump. Requires the GitHub App from
-  Infrastructure-E2E's setup to be installed on this repo and the
-  `GH_APP_ID` / `GH_APP_PRIVATE_KEY` Actions secrets to be present.
+
+This repo carries **no E2E gate of its own**. As the consumed substrate
+(dispatch bridge + reusable roles), its real-VM behaviour is exercised
+end-to-end by the consumers' E2E gates - each consumer checks
+Common-Ansible out as a sibling and runs its own flow through this
+bridge - so a per-PR live-Hyper-V run here would only duplicate that
+coverage (and, for the user layer, gate this repo's PRs on a domain it
+no longer owns). The substrate's own bar is the bats suites plus the
+lint workflows above.
 
 The same checks run locally via thin shims that delegate to the
 canonical runners in the sibling repos (so a fix to the CI logic
@@ -734,10 +605,10 @@ inside the repo's venv.
 
 The reusable roles in [`roles/`](roles/) are **not standalone** - they
 read the extra-vars and inventory the dispatch bridge composes
-(`vm_users_config`, `github_runners_config`, `host_file_server_base_url`,
-the `vm_users_entry` / `vm_runner_entries` facts). Roles and bridge are
-therefore one cohesive substrate and are consumed **together, through a
-single sibling checkout** - not split across two transports.
+(`github_runners_config`, `host_file_server_base_url`, the
+`vm_runner_entries` fact). Roles and bridge are therefore one cohesive
+substrate and are consumed **together, through a single sibling
+checkout** - not split across two transports.
 
 A consumer keeps Common-Ansible checked out alongside it (under the same
 parent, e.g. `c:\a_Code\Common-Ansible`) and resolves that root once -
@@ -747,8 +618,7 @@ already uses for Common-Automation, overridable with
 `COMMON_ANSIBLE_ROOT`. From that one root it gets both:
 
 - **roles** - by adding `<root>/roles` to `ANSIBLE_ROLES_PATH`, so
-  playbooks reference substrate roles by their short name (e.g.
-  `groups`); and
+  playbooks reference substrate roles by their short name; and
 - **the ops bridge** - by sourcing/exec'ing `<root>/ops/` (the
   controller bootstrap and `_run-playbook.sh` dispatch).
 
@@ -778,34 +648,14 @@ candidate to publish on its own.
 
 Per-role contracts (var schema, idempotence guarantees, test scope)
 live in each role's own README. The top-level entry below grows as
-each role lands; the create-users playbook orders them
-`groups -> users -> sudoers`.
+each role lands; the register-runners playbook orders them
+`runner_binary -> runner_registration -> runner_service`.
 
-- [`roles/vm_users_entry`](roles/vm_users_entry/README.md) -
-  repo-internal helper. Resolves the per-host `VmUsersConfig` entry
-  into the shared `vm_users_entry` fact; pulled in via meta dependency
-  by the three roles below so the selectattr+first lookup lives in
-  one file instead of three.
-- [`roles/groups`](roles/groups/README.md) - reconcile declared OS
-  groups from `vm_users_config[*].groups`; first role applied.
-- [`roles/users`](roles/users/README.md) - reconcile declared OS
-  users from `vm_users_config[*].users`; runs after `groups`.
-  Passwords are hashed controller-side with a deterministic
-  per-user salt so re-runs are truly idempotent; `homeDir` updates
-  never relocate on-disk data (`move_home: false`).
-- [`roles/sudoers`](roles/sudoers/README.md) - reconcile per-user
-  `/etc/sudoers.d/<username>` drop-ins from
-  `vm_users_config[*].users[*].sudoersRules`; runs after `users`.
-  Rules are written verbatim and gated by `visudo -cf` on the staged
-  temp file before the atomic swap, so a malformed rule fails the
-  task without touching the live file. An empty / absent
-  `sudoersRules` array removes the drop-in.
 - [`roles/runner_entry_resolve`](roles/runner_entry_resolve/README.md) -
   repo-internal helper. Resolves the per-host slice of
   `GitHubRunnersConfig` into the shared `vm_runner_entries` fact;
   pulled in via meta dependency by the runner roles below so the
-  selectattr filter lives in one file instead of three. Same
-  single-source-of-truth posture as `vm_users_entry`.
+  selectattr filter lives in one file instead of three.
 - [`roles/runner_binary`](roles/runner_binary/README.md) - cache the
   `actions/runner` tarball under each declared `runnerUsername` on a
   host and extract a copy into `/opt/runners/<runnerName>/`. First

@@ -17,9 +17,8 @@ Each of the three runner roles needs the same host slice of
 `github_runners_config`: the entries whose `vmName` matches
 `inventory_hostname`. Without this helper, each role would carry its
 own copy of the same selectattr expression under a different fact
-name - exactly the duplication problem
-[`roles/vm_users_entry`](../vm_users_entry/README.md) was introduced to
-solve on the users side. Changing the selector (vault schema rename,
+name - exactly the duplication a single shared entry-resolver role
+avoids. Changing the selector (vault schema rename,
 swapping `vmName` for some other key) now touches one file instead of
 three. Ansible deduplicates meta-dependency invocations within a play,
 so the helper still runs exactly once even when all three consumers

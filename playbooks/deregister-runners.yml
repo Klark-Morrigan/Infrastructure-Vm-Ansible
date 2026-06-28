@@ -102,8 +102,8 @@
   hosts: vm_provisioner_hosts
   gather_facts: true
   # Per-host failures still surface in the recap; one offline VM
-  # should not strand the rest. Same shared posture remove-users.yml
-  # carries.
+  # should not strand the rest. Same shared posture register-runners.yml
+  # carries (see docs/dev/playbook-conventions.md).
   any_errors_fatal: false
   pre_tasks:
     # runner_registration's remove path runs config.sh as the
