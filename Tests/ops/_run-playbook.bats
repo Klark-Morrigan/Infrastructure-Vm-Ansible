@@ -267,6 +267,36 @@ teardown() {
     [[ "${output}" == *"playbook not found"* ]]
 }
 
+@test "CA_CONSUMER_ROOT runs the consumer's own playbook and tells the composer where its fragment lives" {
+    # A consumer that owns its playbook/roles/fragment declares its root. The
+    # playbook lives ONLY under the consumer root (the substrate has no copy),
+    # so a successful dispatch of it proves the bridge resolved from there;
+    # the composer is handed --consumer-root so the per-domain fragment
+    # resolves from the consumer too.
+    consumer="${TEST_TMP}/consumer"
+    mkdir -p "${consumer}/playbooks" "${consumer}/roles"
+    cp "${TEST_REPO}/playbooks/_noop.yml" "${consumer}/playbooks/own.yml"
+    export CA_EXTRA_VAULTS=VmUsers
+    export CA_CONSUMER_ROOT="${consumer}"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/own.yml
+    [ "${status}" -eq 0 ]
+
+    # Composer told where the consumer-owned fragment lives.
+    [[ "$(cat "${TRACE_FILE}")" == *"build-extra-vars:"*"--consumer-root ${consumer}"* ]]
+    # Dispatch ran the consumer's own playbook, resolved under its root.
+    [[ "$(cat "${ANSIBLE_PLAYBOOK_STUB_LOG}")" == *"${consumer}/playbooks/own.yml"* ]]
+}
+
+@test "CA_CONSUMER_ROOT set to a non-existent directory aborts before any vault read" {
+    export CA_CONSUMER_ROOT="${TEST_TMP}/nope"
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"CA_CONSUMER_ROOT is set but not a directory"* ]]
+    # Aborted before the pipeline ran - no sibling fired, no tmpdir leaked.
+    [ ! -s "${TRACE_FILE}" ]
+}
+
 @test "happy path invokes the siblings in order then dispatches ansible-playbook" {
     # A consumer that declares CA_EXTRA_VAULTS=VmUsers (the create-users
     # shape) reads the always-on provisioner vault plus the declared

@@ -81,6 +81,18 @@ case "$(uname -s)" in
         # ships).
         wsl_script="$(printf '%s' "${script_dir}" | sed -E 's#^/([A-Za-z])/#/mnt/\L\1/#')/_run-playbook.sh"
 
+        # CA_CONSUMER_ROOT names a consumer repo on disk (e.g. the user owner
+        # repo). A wrapper resolves it via `pwd` under Git Bash, so it is a
+        # /c/... path the WSL side cannot open; translate it to /mnt/c/... the
+        # same way as the script path above and forward the translated value.
+        # WSLENV's own /p path-translation flag is not used here because it
+        # converts Windows-format (C:\...) paths, not the /c/... form Git Bash
+        # pwd produces. Empty/unset stays empty and forwards harmlessly.
+        if [[ -n "${CA_CONSUMER_ROOT:-}" ]]; then
+            CA_CONSUMER_ROOT="$(printf '%s' "${CA_CONSUMER_ROOT}" | sed -E 's#^/([A-Za-z])/#/mnt/\L\1/#')"
+            export CA_CONSUMER_ROOT
+        fi
+
         # Forward only the caller-supplied inputs the bridge consults: the
         # SECRET_SUFFIX selector and the consumer-contract CA_* variables
         # the parse step reads. CA_INVENTORY_VAULT is included because it is
@@ -88,9 +100,10 @@ case "$(uname -s)" in
         # step reject every Git-Bash-launched flow with "CA_INVENTORY_VAULT
         # must be set" once it re-execs into WSL. WSLENV injects them into
         # the WSL environment; GH_TOKEN rides this channel rather than the
-        # command line so it never lands in a `ps` listing. Append to any
-        # existing WSLENV rather than clobber.
-        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_INVENTORY_VAULT:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_REQUIRES_TOKEN:GH_TOKEN"
+        # command line so it never lands in a `ps` listing. CA_CONSUMER_ROOT
+        # rides it pre-translated (above). Append to any existing WSLENV
+        # rather than clobber.
+        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_INVENTORY_VAULT:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_REQUIRES_TOKEN:CA_CONSUMER_ROOT:GH_TOKEN"
 
         # MSYS2 (Git Bash) rewrites /-leading arguments into Windows paths
         # when launching a Windows .exe, which corrupts the /mnt path and
@@ -141,11 +154,9 @@ fi
 
 playbook_path="$1"
 shift
-
-if [[ ! -f "${repo_root}/${playbook_path}" && ! -f "${playbook_path}" ]]; then
-    log_err "playbook not found: ${playbook_path}"
-    exit 2
-fi
+# Existence is checked after the contract is parsed below: the base the
+# playbook resolves against depends on CA_CONSUMER_ROOT, which the contract
+# parser normalises.
 
 # ---------------------------------------------------------------------------
 # 1b. Consumer contract. The wrapper declares - through CA_* env vars -
@@ -162,6 +173,33 @@ inventory_vault="$(grep '^INVENTORY_VAULT=' <<<"${contract}" | head -n1 | cut -d
 extra_vaults_line="$(grep '^EXTRA_VAULTS=' <<<"${contract}" | head -n1)"
 needs_host_file_server="$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 requires_token="$(grep '^REQUIRES_TOKEN=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+consumer_root="$(grep '^CONSUMER_ROOT=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+
+# Consumer-root resolution. When the contract named a consumer root, the
+# playbook, the consumer's roles (_ansible-env.sh below), and the per-domain
+# extra-vars fragment (_build-extra-vars.sh) all resolve from it rather than
+# from this substrate root - the location half of consumer-agnosticism that
+# lets a consumer own its playbook/roles/fragment while reusing the bridge.
+# Empty -> the substrate's own root, the unchanged path the retained forks
+# take. A named-but-absent root is an operator/wiring error, caught here
+# before any vault read rather than surfacing as a confusing "playbook not
+# found" or "role not found" later.
+if [[ -n "${consumer_root}" && ! -d "${consumer_root}" ]]; then
+    log_err "CA_CONSUMER_ROOT is set but not a directory: ${consumer_root}"
+    exit 2
+fi
+playbook_base="${consumer_root:-${repo_root}}"
+if [[ -f "${playbook_base}/${playbook_path}" ]]; then
+    # Resolve to an absolute path so the dispatch below is independent of the
+    # cwd: with a consumer root, the playbook lives outside this substrate
+    # tree and a base-relative path would otherwise miss after the cd.
+    playbook_resolved="${playbook_base}/${playbook_path}"
+elif [[ -f "${playbook_path}" ]]; then
+    playbook_resolved="${playbook_path}"
+else
+    log_err "playbook not found: ${playbook_path} (searched under ${playbook_base})"
+    exit 2
+fi
 
 # EXTRA_VAULTS is a space-separated list, possibly empty (no extras).
 # word-splitting via read -a drops the empty case to a zero-length array;
@@ -348,6 +386,11 @@ fi
 # ---------------------------------------------------------------------------
 extra_vars_file="${tmpdir}/extra-vars.json"
 extra_vars_args=( --provisioner-config "${provisioner_file}" )
+# When a consumer owns the per-domain fragment, the composer resolves it
+# from <consumer-root>/ops; empty keeps the composer on its own ops/.
+if [[ -n "${consumer_root}" ]]; then
+    extra_vars_args+=( --consumer-root "${consumer_root}" )
+fi
 # Forward every contract-declared vault generically; the composer maps
 # each Name to the per-domain fragment helper that owns its shape.
 extra_vars_args+=( "${extra_vault_args[@]}" )
@@ -374,14 +417,18 @@ log_info "Composing extra-vars ..."
 chmod 600 "${extra_vars_file}"
 
 # ---------------------------------------------------------------------------
-# 7. Dispatch. cd to repo root so role/playbook paths resolve naturally
-#    and ansible.cfg is picked up. Forwarded args follow the playbook
-#    path so operator flags reach ansible-playbook unmodified.
+# 7. Dispatch. cd to repo root so ansible.cfg is picked up and any
+#    substrate-relative path resolves naturally. The playbook is passed by
+#    its resolved absolute path (playbook_resolved) so a consumer-owned
+#    playbook outside this tree is found regardless of cwd; roles resolve
+#    through the absolute ANSIBLE_ROLES_PATH _ansible-env.sh exported, not
+#    cwd. Forwarded args follow the playbook so operator flags reach
+#    ansible-playbook unmodified.
 # ---------------------------------------------------------------------------
 cd "${repo_root}"
-log_info "Dispatching ansible-playbook ${playbook_path} (PLAY/TASK output follows) ..."
+log_info "Dispatching ansible-playbook ${playbook_resolved} (PLAY/TASK output follows) ..."
 ansible-playbook \
     -i "${hosts_file}" \
     --extra-vars "@${extra_vars_file}" \
-    "${playbook_path}" \
+    "${playbook_resolved}" \
     "$@"

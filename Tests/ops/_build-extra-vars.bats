@@ -84,6 +84,28 @@ teardown() {
     [ "$(printf '%s' "${output}" | jq -r '.vm_users_config[0].vmName')" = "a" ]
 }
 
+@test "--consumer-root resolves the per-domain fragment from the consumer ops dir" {
+    # A consumer owns its per-domain fragment once extracted. Stub one under
+    # <consumer>/ops that emits a marker value and prove the composer
+    # dispatched to it rather than to the substrate's own fragment; the
+    # inventory fragment stays substrate and is unaffected.
+    consumer_ops="${TEST_TMP}/consumer/ops"
+    mkdir -p "${consumer_ops}"
+    cat > "${consumer_ops}/_build-extra-vars-users.sh" <<'EOF'
+#!/usr/bin/env bash
+echo '{"vm_users_config":"from-consumer-fragment"}'
+EOF
+    chmod +x "${consumer_ops}/_build-extra-vars-users.sh"
+
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --vault-config "VmUsers=${USERS}" \
+        --consumer-root "${TEST_TMP}/consumer"
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s' "${output}" | jq -r '.vm_users_config')" = "from-consumer-fragment" ]
+    [ "$(printf '%s' "${output}" | jq -r '.vm_provisioner_config[0].vmName')" = "a" ]
+}
+
 @test "an unrecognised vault name is rejected before merge" {
     # A vault with no fragment helper is a contract typo or a domain
     # not yet wired; fail loud rather than silently drop it.

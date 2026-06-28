@@ -26,6 +26,14 @@
 #   --host-base-url <url>         Host file server URL + runner version,
 #   --runner-version <ver>        bridge-resolved, routed to the runners
 #                                 helper (register path only).
+#   --consumer-root <path>        Optional. When a consumer owns the
+#                                 per-domain fragment helper, resolve it from
+#                                 <path>/ops instead of this composer's own
+#                                 directory. The inventory fragment is always
+#                                 substrate, so it is unaffected. Empty/unset
+#                                 keeps every fragment on this composer's ops/
+#                                 - the unchanged path the substrate's own
+#                                 flows take.
 #
 # Output shape:
 #
@@ -60,11 +68,13 @@ host_base_url=""
 host_base_url_set=0
 runner_version=""
 runner_version_set=0
+consumer_root=""
 
 usage() {
     echo "usage: _build-extra-vars.sh --provisioner-config <path>" \
          "[--vault-config <Name>=<path> ...]" \
-         "[--github-token <value> [--host-base-url <url> --runner-version <ver>]]" >&2
+         "[--github-token <value> [--host-base-url <url> --runner-version <ver>]]" \
+         "[--consumer-root <path>]" >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -108,6 +118,10 @@ while [[ $# -gt 0 ]]; do
         --runner-version)
             runner_version="${2-}"
             runner_version_set=1
+            shift 2 || true
+            ;;
+        --consumer-root)
+            consumer_root="${2:-}"
             shift 2 || true
             ;;
         *)
@@ -164,6 +178,16 @@ fi
 # ---------------------------------------------------------------------------
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The inventory fragment is always substrate, so it stays on this composer's
+# own tree. The per-domain fragments (VmUsers / GitHubRunners) are
+# consumer-owned once extracted, so they resolve from <consumer-root>/ops
+# when a consumer root was declared; empty keeps them on this composer's ops/
+# - the substrate's own flows and the retained forks.
+fragment_dir="${script_dir}"
+if [[ -n "${consumer_root}" ]]; then
+    fragment_dir="${consumer_root}/ops"
+fi
+
 fragments=()
 fragments+=( "$("${script_dir}/virtual-machines/_build-extra-vars-inventory.sh" \
                 --provisioner-config "${provisioner_path}")" )
@@ -172,7 +196,7 @@ if [[ "${#vault_paths[@]}" -gt 0 ]]; then
     for vault_name in "${!vault_paths[@]}"; do
         case "${vault_name}" in
             VmUsers)
-                fragments+=( "$("${script_dir}/_build-extra-vars-users.sh" \
+                fragments+=( "$("${fragment_dir}/_build-extra-vars-users.sh" \
                                 --users-config "${vault_paths[VmUsers]}")" )
                 ;;
             GitHubRunners)
@@ -186,7 +210,7 @@ if [[ "${#vault_paths[@]}" -gt 0 ]]; then
                         --runner-version "${runner_version}"
                     )
                 fi
-                fragments+=( "$("${script_dir}/_build-extra-vars-runners.sh" "${runners_args[@]}")" )
+                fragments+=( "$("${fragment_dir}/_build-extra-vars-runners.sh" "${runners_args[@]}")" )
                 ;;
             *)
                 # Fail loud: a vault the operator believed would be applied

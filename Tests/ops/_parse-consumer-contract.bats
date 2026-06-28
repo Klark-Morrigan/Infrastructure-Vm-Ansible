@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # Tests for ops/_parse-consumer-contract.sh - the consumer contract
 # parser. Boundary under test: the CA_* / GH_TOKEN environment in, the
-# three normalised KEY=value lines (and the exit status) out. The parser
+# normalised KEY=value lines (and the exit status) out. The parser
 # has no external process dependency - it only sources the shared logger -
 # so the suite drives it purely through the environment, with no PATH
 # stubbing beyond the COMMON_AUTOMATION_ROOT logger stub _bats_init_temp
@@ -20,7 +20,7 @@ setup() {
     # harness happens to export (e.g. a real GH_TOKEN) cannot mask a
     # default-or-reject assertion.
     unset CA_INVENTORY_VAULT CA_EXTRA_VAULTS CA_NEEDS_HOST_FILE_SERVER \
-          CA_REQUIRES_TOKEN GH_TOKEN
+          CA_REQUIRES_TOKEN CA_CONSUMER_ROOT GH_TOKEN
 
     # The inventory vault is the one required field; tests that are not
     # specifically about its absence set it so the rest of the contract is
@@ -36,11 +36,23 @@ teardown() {
     run "${BASH_BIN}" "${SCRIPT}"
     [ "${status}" -eq 0 ]
     # Inventory vault echoed back; no extra vaults (empty value), both
-    # toggles off - the "none" default.
+    # toggles off - the "none" default - and no consumer root (the
+    # substrate's own root is used downstream).
     [[ "$(grep '^INVENTORY_VAULT=' <<<"${output}")" == "INVENTORY_VAULT=VmProvisioner" ]]
     [[ "$(grep '^EXTRA_VAULTS=' <<<"${output}")" == "EXTRA_VAULTS=" ]]
     [[ "$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${output}")" == "NEEDS_HOST_FILE_SERVER=0" ]]
     [[ "$(grep '^REQUIRES_TOKEN=' <<<"${output}")" == "REQUIRES_TOKEN=0" ]]
+    [[ "$(grep '^CONSUMER_ROOT=' <<<"${output}")" == "CONSUMER_ROOT=" ]]
+}
+
+@test "passes CA_CONSUMER_ROOT through verbatim when set" {
+    # A consumer that owns its playbook/roles/fragment declares where they
+    # live; the parser forwards the path unchanged (the bridge, not this
+    # pure parser, checks the directory exists).
+    export CA_CONSUMER_ROOT="/mnt/c/a_Code/Infrastructure-Vm-Users"
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 0 ]
+    [[ "$(grep '^CONSUMER_ROOT=' <<<"${output}")" == "CONSUMER_ROOT=/mnt/c/a_Code/Infrastructure-Vm-Users" ]]
 }
 
 @test "rejects a contract with no inventory vault declared" {

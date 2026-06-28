@@ -457,15 +457,18 @@ compose, the orchestrator itself) stay at the `ops/` root:
   inventory's; the wrappers pass `VmProvisioner`); and the optional,
   default-"none" `CA_EXTRA_VAULTS` (vault names beyond the inventory
   vault, whitespace- or comma-separated), `CA_NEEDS_HOST_FILE_SERVER`
-  (`1` opts in), and `CA_REQUIRES_TOKEN` (`1` declares a GitHub token is
-  needed, supplied out-of-band via `GH_TOKEN`). It emits four
+  (`1` opts in), `CA_REQUIRES_TOKEN` (`1` declares a GitHub token is
+  needed, supplied out-of-band via `GH_TOKEN`), and `CA_CONSUMER_ROOT`
+  (optional path to a consumer repo that owns the playbook, roles, and
+  per-domain extra-vars fragment this run dispatches; empty -> the
+  bridge resolves those from its own substrate root). It emits five
   `KEY=value` lines on stdout (`INVENTORY_VAULT=`, `EXTRA_VAULTS=`,
-  `NEEDS_HOST_FILE_SERVER=`, `REQUIRES_TOKEN=`) and rejects an invalid
-  contract - a missing required inventory vault, or a required token
-  with none supplied - with a non-zero exit before any vault read.
-  Keeping this parse in a single-purpose sibling is the seam that lets
-  the substrate serve unknown future consumers without importing their
-  identities.
+  `NEEDS_HOST_FILE_SERVER=`, `REQUIRES_TOKEN=`, `CONSUMER_ROOT=`) and
+  rejects an invalid contract - a missing required inventory vault, or a
+  required token with none supplied - with a non-zero exit before any
+  vault read. Keeping this parse in a single-purpose sibling is the seam
+  that lets the substrate serve unknown future consumers without
+  importing their identities.
 - [`ops/_read-vault-config.sh`](ops/_read-vault-config.sh) - vault
   reader. Shells out to `pwsh.exe` to fetch a named secret via the
   `Infrastructure.Secrets` wrapper (`Get-InfrastructureSecret`, never
@@ -502,6 +505,11 @@ compose, the orchestrator itself) stay at the `ops/` root:
     top. The pair arrives together or not at all, and has no meaning
     without the `GitHubRunners` vault; partial or orphaned sets are
     rejected before any helper runs.
+  - `--consumer-root <path>` (optional) — when a consumer owns the
+    per-domain fragment, resolve `_build-extra-vars-<domain>.sh` from
+    `<path>/ops` instead of this composer's own directory. The inventory
+    fragment is always substrate and is unaffected. Empty keeps every
+    fragment on the composer's own `ops/` (the substrate's own flows).
   The per-domain helpers below own their own validation and bats
   coverage:
   - [`ops/virtual-machines/_build-extra-vars-inventory.sh`](ops/virtual-machines/_build-extra-vars-inventory.sh)
@@ -558,7 +566,16 @@ compose, the orchestrator itself) stay at the `ops/` root:
   receives the token via the chmod-600 extra-vars file only. Any args
   after the playbook path are forwarded verbatim to `ansible-playbook`
   (so `--tags`, `--limit`, `--check`, `-v`, etc. all work without
-  changes to the bridge).
+  changes to the bridge). When the contract names `CA_CONSUMER_ROOT`,
+  the playbook resolves under that root, `_ansible-env.sh` puts the
+  consumer's `<root>/roles` ahead of the substrate `roles/` on
+  `ANSIBLE_ROLES_PATH`, and the composer is handed `--consumer-root` so
+  the per-domain fragment resolves from there too - so a consumer owns
+  its playbook, roles, and fragment while reusing this bridge. Empty
+  keeps all three on the substrate's own root (the path the bridge's own
+  flows take). Under a Git Bash launch the root is translated to the
+  `/mnt/...` form and forwarded over `WSLENV` with the other `CA_*`
+  variables before the WSL re-exec.
 - [`ops/virtual-machines/_stage-host-fileserver.sh`](ops/virtual-machines/_stage-host-fileserver.sh)
   - GitHubRunners opt-in branch. Drives the three pwsh.exe
   round-trips (resolve version, ensure tarball, start listener),
@@ -734,6 +751,18 @@ already uses for Common-Automation, overridable with
   `groups`); and
 - **the ops bridge** - by sourcing/exec'ing `<root>/ops/` (the
   controller bootstrap and `_run-playbook.sh` dispatch).
+
+The two bullets above cover a consumer reusing the **substrate's own**
+roles by short name. A consumer that owns roles and a playbook of its
+own - the user and runner owners, whose domain roles live in their
+repo, not here - declares its repo root through `CA_CONSUMER_ROOT`
+(part of the bridge contract). The bridge then resolves that consumer's
+playbook, puts its `<consumer-root>/roles` ahead of the substrate
+`roles/` on `ANSIBLE_ROLES_PATH`, and resolves its per-domain
+extra-vars fragment from `<consumer-root>/ops` - so the consumer owns
+its playbook, roles, and fragment while the substrate carries none of
+that domain. The substrate's own wrappers leave `CA_CONSUMER_ROOT`
+unset and resolve everything from this root unchanged.
 
 Infrastructure-Vm-Users is the reference consumer. A published Galaxy
 collection was considered and rejected: a collection can carry only the

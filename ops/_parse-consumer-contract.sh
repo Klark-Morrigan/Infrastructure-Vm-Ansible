@@ -35,6 +35,18 @@
 #   CA_REQUIRES_TOKEN          Optional. "1" if the run needs a GitHub
 #                              token, supplied out-of-band via GH_TOKEN;
 #                              any other value (incl. unset) -> off.
+#   CA_CONSUMER_ROOT           Optional, default empty. Absolute path to a
+#                              consumer repo that owns the playbook, roles,
+#                              and per-domain extra-vars fragment this run
+#                              dispatches. Set -> the bridge resolves those
+#                              consumer-owned artifacts from this root (the
+#                              location half of consumer-agnosticism).
+#                              Empty/unset -> the bridge resolves them from
+#                              its own substrate root, the unchanged
+#                              behaviour the substrate's own flows rely on.
+#                              Passed through verbatim; the bridge validates
+#                              the directory exists (filesystem state is the
+#                              bridge's concern, not this pure parser's).
 #
 # Output (stdout, one KEY=value per line - the normalised contract the
 # bridge reads back):
@@ -42,6 +54,7 @@
 #   EXTRA_VAULTS=<space-separated vault list, empty when none>
 #   NEEDS_HOST_FILE_SERVER=<0|1>
 #   REQUIRES_TOKEN=<0|1>
+#   CONSUMER_ROOT=<path, empty when the run uses the substrate's own root>
 #
 # Exit status:
 #   0  contract parsed and internally consistent
@@ -115,6 +128,14 @@ extra_vaults_raw="${CA_EXTRA_VAULTS:-}"
 read -r -a extra_vaults_arr <<<"${extra_vaults_raw//,/ }" || true
 
 # ---------------------------------------------------------------------------
+# Consumer root. Passed through verbatim (empty when unset): a consumer that
+# owns its playbook/roles/fragment declares where they live; the substrate's
+# own flows leave it empty and the bridge falls back to its own root. The
+# directory-exists check is the bridge's, not this pure parser's.
+# ---------------------------------------------------------------------------
+consumer_root="${CA_CONSUMER_ROOT:-}"
+
+# ---------------------------------------------------------------------------
 # Emit the normalised contract. The bridge greps these keys back out, the
 # same KEY=value-on-stdout contract _stage-host-fileserver.sh already uses.
 # ---------------------------------------------------------------------------
@@ -122,3 +143,4 @@ printf 'INVENTORY_VAULT=%s\n'        "${inventory_vault}"
 printf 'EXTRA_VAULTS=%s\n'           "${extra_vaults_arr[*]}"
 printf 'NEEDS_HOST_FILE_SERVER=%s\n' "${needs_host_file_server}"
 printf 'REQUIRES_TOKEN=%s\n'         "${requires_token}"
+printf 'CONSUMER_ROOT=%s\n'          "${consumer_root}"

@@ -60,7 +60,19 @@
 # Mirrors `roles_path = roles`. Repo-local roles live under
 # ${repo_root}/roles/, not under playbooks/roles/ - so the default
 # search path (<playbook_dir>/roles:~/.ansible/roles:...) misses them.
-export ANSIBLE_ROLES_PATH="${repo_root}/roles"
+#
+# When the caller set `consumer_root` (a consumer that owns roles of its
+# own), that consumer's roles/ leads the search path so its own roles
+# resolve by short name, with the substrate roles/ appended so reusable
+# substrate roles still resolve. consumer_root unset - the substrate's own
+# flows (the retained runner fork, bootstrap, the bats suite) - keeps the
+# substrate roles/ alone, unchanged. The `:-` guard tolerates callers
+# (bootstrap) that never set the var.
+if [[ -n "${consumer_root:-}" ]]; then
+    export ANSIBLE_ROLES_PATH="${consumer_root}/roles:${repo_root}/roles"
+else
+    export ANSIBLE_ROLES_PATH="${repo_root}/roles"
+fi
 
 # Mirrors `host_key_checking = False`. VMs are short-lived and their
 # IPs come from the VmProvisioner vault, not from user input - there
