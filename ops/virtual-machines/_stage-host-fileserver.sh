@@ -1,19 +1,34 @@
 #!/usr/bin/env bash
-# Stages the runner tarball Windows-side and starts a host file
-# server so target VMs can fetch it over the Hyper-V internal switch
-# instead of the NAT-bound github.com path.
+# Serves a staged directory over a host file server so target VMs can fetch
+# its files over the Hyper-V internal switch instead of the NAT-bound
+# github.com path. The "which artifact" knowledge (which runner tarball,
+# which version) is the consumer's: the runner owner pre-stages the directory
+# and resolves the version, then hands both to this helper. The file server
+# itself serves any file - it no longer knows about runner tarballs - so a
+# later toolchain consumer (JDK / .NET) reuses it the same way.
 #
-# This is the GitHubRunners opt-in branch of the bridge factored
-# into its own helper so _run-playbook.sh stays a thin orchestrator
-# of one-line dispatch steps. Three pwsh.exe round-trips:
+# This is the host-file-server branch of the bridge factored into its own
+# helper so _run-playbook.sh stays a thin orchestrator of one-line dispatch
+# steps. The serve-only path is one pwsh.exe round-trip (start the
+# HttpListener, long-lived and backgrounded).
 #
-#   1. Resolve the latest actions/runner version.
-#   2. Ensure the matching tarball is cached locally.
-#   3. Start the HttpListener (long-lived, backgrounded).
+# Inputs:
+#   --provisioner-config <path>  Always: drives host-IP / target-VM-IP
+#                                resolution for the listener bind.
+#   --listener-log <path>        Always: the listener's stdout is redirected
+#                                here so this helper can grep BASE_URL+PID.
+#   --staging-dir <dir>          The Windows-form directory to serve. Supplied
+#   --runner-version <ver>       with the artifact version by a consumer that
+#                                pre-staged the directory. Both together.
+#   --github-token <value>       Required only on the retained-fork fallback
+#                                (no --staging-dir): the substrate then
+#                                resolves the runner version and caches the
+#                                tarball itself. Removed with the runner fork
+#                                in Step 4.4.
 #
 # Output contract (stdout, in the order emitted):
 #
-#   RUNNER_VERSION=<x.y.z>
+#   RUNNER_VERSION=<x.y.z>          (echoed from --runner-version, or resolved)
 #   BASE_URL=http://<host-ip>:<port>
 #   PID=<pwsh-process-id>
 #
@@ -41,10 +56,13 @@ provisioner_path=""
 token=""
 token_set=0
 listener_log=""
+staging_dir=""
+runner_version=""
 
 usage() {
     echo "usage: _stage-host-fileserver.sh --provisioner-config <path>" \
-         "--github-token <value> --listener-log <path>" >&2
+         "--listener-log <path>" \
+         "[--staging-dir <dir> --runner-version <ver>] [--github-token <value>]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -65,23 +83,34 @@ while [[ $# -gt 0 ]]; do
             listener_log="${2:-}"
             shift 2 || true
             ;;
+        --staging-dir)
+            staging_dir="${2:-}"
+            shift 2 || true
+            ;;
+        --runner-version)
+            runner_version="${2:-}"
+            shift 2 || true
+            ;;
         *)
             _die_on_unknown_flag "$1"
             ;;
     esac
 done
 
-if [[ -z "${provisioner_path}" || "${token_set}" -ne 1 || -z "${listener_log}" ]]; then
+if [[ -z "${provisioner_path}" || -z "${listener_log}" ]]; then
     usage
-    exit 2
-fi
-if [[ -z "${token}" ]]; then
-    log_err "--github-token requires a non-empty value"
     exit 2
 fi
 if [[ ! -f "${provisioner_path}" ]]; then
     log_err "provisioner config not found: ${provisioner_path}"
     exit 1
+fi
+# The staged directory and its version are a pair, supplied together by a
+# consumer that pre-staged the artifact.
+if [[ -n "${staging_dir}" && -z "${runner_version}" ]] \
+   || [[ -z "${staging_dir}" && -n "${runner_version}" ]]; then
+    log_err "--staging-dir and --runner-version must be supplied together"
+    exit 2
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,61 +123,67 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # corrupt that contract nor leave the operator staring at a stall.
 
 # ---------------------------------------------------------------------------
-# 1. Resolve runner version. The trailing `tail -n1` strips any
-#    chatter pwsh.exe prints before the function's return value (e.g.
-#    progress lines under -v) so only the version reaches stdout.
+# 1-2. Acquire the directory to serve and its artifact version.
+#
+#   Consumer-staged path: --staging-dir / --runner-version were supplied, so
+#   the consumer already resolved the version and cached the artifact. Nothing
+#   to do here but serve what was handed over - the file server knows nothing
+#   about runner tarballs.
+#
+#   Retained-fork fallback (no --staging-dir): the substrate resolves the
+#   runner version and caches the tarball itself via the ../ runner-tarball
+#   resolvers. This is the pre-extraction behaviour the Common-Ansible runner
+#   fork still relies on; it (and the two ../ .ps1 references) leaves when the
+#   runner fork is removed in Step 4.4.
 # ---------------------------------------------------------------------------
-log_info "Resolving latest actions/runner version via GitHub API ..."
-# The runner-tarball resolvers stay one level up at ops/ (runner domain,
-# Bucket C - they move to Infrastructure-GitHubRunners in section 4);
-# only the host file server itself is VM substrate and lives here. Hence
-# the ../ for these two and a plain sibling path for the listener below.
-resolve_ps1="$(_to_windows_path "${script_dir}/../_resolve-runner-version.ps1")"
-# Capture pwsh.exe's stderr - where _resolve-runner-version.ps1 writes its
-# error, e.g. "401 - check the GH_TOKEN scopes" for a bad/expired token -
-# to a temp file instead of discarding it, so a failure surfaces the cause
-# rather than dying silently under `set -o pipefail`. stdout stays the clean
-# version string the caller's KEY=value contract captures; the captured
-# stderr is printed only on failure, keeping the success path chatter-free.
-resolve_err="$(mktemp)"
-runner_version=""
-if runner_version="$(pwsh.exe -NoProfile -NoLogo \
-        -File "${resolve_ps1}" \
-        -Token "${token}" 2>"${resolve_err}" \
-        | tr -d '\r' | tail -n1)" && [[ -n "${runner_version}" ]]; then
-    rm -f "${resolve_err}"
-else
-    log_err "failed to resolve runner version (GitHub API error below):"
-    while IFS= read -r line; do
-        [[ -n "${line}" ]] && log_err "  ${line}"
-    done < "${resolve_err}"
-    rm -f "${resolve_err}"
-    exit 1
-fi
+if [[ -z "${staging_dir}" ]]; then
+    if [[ "${token_set}" -ne 1 || -z "${token}" ]]; then
+        log_err "--github-token is required when --staging-dir is not supplied"
+        exit 2
+    fi
 
-# ---------------------------------------------------------------------------
-# 2. Ensure tarball is cached. The PowerShell helper returns the
-#    absolute path; we hand its parent directory to the listener so a
-#    future toolchain-delivery feature can stage extra payloads in
-#    the same dir without touching this script.
-# ---------------------------------------------------------------------------
-log_info "Ensuring runner tarball ${runner_version} is cached (downloads ~100MB on a cache miss) ..."
-ensure_ps1="$(_to_windows_path "${script_dir}/../_ensure-runner-tarball.ps1")"
-tar_path="$(pwsh.exe -NoProfile -NoLogo \
-    -File "${ensure_ps1}" \
-    -Version "${runner_version}" 2>/dev/null \
-    | tr -d '\r' | tail -n1)"
-if [[ -z "${tar_path}" ]]; then
-    log_err "failed to stage runner tarball"
-    exit 1
+    log_info "Resolving latest actions/runner version via GitHub API ..."
+    resolve_ps1="$(_to_windows_path "${script_dir}/../_resolve-runner-version.ps1")"
+    # Capture pwsh.exe's stderr - where _resolve-runner-version.ps1 writes its
+    # error, e.g. "401 - check the GH_TOKEN scopes" for a bad/expired token -
+    # to a temp file instead of discarding it, so a failure surfaces the cause
+    # rather than dying silently under `set -o pipefail`. stdout stays the
+    # clean version string; the captured stderr is printed only on failure.
+    resolve_err="$(mktemp)"
+    if runner_version="$(pwsh.exe -NoProfile -NoLogo \
+            -File "${resolve_ps1}" \
+            -Token "${token}" 2>"${resolve_err}" \
+            | tr -d '\r' | tail -n1)" && [[ -n "${runner_version}" ]]; then
+        rm -f "${resolve_err}"
+    else
+        log_err "failed to resolve runner version (GitHub API error below):"
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] && log_err "  ${line}"
+        done < "${resolve_err}"
+        rm -f "${resolve_err}"
+        exit 1
+    fi
+
+    log_info "Ensuring runner tarball ${runner_version} is cached (downloads ~100MB on a cache miss) ..."
+    ensure_ps1="$(_to_windows_path "${script_dir}/../_ensure-runner-tarball.ps1")"
+    tar_path="$(pwsh.exe -NoProfile -NoLogo \
+        -File "${ensure_ps1}" \
+        -Version "${runner_version}" 2>/dev/null \
+        | tr -d '\r' | tail -n1)"
+    if [[ -z "${tar_path}" ]]; then
+        log_err "failed to stage runner tarball"
+        exit 1
+    fi
+    # tar_path is a Windows path (Join-Path output, e.g.
+    # C:\Users\...\runner-cache\actions-...tar.gz). bash `dirname` keys on '/'
+    # and would return '.' for a backslash path, so strip the last component
+    # directly - the result stays in Windows form, which is what the
+    # listener's -StagingDir argument needs.
+    staging_dir="${tar_path%[\\/]*}"
+    log_info "Runner tarball ready: ${tar_path}"
+else
+    log_info "Serving consumer-staged directory ${staging_dir} (runner ${runner_version}) ..."
 fi
-# tar_path is a Windows path (the PowerShell helper returns Join-Path
-# output, e.g. C:\Users\...\runner-cache\actions-...tar.gz). bash `dirname`
-# keys on '/' and would return '.' for a backslash path, so strip the last
-# path component directly - the result stays in Windows form, which is what
-# the listener's -StagingDir argument needs.
-staging_dir="${tar_path%[\\/]*}"
-log_info "Runner tarball ready: ${tar_path}"
 
 # ---------------------------------------------------------------------------
 # 3. Decide where to bind the listener.

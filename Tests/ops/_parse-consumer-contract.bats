@@ -20,7 +20,8 @@ setup() {
     # harness happens to export (e.g. a real GH_TOKEN) cannot mask a
     # default-or-reject assertion.
     unset CA_INVENTORY_VAULT CA_EXTRA_VAULTS CA_NEEDS_HOST_FILE_SERVER \
-          CA_REQUIRES_TOKEN CA_CONSUMER_ROOT GH_TOKEN
+          CA_REQUIRES_TOKEN CA_CONSUMER_ROOT \
+          CA_HOST_FILE_SERVER_DIR CA_HOST_FILE_SERVER_VERSION GH_TOKEN
 
     # The inventory vault is the one required field; tests that are not
     # specifically about its absence set it so the rest of the contract is
@@ -43,6 +44,54 @@ teardown() {
     [[ "$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${output}")" == "NEEDS_HOST_FILE_SERVER=0" ]]
     [[ "$(grep '^REQUIRES_TOKEN=' <<<"${output}")" == "REQUIRES_TOKEN=0" ]]
     [[ "$(grep '^CONSUMER_ROOT=' <<<"${output}")" == "CONSUMER_ROOT=" ]]
+    # No consumer-staged file-server directory -> both empty, the
+    # substrate self-stages downstream.
+    [[ "$(grep '^HOST_FILE_SERVER_DIR=' <<<"${output}")" == "HOST_FILE_SERVER_DIR=" ]]
+    [[ "$(grep '^HOST_FILE_SERVER_VERSION=' <<<"${output}")" == "HOST_FILE_SERVER_VERSION=" ]]
+}
+
+@test "passes a consumer-staged file-server directory and version through verbatim" {
+    # A runner-domain consumer pre-stages the directory and resolves the
+    # artifact version, then declares both so the substrate serves the
+    # directory rather than staging it itself.
+    export CA_NEEDS_HOST_FILE_SERVER=1
+    export CA_REQUIRES_TOKEN=1
+    export GH_TOKEN="ghp_example"
+    export CA_HOST_FILE_SERVER_DIR='C:\Users\Test\runner-cache'
+    export CA_HOST_FILE_SERVER_VERSION="2.999.0"
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 0 ]
+    [[ "$(grep '^HOST_FILE_SERVER_DIR=' <<<"${output}")" == 'HOST_FILE_SERVER_DIR=C:\Users\Test\runner-cache' ]]
+    [[ "$(grep '^HOST_FILE_SERVER_VERSION=' <<<"${output}")" == "HOST_FILE_SERVER_VERSION=2.999.0" ]]
+}
+
+@test "rejects a file-server directory without its version (and vice versa)" {
+    # The directory to serve and the artifact version are a pair; one
+    # without the other is a half-formed declaration.
+    export CA_NEEDS_HOST_FILE_SERVER=1
+    export CA_REQUIRES_TOKEN=1
+    export GH_TOKEN="ghp_example"
+    export CA_HOST_FILE_SERVER_DIR='C:\Users\Test\runner-cache'
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"must be supplied together"* ]]
+
+    unset CA_HOST_FILE_SERVER_DIR
+    export CA_HOST_FILE_SERVER_VERSION="2.999.0"
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"must be supplied together"* ]]
+}
+
+@test "rejects a consumer-staged directory without the host file server enabled" {
+    # The staged directory only has meaning when the file server is on;
+    # a stray pair without CA_NEEDS_HOST_FILE_SERVER=1 is a wiring error.
+    unset CA_NEEDS_HOST_FILE_SERVER
+    export CA_HOST_FILE_SERVER_DIR='C:\Users\Test\runner-cache'
+    export CA_HOST_FILE_SERVER_VERSION="2.999.0"
+    run "${BASH_BIN}" "${SCRIPT}"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"CA_NEEDS_HOST_FILE_SERVER=1"* ]]
 }
 
 @test "passes CA_CONSUMER_ROOT through verbatim when set" {

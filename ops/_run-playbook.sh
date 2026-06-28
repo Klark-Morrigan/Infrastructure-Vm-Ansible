@@ -104,7 +104,11 @@ case "$(uname -s)" in
         # command line so it never lands in a `ps` listing. CA_CONSUMER_ROOT
         # rides it pre-translated (above). Append to any existing WSLENV
         # rather than clobber.
-        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_INVENTORY_VAULT:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_REQUIRES_TOKEN:CA_CONSUMER_ROOT:GH_TOKEN"
+        # CA_HOST_FILE_SERVER_DIR rides verbatim (no /p translation): the
+        # consumer resolves it Windows-side (C:\...) and the listener pwsh.exe
+        # wants exactly that form, so unlike CA_CONSUMER_ROOT it needs no
+        # /c -> /mnt rewrite. CA_HOST_FILE_SERVER_VERSION is a plain string.
+        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_INVENTORY_VAULT:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_HOST_FILE_SERVER_DIR:CA_HOST_FILE_SERVER_VERSION:CA_REQUIRES_TOKEN:CA_CONSUMER_ROOT:GH_TOKEN"
 
         # MSYS2 (Git Bash) rewrites /-leading arguments into Windows paths
         # when launching a Windows .exe, which corrupts the /mnt path and
@@ -175,6 +179,11 @@ extra_vaults_line="$(grep '^EXTRA_VAULTS=' <<<"${contract}" | head -n1)"
 needs_host_file_server="$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 requires_token="$(grep '^REQUIRES_TOKEN=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 consumer_root="$(grep '^CONSUMER_ROOT=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+# When the consumer pre-staged the directory the file server serves (and
+# resolved its artifact version), these carry it through; empty means the
+# substrate stages the directory itself (the retained-fork path).
+host_file_server_dir="$(grep '^HOST_FILE_SERVER_DIR=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+host_file_server_version="$(grep '^HOST_FILE_SERVER_VERSION=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 
 # Consumer-root resolution. When the contract named a consumer root, the
 # playbook, the consumer's roles (_ansible-env.sh below), and the per-domain
@@ -365,11 +374,24 @@ if [[ "${needs_host_file_server}" == "1" ]]; then
     # resolves the runner version, downloads the ~100MB runner tarball on
     # a cache miss, then starts the listener - the download is the second
     # most common silent stall after the KVP poll.
-    log_info "Staging host file server (resolve runner version, cache tarball, start listener) ..."
-    stage_out="$("${script_dir}/virtual-machines/_stage-host-fileserver.sh" \
-        --provisioner-config "${provisioner_file}" \
-        --github-token       "${github_token}" \
-        --listener-log       "${listener_log}")"
+    log_info "Staging host file server (start listener over the staged directory) ..."
+    stage_args=(
+        --provisioner-config "${provisioner_file}"
+        --github-token       "${github_token}"
+        --listener-log       "${listener_log}"
+    )
+    # When the consumer pre-staged the directory and resolved its artifact
+    # version, hand both to the serve-only helper so the substrate stages
+    # nothing itself - it just binds a listener over the given directory. Empty
+    # keeps the helper on its retained-fork path (resolve runner version, cache
+    # the tarball), removed once the runner fork leaves in Step 4.4.
+    if [[ -n "${host_file_server_dir}" ]]; then
+        stage_args+=(
+            --staging-dir    "${host_file_server_dir}"
+            --runner-version "${host_file_server_version}"
+        )
+    fi
+    stage_out="$("${script_dir}/virtual-machines/_stage-host-fileserver.sh" "${stage_args[@]}")"
     log_info "Host file server staged."
 
     runner_version="$(grep '^RUNNER_VERSION=' <<<"${stage_out}" | head -n1 | cut -d= -f2-)"

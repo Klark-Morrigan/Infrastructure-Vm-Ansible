@@ -236,7 +236,8 @@ STUB
     # the operator shell) cannot mask a default-path assertion. Tests
     # that exercise a contract set the CA_* vars they need explicitly.
     unset CA_INVENTORY_VAULT CA_EXTRA_VAULTS CA_NEEDS_HOST_FILE_SERVER \
-          CA_REQUIRES_TOKEN GH_TOKEN
+          CA_REQUIRES_TOKEN CA_HOST_FILE_SERVER_DIR CA_HOST_FILE_SERVER_VERSION \
+          GH_TOKEN
 
     # CA_INVENTORY_VAULT is the one required contract field (the bridge
     # always reads an inventory and names no vault itself). Default it to
@@ -527,6 +528,25 @@ STUB
       "$(awk '/^stage-host-fileserver:/{print NR; exit}'           "${TRACE_FILE}")" ]
     [ "$(awk '/^stage-host-fileserver:/{print NR; exit}' "${TRACE_FILE}")" -lt \
       "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
+}
+
+@test "consumer-staged directory: passes --staging-dir + --runner-version to the staging helper" {
+    # When the consumer pre-stages the directory and resolves the version
+    # (CA_HOST_FILE_SERVER_DIR / CA_HOST_FILE_SERVER_VERSION), the bridge
+    # hands both to the serve-only helper rather than letting it self-resolve.
+    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_REQUIRES_TOKEN=1
+    export CA_NEEDS_HOST_FILE_SERVER=1
+    export GH_TOKEN="ghp_example"
+    export CA_HOST_FILE_SERVER_DIR='C:\Users\Test\runner-cache'
+    export CA_HOST_FILE_SERVER_VERSION="3.1.4"
+
+    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
+    [ "${status}" -eq 0 ]
+
+    trace="$(cat "${TRACE_FILE}")"
+    [[ "${trace}" == *"stage-host-fileserver:"*'--staging-dir'*'C:\Users\Test\runner-cache'* ]]
+    [[ "${trace}" == *"stage-host-fileserver:"*"--runner-version"*"3.1.4"* ]]
 }
 
 @test "CA_NEEDS_HOST_FILE_SERVER=1 threads BASE_URL + runner_version into extra-vars" {

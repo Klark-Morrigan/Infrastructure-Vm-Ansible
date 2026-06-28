@@ -1,8 +1,14 @@
 #!/usr/bin/env bats
-# Tests for ops/virtual-machines/_stage-host-fileserver.sh - the GitHubRunners opt-in
-# branch of the bridge. The helper drives three pwsh.exe round-trips
-# (resolve version, ensure tarball, start listener) and emits three
-# KEY=value lines on stdout for the bridge to parse.
+# Tests for ops/virtual-machines/_stage-host-fileserver.sh - the host
+# file server branch of the bridge. Two paths:
+#   - Consumer-staged (--staging-dir / --runner-version supplied): the
+#     helper only starts the listener over the given directory and echoes
+#     the version - no resolve, no download.
+#   - Retained-fork fallback (no --staging-dir, --github-token required):
+#     the substrate resolves the runner version and caches the tarball
+#     itself via the two ../ .ps1 resolvers. Removed in Step 4.4.
+# Either way it emits three KEY=value lines (RUNNER_VERSION / BASE_URL /
+# PID) on stdout for the bridge to parse.
 #
 # Scope here is the helper's orchestration only: argument validation,
 # pwsh.exe dispatch order, BASE_URL/PID polling, and stdout shape.
@@ -138,14 +144,57 @@ teardown() {
     [[ "${output}" == *"unknown argument"* ]]
 }
 
-@test "fails fast when --github-token is the empty string" {
+@test "fallback path: fails when --github-token is empty and no directory was staged" {
+    # Without --staging-dir the helper must resolve the version itself, which
+    # needs a token; an empty one on this path is rejected up front.
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --github-token "" \
         --listener-log "${LISTENER_LOG}"
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"github-token"* ]]
-    [[ "${output}" == *"non-empty"* ]]
+    [[ "${output}" == *"--staging-dir is not supplied"* ]]
+}
+
+@test "rejects --staging-dir without --runner-version (and vice versa)" {
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir 'C:\Users\Test\runner-cache'
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"must be supplied together"* ]]
+
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --listener-log "${LISTENER_LOG}" \
+        --runner-version "2.999.0"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"must be supplied together"* ]]
+}
+
+@test "consumer-staged path: serves the given directory and echoes the version without resolving" {
+    # With the directory and version supplied, the helper must NOT invoke the
+    # runner-tarball resolvers - it only starts the listener over the staged
+    # directory and echoes the supplied version. No token is needed.
+    export PWSH_STUB_BASE_URL="http://10.10.0.1:8745"
+    export PWSH_STUB_FS_PID="55501"
+
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir 'C:\Users\Test\runner-cache' \
+        --runner-version "3.1.4"
+    [ "${status}" -eq 0 ]
+
+    [[ "${output}" == *"RUNNER_VERSION=3.1.4"* ]]
+    [[ "${output}" == *"BASE_URL=http://10.10.0.1:8745"* ]]
+    [[ "${output}" == *"PID=55501"* ]]
+
+    # The resolve/ensure round-trips must not have run.
+    ! grep -q '_resolve-runner-version.ps1' "${PWSH_INVOCATIONS_LOG}"
+    ! grep -q '_ensure-runner-tarball.ps1'   "${PWSH_INVOCATIONS_LOG}"
+    # Only the listener start was dispatched.
+    grep -q '_start-host-file-server.ps1' "${PWSH_INVOCATIONS_LOG}"
 }
 
 @test "fails when provisioner config file is missing" {

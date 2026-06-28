@@ -32,6 +32,22 @@
 #   CA_NEEDS_HOST_FILE_SERVER  Optional. "1" to have the bridge stage the
 #                              host file server; any other value (incl.
 #                              unset) -> off.
+#   CA_HOST_FILE_SERVER_DIR    Optional, default empty. The Windows-form
+#                              directory the consumer has already staged for
+#                              the host file server to serve. Set -> the
+#                              bridge serves this directory and the substrate
+#                              stages nothing itself (the consumer owns the
+#                              "which artifact" knowledge). Empty -> the
+#                              bridge falls back to staging the directory
+#                              itself (the substrate's retained-fork path).
+#                              Requires CA_NEEDS_HOST_FILE_SERVER=1, and must
+#                              be supplied together with
+#                              CA_HOST_FILE_SERVER_VERSION.
+#   CA_HOST_FILE_SERVER_VERSION  Optional, default empty. The artifact version
+#                              the consumer resolved for the staged directory,
+#                              threaded to the consumer's per-domain fragment
+#                              so its roles can name the served file. Paired
+#                              with CA_HOST_FILE_SERVER_DIR.
 #   CA_REQUIRES_TOKEN          Optional. "1" if the run needs a GitHub
 #                              token, supplied out-of-band via GH_TOKEN;
 #                              any other value (incl. unset) -> off.
@@ -55,6 +71,8 @@
 #   NEEDS_HOST_FILE_SERVER=<0|1>
 #   REQUIRES_TOKEN=<0|1>
 #   CONSUMER_ROOT=<path, empty when the run uses the substrate's own root>
+#   HOST_FILE_SERVER_DIR=<windows-form dir, empty when the bridge self-stages>
+#   HOST_FILE_SERVER_VERSION=<artifact version, empty when the bridge self-stages>
 #
 # Exit status:
 #   0  contract parsed and internally consistent
@@ -136,6 +154,29 @@ read -r -a extra_vaults_arr <<<"${extra_vaults_raw//,/ }" || true
 consumer_root="${CA_CONSUMER_ROOT:-}"
 
 # ---------------------------------------------------------------------------
+# Host file server staging inputs. When a consumer pre-stages the directory
+# the file server serves (the runner owner resolves its tarball version and
+# caches it), it declares the directory and that version here. Both or
+# neither: a directory with no version would serve a file the roles cannot
+# name, and a version with no directory has nothing to serve. They only make
+# sense when the file server is enabled, so a stray pair without
+# CA_NEEDS_HOST_FILE_SERVER=1 is a wiring error caught here. Empty/unset keeps
+# the substrate's own staging path (the retained fork resolves the tarball
+# itself).
+# ---------------------------------------------------------------------------
+host_file_server_dir="${CA_HOST_FILE_SERVER_DIR:-}"
+host_file_server_version="${CA_HOST_FILE_SERVER_VERSION:-}"
+if { [[ -n "${host_file_server_dir}" ]] && [[ -z "${host_file_server_version}" ]]; } \
+   || { [[ -z "${host_file_server_dir}" ]] && [[ -n "${host_file_server_version}" ]]; }; then
+    log_err "CA_HOST_FILE_SERVER_DIR and CA_HOST_FILE_SERVER_VERSION must be supplied together"
+    exit 2
+fi
+if [[ -n "${host_file_server_dir}" && "${needs_host_file_server}" -ne 1 ]]; then
+    log_err "CA_HOST_FILE_SERVER_DIR requires CA_NEEDS_HOST_FILE_SERVER=1"
+    exit 2
+fi
+
+# ---------------------------------------------------------------------------
 # Emit the normalised contract. The bridge greps these keys back out, the
 # same KEY=value-on-stdout contract _stage-host-fileserver.sh already uses.
 # ---------------------------------------------------------------------------
@@ -144,3 +185,5 @@ printf 'EXTRA_VAULTS=%s\n'           "${extra_vaults_arr[*]}"
 printf 'NEEDS_HOST_FILE_SERVER=%s\n' "${needs_host_file_server}"
 printf 'REQUIRES_TOKEN=%s\n'         "${requires_token}"
 printf 'CONSUMER_ROOT=%s\n'          "${consumer_root}"
+printf 'HOST_FILE_SERVER_DIR=%s\n'   "${host_file_server_dir}"
+printf 'HOST_FILE_SERVER_VERSION=%s\n' "${host_file_server_version}"
