@@ -363,7 +363,7 @@ flowchart LR
     B[bridge: _run-playbook / _ansible-env / _build-extra-vars]
   end
   B -->|playbook + roles + fragment from consumer root| PB
-  B -. CA_CONSUMER_ROOT unset .->|substrate root| FORK[retained runner fork]
+  B -. CA_CONSUMER_ROOT unset, substrate root .-> FORK[retained runner fork]
 ```
 
 ### Step 3.6 - Remove the user fork from Common-Ansible
