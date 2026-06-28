@@ -198,7 +198,13 @@ and bridge are one substrate, consumed together from one resolved root
 (resolver mirrors `ops/imports/_common-automation-root.sh`, overridable
 via `COMMON_ANSIBLE_ROOT`). The consumer adds `<root>/roles` to
 `ANSIBLE_ROLES_PATH` and references substrate roles by short name; the
-controller venv and ops bridge are reused in place. A published Galaxy
+controller venv and ops bridge are reused in place. This covers a
+consumer's use of the *reusable substrate* roles. A consumer that owns
+roles and a playbook of its own (Sections 3-4) additionally needs the
+bridge to run *its* playbook with *its* roles and extra-vars fragment;
+that consumer-root resolution is specified in
+[Step 3.5](#step-35---resolve-a-consumers-own-playbook-roles-and-extra-vars-fragment-in-the-bridge).
+A published Galaxy
 collection was rejected because it could carry only the roles (the bridge
 cannot ship in one - the controller bootstrap that builds the venv that
 runs `ansible-galaxy` is itself part of the bridge), and roles have no
@@ -232,7 +238,7 @@ Relocate `vm_users_entry`, `groups`, `sudoers`, `users` (with molecule),
 `create-users.yml`, `remove-users.yml`,
 `playbooks/tasks/_ensure-acl-present.yml`, the user wrappers, and
 `_build-extra-vars-users.sh`. They consume the substrate via 3.1. The
-copies remain in Common-Ansible as a fork until Step 3.5.
+copies remain in Common-Ansible as a fork until Step 3.6.
 
 - **Reason:** Puts the user domain with its owner while leaving
   Common-Ansible runnable, satisfying the keep-a-fork constraint.
@@ -240,7 +246,7 @@ copies remain in Common-Ansible as a fork until Step 3.5.
   integration against a disposable target.
 - **README:** Infrastructure-Vm-Users' README gains the moved user
   roles/playbooks; this repo's README still documents the retained fork
-  (removed in 3.5).
+  (removed in 3.6).
 
 ```mermaid
 flowchart LR
@@ -279,9 +285,9 @@ Update Infrastructure-E2E so the `ansible` users flow resolves
 Common-Ansible. Split the "one checkout serves both domains" assumption:
 the users-ansible flow now resolves within its owner repo, while the
 runners-ansible flow keeps using the Common-Ansible checkout until
-Section 4. Prove green before the fork is deleted in 3.5.
+Section 4. Prove green before the fork is deleted in 3.6.
 
-- **Reason:** Step 3.5 deletes Common-Ansible's user ops, so E2E must
+- **Reason:** Step 3.6 deletes Common-Ansible's user ops, so E2E must
   already dispatch to the owner repo or the ansible users flow breaks.
   Folding the path into `$UsersPath` also retires the "Ansible is a
   separate third repo" framing now that both user implementations live
@@ -303,20 +309,85 @@ flowchart LR
   E2E -->|ansible| ANS
 ```
 
-### Step 3.5 - Remove the user fork from Common-Ansible
+### Step 3.5 - Resolve a consumer's own playbook, roles, and extra-vars fragment in the bridge
 
-Once Vm-Users is proven, delete the user roles/playbooks/wrappers from
-Common-Ansible and drop the `VmUsers` references from its docs.
+Teach the bridge to run a *consumer's* playbook with the *consumer's*
+roles and per-domain extra-vars fragment, not only its own. Add
+`CA_CONSUMER_ROOT` to the consumer contract (Step 2.1): when set,
+`_run-playbook.sh` resolves the playbook path relative to that root,
+`_ansible-env.sh` prepends `<consumer-root>/roles` to
+`ANSIBLE_ROLES_PATH` (the substrate `roles/` stays on the path so reusable
+short-name roles still resolve), and `_build-extra-vars.sh` resolves the
+declared vault's `_build-extra-vars-<domain>.sh` fragment from
+`<consumer-root>/ops` rather than its own directory. Unset reproduces
+today's substrate-root behaviour, so the retained runner fork keeps
+dispatching unchanged. Under a Git Bash launch the root is a Windows path,
+so it is translated to the `/mnt/...` form and added to `WSLENV` alongside
+the other forwarded `CA_*` variables before the WSL re-exec.
+
+Then switch the Vm-Users wrappers onto it: `create-users.sh` /
+`remove-users.sh` export `CA_CONSUMER_ROOT` (the Vm-Users repo root) and
+pass their own `playbooks/create-users.yml` / `remove-users.yml`, and the
+bootstrap's roles-resolution note points at the Vm-Users `roles/`.
+Vm-Users then runs its own copy with the substrate fork still present but
+unused.
+
+- **Reason:** Without this the bridge assumes every playbook, role, and
+  fragment lives under its own root, so a consumer's moved copies are dead
+  and the substrate fork is the live one. Resolving consumer-owned
+  artifacts from a consumer root is the location half of consumer-
+  agnosticism (the vault-name half is Steps 2.1-2.2) and the precondition
+  that makes the Step 3.6 deletion safe instead of breaking the live flow.
+- **Tests:** bats over the bridge - `CA_CONSUMER_ROOT` set resolves the
+  playbook from the consumer root, orders the consumer `roles/` ahead of
+  the substrate on `ANSIBLE_ROLES_PATH`, and dispatches the fragment from
+  the consumer `ops/`; unset preserves substrate-root resolution (the
+  runner fork still dispatches). Vm-Users integration - create/remove-users
+  green resolving Vm-Users' own playbook and roles with the substrate fork
+  still in place (assert the executed role/playbook path is under the
+  Vm-Users root, e.g. via `ansible-playbook --list-tasks` / a `-vv` role
+  path).
+- **README:** Common-Ansible README "Bridge contract" / "Consume the
+  substrate" documents `CA_CONSUMER_ROOT` (consumer-owned playbook, roles,
+  and fragment resolution; default substrate-root behaviour). Vm-Users
+  README "Consuming Common-Ansible" updates the roles-resolution
+  description to the Vm-Users `roles/` directory.
+
+```mermaid
+flowchart LR
+  subgraph VU[Infrastructure-Vm-Users]
+    W[create/remove-users.sh] -->|CA_CONSUMER_ROOT = VU root| B
+    PB[own playbooks + roles + fragment]
+  end
+  subgraph CA[Common-Ansible substrate]
+    B[bridge: _run-playbook / _ansible-env / _build-extra-vars]
+  end
+  B -->|playbook + roles + fragment from consumer root| PB
+  B -. CA_CONSUMER_ROOT unset .->|substrate root| FORK[retained runner fork]
+```
+
+### Step 3.6 - Remove the user fork from Common-Ansible
+
+With Vm-Users running its own copy (Step 3.5), delete the user
+roles/playbooks/wrappers from Common-Ansible - the `groups`, `sudoers`,
+`users`, `vm_users_entry` roles and their molecule scenarios, the
+`create-users.yml` / `remove-users.yml` playbooks, the
+`create-users.*` / `remove-users.*` wrappers, the substrate
+`_build-extra-vars-users.sh` fragment and its `VmUsers` arm in
+`_build-extra-vars.sh` - and drop the `VmUsers` references from its docs.
+`playbooks/tasks/_ensure-acl-present.yml` stays: the retained runner
+playbooks still include it, so it leaves with the runner fork in Step 4.4.
 
 - **Reason:** A fork kept past proof becomes a second source of truth.
-- **Tests:** Common-Ansible CI green with no user domain present; grep
-  confirms no `VmUsers`-specific code remains.
+- **Tests:** Common-Ansible CI green with no user domain present (the
+  retained runner fork still dispatches); grep confirms no
+  `VmUsers`-specific code remains.
 - **README:** Remove the create/remove-users operator-flow sections and
   every `VmUsers` reference from this repo's README and index.
 
 ```mermaid
 flowchart LR
-  CA[Common-Ansible] -->|delete fork| CLEAN[substrate only]
+  CA[Common-Ansible] -->|delete user fork| CLEAN[substrate + retained runner fork]
   VU[Vm-Users] --> OWNS[sole owner of user domain]
 ```
 
@@ -332,8 +403,12 @@ playbooks and their task includes, the runner wrappers,
 `_require-gh-token.sh`, `_build-extra-vars-runners.sh`,
 `_ensure-runner-tarball.ps1`, `_resolve-runner-version.ps1`, and
 `setup-runners-secrets.*`. They consume the substrate (3.1) and declare
-`GitHubRunners` + token + host-file-server via the contract (2.1). Fork
-retained in Common-Ansible until 4.4.
+`GitHubRunners` + token + host-file-server via the contract (2.1). The
+runner wrappers also export `CA_CONSUMER_ROOT` (the GitHubRunners repo
+root) and pass their own playbooks, so the bridge runs the runner roles
+and the runner extra-vars fragment from the GitHubRunners root via the
+mechanism added in Step 3.5 - no new bridge work here, only the
+consumer-side adoption. Fork retained in Common-Ansible until 4.4.
 
 Decouple the host file server from the runner-tarball resolvers as part
 of this move. `ops/virtual-machines/_stage-host-fileserver.sh` stays
@@ -413,6 +488,12 @@ flowchart LR
 ```
 
 ### Step 4.4 - Remove the runner fork from Common-Ansible
+
+With GitHubRunners running its own copy (the Step 3.5 mechanism, adopted
+in 4.1), delete the runner roles/playbooks/wrappers, the runner
+extra-vars fragment and its `GitHubRunners` arm in `_build-extra-vars.sh`,
+and `playbooks/tasks/_ensure-acl-present.yml` (retained in Step 3.6 only
+because the runner playbooks still included it - it now leaves with them).
 
 - **Reason:** Single source of truth once the owner is proven.
 - **Tests:** Common-Ansible CI green as pure substrate; no runner code or

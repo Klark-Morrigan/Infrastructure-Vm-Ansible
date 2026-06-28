@@ -172,6 +172,15 @@ bridge consumer-agnostic:
 - `VmUsers` and `GitHubRunners` become consumer-declared the same way:
   the wrapper states "read these extra vaults, set these toggles" through
   the contract, instead of the bridge naming them.
+- The bridge also assumes every playbook, role, and per-domain extra-vars
+  fragment lives under its *own* root (it `cd`s to the substrate root, sets
+  `ANSIBLE_ROLES_PATH` to the substrate `roles/`, and dispatches each
+  fragment from its own `ops/`). Once a consumer owns those artifacts, the
+  bridge must run *the consumer's* playbook with *the consumer's* roles and
+  fragment - resolved from a consumer-declared root - or the consumer's
+  moved copies stay dead and the substrate fork remains the live one. This
+  location-decoupling is the second axis of consumer-agnosticism alongside
+  the vault-name decoupling above.
 
 This decoupling is a prerequisite for steps 2-3 and is sequenced before
 the consumer-specific code moves out.
