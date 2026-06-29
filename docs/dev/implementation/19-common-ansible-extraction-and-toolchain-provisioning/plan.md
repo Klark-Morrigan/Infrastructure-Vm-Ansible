@@ -401,14 +401,29 @@ Relocate `runner_entry_resolve`, `runner_binary`, `runner_registration`,
 `runner_service` (with molecule), the register/deregister/status
 playbooks and their task includes, the runner wrappers,
 `_require-gh-token.sh`, `_build-extra-vars-runners.sh`,
-`_ensure-runner-tarball.ps1`, `_resolve-runner-version.ps1`, and
-`setup-runners-secrets.*`. They consume the substrate (3.1) and declare
-`GitHubRunners` + token + host-file-server via the contract (2.1). The
-runner wrappers also export `CA_CONSUMER_ROOT` (the GitHubRunners repo
-root) and pass their own playbooks, so the bridge runs the runner roles
-and the runner extra-vars fragment from the GitHubRunners root via the
-mechanism added in Step 3.5 - no new bridge work here, only the
-consumer-side adoption. Fork retained in Common-Ansible until 4.4.
+`_ensure-runner-tarball.ps1`, and `_resolve-runner-version.ps1`. They
+consume the substrate (3.1) and declare `GitHubRunners` + token +
+host-file-server via the contract (2.1). The runner wrappers also export
+`CA_CONSUMER_ROOT` (the GitHubRunners repo root) and pass their own
+playbooks, so the bridge runs the runner roles and the runner extra-vars
+fragment from the GitHubRunners root via the mechanism added in Step 3.5 -
+no new bridge work here, only the consumer-side adoption. Fork retained in
+Common-Ansible until 4.4.
+
+The runner config secret is **not** relocated as an Ansible wrapper. Both
+the Ansible flow and GitHubRunners' existing PowerShell flow read the same
+`GitHubRunnersConfig-<suffix>` secret from one local SecretStore vault,
+written by the PowerShell-impl `hyper-v/ubuntu/setup-secrets.ps1`. The
+Common-Ansible fork's `setup-runners-secrets.*` only existed to reach that
+writer across repos; co-located in GitHubRunners it would be a redundant
+pass-through, so the Ansible flow points operators at the shared writer
+directly and no Ansible secrets entry point is added.
+
+Because both impls now coexist in GitHubRunners (and in Infrastructure-Vm-
+Users), the tests are split by impl to mirror the production directory
+layout: the PowerShell tests live under `Tests/hyper-v/`, the Ansible tests
+under `Tests/{ops,molecule,ansible}`. The shared secret store is set up by
+the PowerShell-impl writer and read by both.
 
 Decouple the host file server from the runner-tarball resolvers as part
 of this move. `ops/virtual-machines/_stage-host-fileserver.sh` stays
