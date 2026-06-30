@@ -208,30 +208,33 @@ compose, the orchestrator itself) stay at the `ops/` root:
   section).
 - [`ops/_build-extra-vars.sh`](ops/_build-extra-vars.sh) - extra-
   vars composer. Owns no payload domain itself, but owns the one
-  piece of domain knowledge the orchestrator must not: which vault
-  feeds which per-domain fragment helper. The bridge hands it the
-  always-on provisioner config plus every contract-declared vault as a
-  generic `--vault-config <Name>=<path>` pair, and the composer routes
-  each Name to its helper, then merges the fragments via `jq -s add`.
+  convention the orchestrator must not: how a vault Name maps to its
+  per-domain fragment helper. The bridge hands it the always-on
+  provisioner config plus every contract-declared vault as a generic
+  `--vault-config <Name>=<path>` pair; the composer derives each Name's
+  helper by the `_build-extra-vars-<Name>.sh` convention, dispatches the
+  vault's config to it, then merges the fragments via `jq -s add`.
   Inputs:
   - `--provisioner-config <file>` (required) — the inventory the bridge
     read from the contract-declared vault. A flag name, not a vault
     name: the composer never learns which vault it came from.
   - `--vault-config <Name>=<path>` (repeatable) — one per extra vault.
-    `GitHubRunners` routes to the runners helper. An unrecognised Name
-    is a contract typo or a
-    domain with no helper yet and is rejected, never silently dropped.
-  - `--github-token <value>` — routed to the runners helper. The
-    token pairs with the `GitHubRunners` vault: either alone is
-    rejected (a token with no consumer, or a runners vault that cannot
-    register without one).
+    The Name derives the helper `_build-extra-vars-<Name>.sh`; a Name
+    with no such helper is a contract typo or a domain with no helper
+    yet and is rejected, never silently dropped.
+  - `--github-token <value>` — an optional cross-cutting input forwarded
+    to every declared vault's helper when supplied (a helper that does
+    not consume it never receives it). Requires at least one declared
+    extra vault, since nothing consumes it otherwise; whether a given
+    helper *requires* the token is that helper's own contract, not the
+    composer's.
   - `--host-base-url <url>` + `--runner-version <ver>` — the host file
     server URL the listener bound to, plus the consumer-supplied artifact
-    version, that the register flow adds on top. The pair arrives together
-    or not at all, and has no meaning without the `GitHubRunners` vault;
-    partial or orphaned sets are rejected before any helper runs.
+    version. Forwarded the same way as the token; the pair arrives
+    together or not at all, and requires a declared extra vault to have a
+    consumer; partial or orphaned sets are rejected before any helper runs.
   - `--consumer-root <path>` (optional) — when a consumer owns the
-    per-domain fragment, resolve `_build-extra-vars-<domain>.sh` from
+    per-domain fragment, resolve `_build-extra-vars-<Name>.sh` from
     `<path>/ops` instead of this composer's own directory. The inventory
     fragment is always substrate and is unaffected. Empty keeps every
     fragment on the composer's own `ops/` (the substrate's own flows).
@@ -240,21 +243,20 @@ compose, the orchestrator itself) stay at the `ops/` root:
   - [`ops/virtual-machines/_build-extra-vars-inventory.sh`](ops/virtual-machines/_build-extra-vars-inventory.sh)
     — emits `vm_provisioner_config`. Always-on; the inventory source
     every payload domain shares.
-  Every other payload fragment is consumer-owned: the dispatch arm
-  resolves `_build-extra-vars-<domain>.sh` from `<consumer-root>/ops`,
-  so the substrate ships none of them (the `GitHubRunners` arm resolves
-  the runners fragment from the runner owner's repo).
+  Every other payload fragment is consumer-owned: dispatch resolves
+  `_build-extra-vars-<Name>.sh` from `<consumer-root>/ops`, so the
+  substrate ships none of them.
   Config inputs are file paths (not values) so secrets stay out of
   argv. The GitHub token is the lone exception, passed by value
   because the entry script already holds it in a shell variable;
   argv on Linux is private to the owning user's process tree.
-  Concentrating the vault-name -> helper map here (the layer that
+  Keeping dispatch a pure `<Name>` derivation here (the layer that
   already dispatches per domain) is what lets the orchestrator stay
   ignorant of any specific consumer. Future payload domains (e.g.
   toolchain delivery: JDK / .NET SDK / file copy) land as a peer
-  `_build-extra-vars-<domain>.sh` plus a dispatch arm here — the
-  bridge already forwards every declared vault verbatim, so no other
-  call site changes.
+  `_build-extra-vars-<Name>.sh` dispatched by the same derivation —
+  the bridge already forwards every declared vault verbatim, so no
+  call site here changes.
 - [`ops/_run-playbook.sh`](ops/_run-playbook.sh) - thin,
   consumer-agnostic orchestrator. Validates args, parses the consumer
   contract (via `_parse-consumer-contract.sh`), sets up a
@@ -265,9 +267,9 @@ compose, the orchestrator itself) stay at the `ops/` root:
   (`CA_INVENTORY_VAULT`) unconditionally - the fleet every dispatch
   targets - deriving its secret as `<Name>Config-<suffix>`, and then
   reads each vault the contract's `CA_EXTRA_VAULTS` declared,
-  generically, into its own tmpdir file - so register-runners pays only
-  for `GitHubRunners` and a consumer pays only for what it declares, and
-  the bridge names no vault at all (inventory provider or consumer alike).
+  generically, into its own tmpdir file - so a consumer pays only for
+  what it declares, and the bridge names no vault at all (inventory
+  provider or consumer alike).
   Each declared extra vault is forwarded to the composer as a generic
   `--vault-config <Name>=<path>` pair. The contract's
   `CA_NEEDS_HOST_FILE_SERVER=1` controls the Windows-side staging:
@@ -327,12 +329,13 @@ compose, the orchestrator itself) stay at the `ops/` root:
 
 External contract (consumed by feature playbooks): the extra-vars
 document always has the top-level key `vm_provisioner_config` (the
-shared inventory). Every other key is present only when the contract
-declared the vault that feeds it: `github_runners_config` +
-`github_token` when `CA_EXTRA_VAULTS` names `GitHubRunners` (with
-`CA_REQUIRES_TOKEN=1`); and `host_file_server_base_url` +
-`runner_version` only when the caller also opts into the host file
-server (`CA_NEEDS_HOST_FILE_SERVER=1`, register flow only). The
+shared inventory). Every other key is contributed by whichever
+per-domain helper a declared vault dispatched to, and is present only
+when the contract declared that vault (`CA_EXTRA_VAULTS`). The optional
+cross-cutting inputs the bridge forwards - the GitHub token (with
+`CA_REQUIRES_TOKEN=1`) and the host file server URL + artifact version
+(with `CA_NEEDS_HOST_FILE_SERVER=1`, register flow only) - reach the
+helper that consumes them and surface as that helper's keys. The
 inventory has one group `vm_provisioner_hosts` keyed by `vmName`.
 
 `jq` is a hard runtime dependency (JSON validation, inventory and
@@ -412,11 +415,12 @@ point the source at a mocked copy.
 ## Consuming the substrate
 
 The reusable roles in [`roles/`](roles/) are **not standalone** - they
-read the extra-vars and inventory the dispatch bridge composes
-(`github_runners_config`, `host_file_server_base_url`, the
-`vm_runner_entries` fact). Roles and bridge are therefore one cohesive
-substrate and are consumed **together, through a single sibling
-checkout** - not split across two transports.
+read the extra-vars and inventory the dispatch bridge composes (the
+always-on `vm_provisioner_config` inventory plus whatever per-domain keys
+a consumer's `_build-extra-vars-<Name>.sh` fragment contributes). Roles
+and bridge are therefore one cohesive substrate and are consumed
+**together, through a single sibling checkout** - not split across two
+transports.
 
 A consumer keeps Common-Ansible checked out alongside it (under the same
 parent, e.g. `c:\a_Code\Common-Ansible`) and resolves that root once -

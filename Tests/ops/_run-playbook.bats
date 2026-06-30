@@ -350,8 +350,8 @@ teardown() {
 
 @test "empty contract reads only the declared inventory vault and surfaces no extra keys" {
     # Default entry points with no CA_EXTRA_VAULTS (and no toggles) must
-    # not pay for any extra vault read or surface runner keys. Only the
-    # contract-declared inventory vault is read.
+    # not pay for any extra vault read or surface extra-vault keys. Only
+    # the contract-declared inventory vault is read.
     unset CA_EXTRA_VAULTS CA_NEEDS_HOST_FILE_SERVER CA_REQUIRES_TOKEN
 
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
@@ -360,7 +360,6 @@ teardown() {
     trace="$(cat "${TRACE_FILE}")"
     [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
     [[ "${trace}" != *"read-vault-config:Toolchains:"* ]]
-    [[ "${trace}" != *"read-vault-config:GitHubRunners:"* ]]
     [[ "${trace}" != *"--vault-config"* ]]
     [[ "${trace}" != *"--github-token"* ]]
 }
@@ -411,8 +410,8 @@ STUB
     [[ "${trace}" != *"read-vault-config"* ]]
 }
 
-@test "CA_EXTRA_VAULTS=GitHubRunners with a token reads the vault and threads both keys" {
-    export CA_EXTRA_VAULTS=GitHubRunners
+@test "CA_EXTRA_VAULTS=Toolchains with a token reads the vault and threads both keys" {
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export GH_TOKEN="ghp_example"
 
@@ -421,23 +420,23 @@ STUB
 
     trace="$(cat "${TRACE_FILE}")"
     [[ "${trace}" == *"read-vault-config:VmProvisioner:VmProvisionerConfig"* ]]
-    [[ "${trace}" == *"read-vault-config:GitHubRunners:GitHubRunnersConfig"* ]]
-    [[ "${trace}" == *"--vault-config"*"GitHubRunners="* ]]
+    [[ "${trace}" == *"read-vault-config:Toolchains:ToolchainsConfig"* ]]
+    [[ "${trace}" == *"--vault-config"*"Toolchains="* ]]
     [[ "${trace}" == *"--github-token"*"ghp_example"* ]]
 
     # The extra-vault read must come after the provisioner read so a
     # partial failure of the extra vault leaves the provisioner read's
     # diagnostics intact.
     [ "$(awk '/^read-vault-config:VmProvisioner:/{print NR; exit}' "${TRACE_FILE}")" -lt \
-      "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" ]
+      "$(awk '/^read-vault-config:Toolchains:/{print NR; exit}' "${TRACE_FILE}")" ]
 }
 
-@test "CA_EXTRA_VAULTS=GitHubRunners with a token but no file server skips staging (deregister shape)" {
-    # The deregister entry declares GitHubRunners + a token but not the
-    # host file server, because nothing is fetched on the down path. The
-    # extra vault read still fires, the staging helper does not, and the
-    # composer does not receive the file-server pair.
-    export CA_EXTRA_VAULTS=GitHubRunners
+@test "CA_EXTRA_VAULTS with a token but no file server skips staging" {
+    # A down-direction flow declares its vault + a token but not the host
+    # file server, because nothing is fetched on that path. The extra vault
+    # read still fires, the staging helper does not, and the composer does
+    # not receive the file-server pair.
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export GH_TOKEN="ghp_example"
     unset CA_NEEDS_HOST_FILE_SERVER
@@ -446,7 +445,7 @@ STUB
     [ "${status}" -eq 0 ]
 
     trace="$(cat "${TRACE_FILE}")"
-    [[ "${trace}" == *"read-vault-config:GitHubRunners:"* ]]
+    [[ "${trace}" == *"read-vault-config:Toolchains:"* ]]
     [[ "${trace}" != *"stage-host-fileserver:"* ]]
     [[ "${trace}" != *"--host-base-url"* ]]
     [[ "${trace}" != *"--runner-version"* ]]
@@ -492,7 +491,7 @@ STUB
     # Threading the token through extra-vars only (not env) keeps it
     # out of any child process other than ansible-playbook itself,
     # and out of the ansible-playbook env at that.
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export GH_TOKEN="ghp_example"
 
@@ -515,7 +514,7 @@ STUB
     # hands both to the serve-only helper. No token is forwarded to it - the
     # helper fetches nothing, so the token has no consumer there (it still
     # reaches the registration play via the composer).
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
@@ -535,14 +534,14 @@ STUB
 
     # Staging fires between the extra-vault read and extra-vars compose;
     # any reorder would corrupt the extra-vars payload.
-    [ "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+    [ "$(awk '/^read-vault-config:Toolchains:/{print NR; exit}' "${TRACE_FILE}")" -lt \
       "$(awk '/^stage-host-fileserver:/{print NR; exit}'           "${TRACE_FILE}")" ]
     [ "$(awk '/^stage-host-fileserver:/{print NR; exit}' "${TRACE_FILE}")" -lt \
       "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
 }
 
 @test "CA_NEEDS_HOST_FILE_SERVER=1 threads BASE_URL + runner_version into extra-vars" {
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
@@ -558,7 +557,7 @@ STUB
 }
 
 @test "EXIT trap stops the host file server with the captured PID even on a clean exit" {
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
@@ -577,7 +576,7 @@ STUB
     # non-zero. The trap must still kill the listener, otherwise an
     # operator who hits a play-side error has a stranded HttpListener
     # holding the port until they reboot.
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
@@ -597,7 +596,7 @@ STUB
 }
 
 @test "staging helper failure aborts the bridge before ansible-playbook runs" {
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"
@@ -831,7 +830,7 @@ STUB
         skip "WSL portproxy rewrite path is only reachable under a WSL kernel"
     fi
 
-    export CA_EXTRA_VAULTS=GitHubRunners
+    export CA_EXTRA_VAULTS=Toolchains
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
     export GH_TOKEN="ghp_example"

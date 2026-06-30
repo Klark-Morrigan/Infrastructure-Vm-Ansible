@@ -16,16 +16,20 @@
 #                                 because the substrate genuinely owns it
 #                                 (it drives the inventory for every flow).
 #   --vault-config <Name>=<path>  Repeatable: one per extra vault the
-#                                 contract declared (e.g.
-#                                 GitHubRunners=...). The Name selects the
-#                                 per-domain helper below; an unrecognised
-#                                 name is a contract typo or a domain with
-#                                 no helper yet and is rejected.
-#   --github-token <value>        GitHub PAT, routed to the runners helper
-#                                 (pairs with the GitHubRunners vault).
-#   --host-base-url <url>         Host file server URL + runner version,
-#   --runner-version <ver>        bridge-resolved, routed to the runners
-#                                 helper (register path only).
+#                                 contract declared. The Name derives the
+#                                 per-domain helper dispatched below
+#                                 (_build-extra-vars-<Name>.sh); a Name with
+#                                 no such helper is a contract typo or a
+#                                 domain not yet wired and is rejected.
+#   --github-token <value>        Optional cross-cutting input forwarded to
+#                                 every declared vault's helper when supplied;
+#                                 a helper that does not consume it never
+#                                 receives it. Requires at least one declared
+#                                 extra vault (nothing consumes it otherwise).
+#   --host-base-url <url>         Optional cross-cutting inputs, forwarded the
+#   --runner-version <ver>        same way; bridge-resolved, paired (both or
+#                                 neither), and requiring a declared extra
+#                                 vault to have a consumer.
 #   --consumer-root <path>        Optional. When a consumer owns the
 #                                 per-domain fragment helper, resolve it from
 #                                 <path>/ops instead of this composer's own
@@ -35,22 +39,21 @@
 #                                 - the unchanged path the substrate's own
 #                                 flows take.
 #
-# Output shape:
+# Output shape (the inventory key is always present; every other key is
+# contributed by whichever per-domain helper a declared vault dispatched to):
 #
 #   {
-#     "vm_provisioner_config":     <provisioner JSON>,  // always
-#     "github_runners_config":     <runners JSON>,      // GitHubRunners declared
-#     "github_token":              "<value>",           // with GitHubRunners
-#     "host_file_server_base_url": "<url>",             // file-server opt-in
-#     "runner_version":            "<x.y.z>"            // file-server opt-in
+#     "vm_provisioner_config": <provisioner JSON>,  // always
+#     ...                                           // per-domain helper keys
 #   }
 #
-# Per-domain helpers (siblings in this directory) own their own
-# validation, jq composition, and bats coverage. Adding a future
-# consumer domain (toolchain: JDK / .NET SDK / file delivery) means
-# landing a new _build-extra-vars-<domain>.sh + its bats and adding one
-# dispatch arm below - no orchestrator change, since the bridge already
-# forwards every contract-declared vault here verbatim.
+# Per-domain helpers (siblings in this directory, or under <consumer-root>/ops
+# when a consumer owns one) each own their own validation, jq composition, and
+# bats coverage. They emit disjoint key sets that jq merges. Adding a future
+# consumer domain (toolchain: JDK / .NET SDK / file delivery) means landing a
+# new _build-extra-vars-<Name>.sh + its bats - no change here and no
+# orchestrator change, since dispatch is by the <Name> derivation and the
+# bridge already forwards every contract-declared vault here verbatim.
 
 set -euo pipefail
 
@@ -135,28 +138,28 @@ if [[ -z "${provisioner_path}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Cross-flag consistency. The runner-domain inputs (token + the
-#    file-server pair) only have a consumer when the GitHubRunners vault
-#    is present, so reject any of them arriving without it - a
-#    misconfigured caller fails here rather than emitting an extra-vars
-#    document that carries an unconsumable token or an unreachable URL.
-#    The token<->vault coupling lives here (not the orchestrator) because
-#    it is exactly the consumer knowledge the bridge must not hold.
+# 2. Cross-flag consistency. The optional cross-cutting inputs (token +
+#    the file-server pair) are forwarded to the declared vaults' helpers,
+#    so they only have a possible consumer when at least one extra vault
+#    is declared. Reject any of them arriving with no declared extra vault
+#    - a misconfigured caller fails here rather than emitting an extra-vars
+#    document carrying an unconsumable token or an unreachable URL. Whether
+#    a given helper actually requires the token is the helper's own
+#    contract (asserted in its fragment), not this composer's: keeping the
+#    composer ignorant of which domain needs what is what lets it stay
+#    consumer-agnostic.
 # ---------------------------------------------------------------------------
-runners_declared=0
-[[ -n "${vault_paths[GitHubRunners]:-}" ]] && runners_declared=1
+extras_declared=0
+[[ "${#vault_paths[@]}" -gt 0 ]] && extras_declared=1
 
-if [[ "${token_set}" -eq 1 && "${runners_declared}" -ne 1 ]]; then
-    log_err "--github-token requires the GitHubRunners vault (--vault-config GitHubRunners=...)"
-    exit 2
-fi
-if [[ "${runners_declared}" -eq 1 && "${token_set}" -ne 1 ]]; then
-    log_err "the GitHubRunners vault requires --github-token"
+if [[ "${token_set}" -eq 1 && "${extras_declared}" -ne 1 ]]; then
+    log_err "--github-token requires at least one declared extra vault (--vault-config <Name>=...)"
     exit 2
 fi
 
 # The file-server pair must arrive whole: a URL without a version (or
-# vice versa) silently drops half the runner_binary download contract.
+# vice versa) silently drops half a download contract for the helper that
+# consumes it.
 fileserver_pair_set=0
 [[ "${host_base_url_set}" -eq 1 ]]  && fileserver_pair_set=$(( fileserver_pair_set + 1 ))
 [[ "${runner_version_set}" -eq 1 ]] && fileserver_pair_set=$(( fileserver_pair_set + 1 ))
@@ -165,8 +168,8 @@ if [[ "${fileserver_pair_set}" -eq 1 ]]; then
     log_err "--host-base-url and --runner-version must be supplied together"
     exit 2
 fi
-if [[ "${fileserver_pair_set}" -eq 2 && "${runners_declared}" -ne 1 ]]; then
-    log_err "--host-base-url / --runner-version require the GitHubRunners vault"
+if [[ "${fileserver_pair_set}" -eq 2 && "${extras_declared}" -ne 1 ]]; then
+    log_err "--host-base-url / --runner-version require at least one declared extra vault"
     exit 2
 fi
 
@@ -178,10 +181,10 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The inventory fragment is always substrate, so it stays on this composer's
-# own tree. The per-domain fragments (e.g. GitHubRunners) are consumer-owned,
-# so they resolve from <consumer-root>/ops when a consumer root was declared;
-# empty keeps them on this composer's own ops/ (where only the always-on
-# inventory fragment lives, so the substrate's own flows resolve unchanged).
+# own tree. The per-domain fragments are consumer-owned, so they resolve from
+# <consumer-root>/ops when a consumer root was declared; empty keeps them on
+# this composer's own ops/ (where only the always-on inventory fragment lives,
+# so the substrate's own flows resolve unchanged).
 fragment_dir="${script_dir}"
 if [[ -n "${consumer_root}" ]]; then
     fragment_dir="${consumer_root}/ops"
@@ -193,28 +196,31 @@ fragments+=( "$("${script_dir}/virtual-machines/_build-extra-vars-inventory.sh" 
 
 if [[ "${#vault_paths[@]}" -gt 0 ]]; then
     for vault_name in "${!vault_paths[@]}"; do
-        case "${vault_name}" in
-            GitHubRunners)
-                runners_args=(
-                    --runners-config "${vault_paths[GitHubRunners]}"
-                    --github-token   "${token}"
-                )
-                if [[ "${fileserver_pair_set}" -eq 2 ]]; then
-                    runners_args+=(
-                        --host-base-url  "${host_base_url}"
-                        --runner-version "${runner_version}"
-                    )
-                fi
-                fragments+=( "$("${fragment_dir}/_build-extra-vars-runners.sh" "${runners_args[@]}")" )
-                ;;
-            *)
-                # Fail loud: a vault the operator believed would be applied
-                # but for which no fragment helper exists must not be
-                # silently dropped from the extra-vars document.
-                log_err "no extra-vars helper for declared vault '${vault_name}'"
-                exit 2
-                ;;
-        esac
+        # The vault Name derives its helper by convention:
+        # _build-extra-vars-<Name>.sh under the fragment dir. A declared
+        # vault with no matching helper is a contract typo or a domain not
+        # yet wired - fail loud rather than silently drop it from the doc.
+        helper="${fragment_dir}/_build-extra-vars-${vault_name}.sh"
+        if [[ ! -f "${helper}" ]]; then
+            log_err "no extra-vars helper for declared vault '${vault_name}' (expected ${helper})"
+            exit 2
+        fi
+
+        # The vault's config path rides a generic --config flag. The optional
+        # cross-cutting inputs are forwarded only when the contract supplied
+        # them, so a helper that does not consume them never receives them
+        # (and one that requires them asserts so itself).
+        helper_args=( --config "${vault_paths[${vault_name}]}" )
+        if [[ "${token_set}" -eq 1 ]]; then
+            helper_args+=( --github-token "${token}" )
+        fi
+        if [[ "${fileserver_pair_set}" -eq 2 ]]; then
+            helper_args+=(
+                --host-base-url  "${host_base_url}"
+                --runner-version "${runner_version}"
+            )
+        fi
+        fragments+=( "$("${helper}" "${helper_args[@]}")" )
     done
 fi
 

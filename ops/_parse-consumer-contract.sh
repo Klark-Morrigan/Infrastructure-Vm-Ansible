@@ -26,8 +26,8 @@
 #                              passes e.g. "VmProvisioner".
 #   CA_EXTRA_VAULTS            Optional, default "none". Vault names to
 #                              read BEYOND the inventory vault. Whitespace-
-#                              or comma-separated (e.g. "GitHubRunners" or
-#                              "GitHubRunners,Toolchains"). Unset/empty ->
+#                              or comma-separated (e.g. "Toolchains" or
+#                              "Toolchains,Secrets"). Unset/empty ->
 #                              no extra vaults.
 #   CA_NEEDS_HOST_FILE_SERVER  Optional. "1" to have the bridge stage the
 #                              host file server; any other value (incl.
@@ -135,7 +135,7 @@ fi
 # ---------------------------------------------------------------------------
 # Extra vaults. Normalise the caller's whitespace/comma-separated list
 # into a single space-separated line: commas become spaces, then
-# word-splitting via `read -a` drops empty fields (so "GitHubRunners,,X"
+# word-splitting via `read -a` drops empty fields (so "Toolchains,,X"
 # or a trailing separator is harmless). An empty/unset input yields an
 # empty EXTRA_VAULTS value - the "none" default. The default-substitution
 # and comma-replacement are separate steps because bash cannot combine
