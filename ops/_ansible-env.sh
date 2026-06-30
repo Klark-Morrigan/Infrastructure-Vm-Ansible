@@ -13,11 +13,11 @@
 # cfg, falling back to compiled-in defaults. The fallback flips
 # host_key_checking from False to True (breaking SSH to fresh VMs at
 # the first connection), drops interpreter_python=auto_silent (extra
-# per-host warnings), and resets roles_path to its defaults (so
-# `roles: [{ role: groups }]` in playbooks/create-users.yml fails
-# with "role 'groups' was not found" because Ansible only looks
-# under playbooks/roles/, ~/.ansible/roles/, etc. - never under the
-# repo-root roles/ directory where this project keeps them).
+# per-host warnings), and resets roles_path to its defaults (so a play
+# that lists a repo-local role by short name fails with "role '<name>'
+# was not found" because Ansible only looks under playbooks/roles/,
+# ~/.ansible/roles/, etc. - never under the repo-root roles/ directory
+# where this project keeps them).
 #
 # Three things to know about the workaround:
 #
@@ -60,7 +60,19 @@
 # Mirrors `roles_path = roles`. Repo-local roles live under
 # ${repo_root}/roles/, not under playbooks/roles/ - so the default
 # search path (<playbook_dir>/roles:~/.ansible/roles:...) misses them.
-export ANSIBLE_ROLES_PATH="${repo_root}/roles"
+#
+# When the caller set `consumer_root` (a consumer that owns roles of its
+# own), that consumer's roles/ leads the search path so its own roles
+# resolve by short name, with the substrate roles/ appended so reusable
+# substrate roles still resolve. consumer_root unset - the substrate's own
+# flows (bootstrap, the bats suite) - keeps the substrate roles/ alone,
+# unchanged. The `:-` guard tolerates callers
+# (bootstrap) that never set the var.
+if [[ -n "${consumer_root:-}" ]]; then
+    export ANSIBLE_ROLES_PATH="${consumer_root}/roles:${repo_root}/roles"
+else
+    export ANSIBLE_ROLES_PATH="${repo_root}/roles"
+fi
 
 # Mirrors `host_key_checking = False`. VMs are short-lived and their
 # IPs come from the VmProvisioner vault, not from user input - there

@@ -4,9 +4,3 @@
 # collections explicitly via requirements.yml, so the batteries-included
 # meta-package would only add untracked surface area.
 ansible-core==2.18.1
-
-# Required by the `password_hash` Jinja filter used in roles/users for
-# crypt-style password hashes. ansible-core does not bundle it; without
-# it, any user entry that carries a `password` field fails with
-# "Unable to encrypt nor hash, passlib must be installed".
-passlib==1.7.4

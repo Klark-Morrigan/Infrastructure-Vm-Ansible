@@ -1,17 +1,14 @@
 <#
 .SYNOPSIS
-    Pester suite for the four Windows-side helpers the bridge invokes
-    when GitHubRunners opt-in is active:
-      - _resolve-runner-version.ps1  (Resolve-RunnerVersion)
-      - _ensure-runner-tarball.ps1   (Invoke-RunnerTarballEnsure)
+    Pester suite for the two Windows-side host-file-server helpers the
+    bridge invokes when a consumer opts into the host file server:
       - _start-host-file-server.ps1  (Start-HostFileServer)
       - _stop-host-file-server.ps1   (Stop-HostFileServer)
 
 .DESCRIPTION
     Each helper has its own Context. Pester (not bats) because the
-    surface is .NET-heavy: Invoke-RestMethod, HttpListener,
-    Get-NetIPAddress; mocking those from bats would require a
-    pwsh.exe round-trip per assertion.
+    surface is .NET-heavy: HttpListener, Get-NetIPAddress; mocking those
+    from bats would require a pwsh.exe round-trip per assertion.
 
     HttpListener-bound contexts use 127.0.0.1 with a random high port
     and mock New-NetFirewallRule so the tests do not need full admin
@@ -28,138 +25,8 @@ BeforeAll {
     function Remove-NetFirewallRule { param([Parameter(ValueFromRemainingArguments)] $rest) }
     function Get-NetIPAddress       { param([Parameter(ValueFromRemainingArguments)] $rest) }
 
-    . "$PSScriptRoot\..\..\ops\_resolve-runner-version.ps1"
-    . "$PSScriptRoot\..\..\ops\_ensure-runner-tarball.ps1"
-    . "$PSScriptRoot\..\..\ops\_start-host-file-server.ps1"
-    . "$PSScriptRoot\..\..\ops\_stop-host-file-server.ps1"
-}
-
-Describe 'Resolve-RunnerVersion' {
-
-    It 'returns the version string with the leading v stripped' {
-        Mock Invoke-RestMethod {
-            [PSCustomObject]@{ tag_name = 'v2.999.0' }
-        }
-
-        Resolve-RunnerVersion -Token 'ghp_test' | Should -Be '2.999.0'
-    }
-
-    It 'sends the token as a Bearer Authorization header' {
-        Mock Invoke-RestMethod -ParameterFilter {
-            $Headers['Authorization'] -eq 'Bearer ghp_test'
-        } -MockWith { [PSCustomObject]@{ tag_name = 'v1.2.3' } }
-
-        Resolve-RunnerVersion -Token 'ghp_test' | Out-Null
-
-        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
-            $Headers['Authorization'] -eq 'Bearer ghp_test'
-        }
-    }
-
-    It 'queries the actions/runner latest-release endpoint' {
-        Mock Invoke-RestMethod { [PSCustomObject]@{ tag_name = 'v1.0.0' } }
-
-        Resolve-RunnerVersion -Token 'x' | Out-Null
-
-        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
-            $Uri -eq 'https://api.github.com/repos/actions/runner/releases/latest'
-        }
-    }
-
-    It 'throws with a token-shaped hint when the API returns 401' {
-        Mock Invoke-RestMethod {
-            # Simulate an HTTP error response object the catch branch
-            # inspects for the status code.
-            $resp = [PSCustomObject]@{
-                StatusCode = [PSCustomObject]@{ value__ = 401 }
-            }
-            $ex = [System.Exception]::new('unauthorised')
-            $ex | Add-Member -NotePropertyName Response -NotePropertyValue $resp -Force
-            throw $ex
-        }
-
-        { Resolve-RunnerVersion -Token 'bad' } |
-            Should -Throw -ExpectedMessage '*401*GH_TOKEN*'
-    }
-
-    It 'throws when the response has no tag_name field' {
-        Mock Invoke-RestMethod { [PSCustomObject]@{} }
-
-        { Resolve-RunnerVersion -Token 'x' } |
-            Should -Throw -ExpectedMessage '*tag_name*'
-    }
-}
-
-Describe 'Invoke-RunnerTarballEnsure' {
-
-    BeforeEach {
-        # Scratch cache root per test - keeps cache-hit and cache-miss
-        # cases independent.
-        $script:cache = Join-Path ([System.IO.Path]::GetTempPath()) `
-            ("runner-cache-test-$([System.Guid]::NewGuid())")
-    }
-
-    AfterEach {
-        if (Test-Path -LiteralPath $script:cache) {
-            Remove-Item -LiteralPath $script:cache -Recurse -Force
-        }
-    }
-
-    It 'returns the cached path without downloading when the tarball already exists' {
-        New-Item -Path $script:cache -ItemType Directory -Force | Out-Null
-        $existing = Join-Path $script:cache 'actions-runner-linux-x64-1.0.0.tar.gz'
-        Set-Content -LiteralPath $existing -Value 'cached-bytes'
-
-        Mock Invoke-WebRequest { throw 'should not be called on cache hit' }
-
-        $result = Invoke-RunnerTarballEnsure -Version '1.0.0' -CacheDir $script:cache
-        $result | Should -Be $existing
-        Should -Invoke Invoke-WebRequest -Times 0
-    }
-
-    It 'downloads to the expected filename on a cache miss' {
-        $expected = Join-Path $script:cache 'actions-runner-linux-x64-2.999.0.tar.gz'
-
-        # The mock has to materialise the file the helper then
-        # checks - simulating a successful download.
-        Mock Invoke-WebRequest -ParameterFilter {
-            $Uri -eq 'https://github.com/actions/runner/releases/download/v2.999.0/actions-runner-linux-x64-2.999.0.tar.gz' -and
-            $OutFile -eq $expected
-        } -MockWith {
-            New-Item -Path (Split-Path -Parent $OutFile) -ItemType Directory -Force | Out-Null
-            Set-Content -LiteralPath $OutFile -Value 'downloaded-bytes'
-        }
-
-        $result = Invoke-RunnerTarballEnsure -Version '2.999.0' -CacheDir $script:cache
-        $result | Should -Be $expected
-        Test-Path -LiteralPath $expected | Should -BeTrue
-    }
-
-    It 'purges stale runner tarballs from the cache directory before downloading' {
-        New-Item -Path $script:cache -ItemType Directory -Force | Out-Null
-        $stale = Join-Path $script:cache 'actions-runner-linux-x64-1.0.0.tar.gz'
-        Set-Content -LiteralPath $stale -Value 'stale'
-
-        Mock Invoke-WebRequest -MockWith {
-            Set-Content -LiteralPath $OutFile -Value 'new'
-        }
-
-        Invoke-RunnerTarballEnsure -Version '2.0.0' -CacheDir $script:cache | Out-Null
-
-        Test-Path -LiteralPath $stale | Should -BeFalse
-    }
-
-    It 'throws when the download produces an empty file' {
-        Mock Invoke-WebRequest -MockWith {
-            # Touch an empty file to simulate a failed transfer that
-            # still landed a placeholder on disk.
-            New-Item -Path (Split-Path -Parent $OutFile) -ItemType Directory -Force | Out-Null
-            New-Item -Path $OutFile -ItemType File -Force | Out-Null
-        }
-
-        { Invoke-RunnerTarballEnsure -Version '3.0.0' -CacheDir $script:cache } |
-            Should -Throw -ExpectedMessage '*empty*'
-    }
+    . "$PSScriptRoot\..\..\ops\virtual-machines\_start-host-file-server.ps1"
+    . "$PSScriptRoot\..\..\ops\virtual-machines\_stop-host-file-server.ps1"
 }
 
 Describe 'Start-HostFileServer + Stop-HostFileServer' {

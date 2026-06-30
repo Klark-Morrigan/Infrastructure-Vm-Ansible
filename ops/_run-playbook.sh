@@ -17,13 +17,26 @@ set -euo pipefail
 source "${BASH_SOURCE[0]%/*}/imports/_log.sh"
 
 # ---------------------------------------------------------------------------
-# Vault contract. Hardcoded to match Infrastructure-Secrets convention.
-# Pinning both ends to constants makes a mismatch a code-review issue
-# rather than a silent runtime failure.
+# Vault contract. This bridge names NO vault - not even the fleet
+# inventory it reads on every dispatch. The inventory is the substrate's
+# own input (VM names, addresses, credentials, router/NAT topology) and
+# every dispatch needs it - _build-inventory.sh turns it into the Ansible
+# inventory, router resolution reads it, host-file-server staging binds
+# against a VM address from it - but the VAULT that holds it is named by a
+# specific repo (Infrastructure-Vm-Provisioner), so the consumer declares
+# it through the contract (CA_INVENTORY_VAULT) rather than the bridge
+# hardcoding it. Downstream consumer vaults are declared the same way
+# through CA_EXTRA_VAULTS. Pinning the substrate to
+# no repo's vault naming -
+# inventory provider or downstream consumer alike - is the dependency
+# inversion that keeps the repo a substrate rather than a knower of its
+# own estate.
+#
+# The per-vault secret name follows the Infrastructure-Secrets convention
+# <VaultName>Config-<suffix>, derived the same way for the inventory vault
+# and for every contract-declared extra vault, so the generic read loop
+# needs no per-consumer table.
 # ---------------------------------------------------------------------------
-readonly VM_PROVISIONER_VAULT="VmProvisioner"
-readonly VM_USERS_VAULT="VmUsers"
-readonly GITHUB_RUNNERS_VAULT="GitHubRunners"
 
 # Required: SECRET_SUFFIX selects the lifecycle/environment whose
 # secrets this run will read. Operator invocations pass `Production`;
@@ -35,9 +48,6 @@ if [[ -z "${SECRET_SUFFIX:-}" ]]; then
     log_err "SECRET_SUFFIX must be set (e.g. Production or the caller's lifecycle label)"
     exit 2
 fi
-readonly VM_PROVISIONER_SECRET="VmProvisionerConfig-${SECRET_SUFFIX}"
-readonly VM_USERS_SECRET="VmUsersConfig-${SECRET_SUFFIX}"
-readonly GITHUB_RUNNERS_SECRET="GitHubRunnersConfig-${SECRET_SUFFIX}"
 
 # Anchor every relative path to the repo root so the script works
 # regardless of the caller's working directory.
@@ -49,7 +59,8 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 # ansible-playbook, nc, and the WSL router-relay redirect below - lives in
 # the WSL controller that ops/bootstrap-controller provisions. But the
 # operator entry points launch it through Git Bash (the menu's
-# Invoke-BashScript, and create-users.bat via _find-bash.bat). Under Git
+# Invoke-BashScript, and a consumer's `.bat` wrapper via _find-bash.bat).
+# Under Git
 # Bash none of that toolchain exists: ansible is not on PATH, .venv/bin's
 # python3 is a Linux symlink, nc is absent, and the relay redirect is
 # skipped because /proc/version is not "microsoft". So when we detect a Git
@@ -72,11 +83,33 @@ case "$(uname -s)" in
         # ships).
         wsl_script="$(printf '%s' "${script_dir}" | sed -E 's#^/([A-Za-z])/#/mnt/\L\1/#')/_run-playbook.sh"
 
-        # Forward only the caller-supplied inputs the bridge consults.
-        # WSLENV injects them into the WSL environment; GH_TOKEN rides this
-        # channel rather than the command line so it never lands in a `ps`
-        # listing. Append to any existing WSLENV rather than clobber.
-        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:NEEDS_GITHUB_RUNNERS:GH_TOKEN:NEEDS_HOST_FILE_SERVER"
+        # CA_CONSUMER_ROOT names a consumer repo on disk (e.g. the user owner
+        # repo). A wrapper resolves it via `pwd` under Git Bash, so it is a
+        # /c/... path the WSL side cannot open; translate it to /mnt/c/... the
+        # same way as the script path above and forward the translated value.
+        # WSLENV's own /p path-translation flag is not used here because it
+        # converts Windows-format (C:\...) paths, not the /c/... form Git Bash
+        # pwd produces. Empty/unset stays empty and forwards harmlessly.
+        if [[ -n "${CA_CONSUMER_ROOT:-}" ]]; then
+            CA_CONSUMER_ROOT="$(printf '%s' "${CA_CONSUMER_ROOT}" | sed -E 's#^/([A-Za-z])/#/mnt/\L\1/#')"
+            export CA_CONSUMER_ROOT
+        fi
+
+        # Forward only the caller-supplied inputs the bridge consults: the
+        # SECRET_SUFFIX selector and the consumer-contract CA_* variables
+        # the parse step reads. CA_INVENTORY_VAULT is included because it is
+        # the one REQUIRED contract var - omitting it would make the parse
+        # step reject every Git-Bash-launched flow with "CA_INVENTORY_VAULT
+        # must be set" once it re-execs into WSL. WSLENV injects them into
+        # the WSL environment; GH_TOKEN rides this channel rather than the
+        # command line so it never lands in a `ps` listing. CA_CONSUMER_ROOT
+        # rides it pre-translated (above). Append to any existing WSLENV
+        # rather than clobber.
+        # CA_HOST_FILE_SERVER_DIR rides verbatim (no /p translation): the
+        # consumer resolves it Windows-side (C:\...) and the listener pwsh.exe
+        # wants exactly that form, so unlike CA_CONSUMER_ROOT it needs no
+        # /c -> /mnt rewrite. CA_HOST_FILE_SERVER_VERSION is a plain string.
+        export WSLENV="${WSLENV:+${WSLENV}:}SECRET_SUFFIX:CA_INVENTORY_VAULT:CA_EXTRA_VAULTS:CA_NEEDS_HOST_FILE_SERVER:CA_HOST_FILE_SERVER_DIR:CA_HOST_FILE_SERVER_VERSION:CA_REQUIRES_TOKEN:CA_CONSUMER_ROOT:GH_TOKEN"
 
         # MSYS2 (Git Bash) rewrites /-leading arguments into Windows paths
         # when launching a Windows .exe, which corrupts the /mnt path and
@@ -108,10 +141,9 @@ source "${BASH_SOURCE[0]%/*}/imports/_to-windows-path.sh"
 # Why this orchestrator narrates each phase via log_info (from imports/_log.sh):
 # every phase below is silent on its own - vault reads and the
 # KVP/portproxy/staging pwsh.exe round-trips capture or redirect their
-# stdout, and the longest of them (the KVP IP poll, the runner-tarball
-# download) can block for minutes. Without a per-phase marker the
-# operator sees the caller's "Registering runners ..." line and then
-# nothing, unable to tell which phase is stuck; the timestamp turns that
+# stdout, and the longest of them (the KVP IP poll) can block for minutes.
+# Without a per-phase marker the operator sees the caller's progress line and
+# then nothing, unable to tell which phase is stuck; the timestamp turns that
 # stall into a measurable per-phase duration.
 
 # ---------------------------------------------------------------------------
@@ -127,38 +159,72 @@ fi
 
 playbook_path="$1"
 shift
+# Existence is checked after the contract is parsed below: the base the
+# playbook resolves against depends on CA_CONSUMER_ROOT, which the contract
+# parser normalises.
 
-if [[ ! -f "${repo_root}/${playbook_path}" && ! -f "${playbook_path}" ]]; then
-    log_err "playbook not found: ${playbook_path}"
+# ---------------------------------------------------------------------------
+# 1b. Consumer contract. The wrapper declares - through CA_* env vars -
+#     which vaults to read beyond the always-on VmProvisioner, whether to
+#     stage the host file server, and whether the run needs a GitHub
+#     token. _parse-consumer-contract.sh normalises that declaration and
+#     rejects the one inconsistent combination it can express (a required
+#     token with none supplied) before any vault read. Capturing its
+#     stdout under set -e means that rejection (exit 2) aborts the whole
+#     dispatch here, with the helper's message left on stderr.
+# ---------------------------------------------------------------------------
+contract="$("${script_dir}/_parse-consumer-contract.sh")"
+inventory_vault="$(grep '^INVENTORY_VAULT=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+extra_vaults_line="$(grep '^EXTRA_VAULTS=' <<<"${contract}" | head -n1)"
+needs_host_file_server="$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+requires_token="$(grep '^REQUIRES_TOKEN=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+consumer_root="$(grep '^CONSUMER_ROOT=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+# The consumer pre-stages the directory the file server serves and resolves
+# its artifact version; these carry both through to the serve-only staging
+# helper, which binds a listener over the given directory and fetches nothing.
+host_file_server_dir="$(grep '^HOST_FILE_SERVER_DIR=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+host_file_server_version="$(grep '^HOST_FILE_SERVER_VERSION=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
+
+# Consumer-root resolution. When the contract named a consumer root, the
+# playbook, the consumer's roles (_ansible-env.sh below), and the per-domain
+# extra-vars fragment (_build-extra-vars.sh) all resolve from it rather than
+# from this substrate root - the location half of consumer-agnosticism that
+# lets a consumer own its playbook/roles/fragment while reusing the bridge.
+# Empty -> the substrate's own root, the path the bridge's own flows take. A
+# named-but-absent root is an operator/wiring error, caught here
+# before any vault read rather than surfacing as a confusing "playbook not
+# found" or "role not found" later.
+if [[ -n "${consumer_root}" && ! -d "${consumer_root}" ]]; then
+    log_err "CA_CONSUMER_ROOT is set but not a directory: ${consumer_root}"
+    exit 2
+fi
+playbook_base="${consumer_root:-${repo_root}}"
+if [[ -f "${playbook_base}/${playbook_path}" ]]; then
+    # Resolve to an absolute path so the dispatch below is independent of the
+    # cwd: with a consumer root, the playbook lives outside this substrate
+    # tree and a base-relative path would otherwise miss after the cd.
+    playbook_resolved="${playbook_base}/${playbook_path}"
+elif [[ -f "${playbook_path}" ]]; then
+    playbook_resolved="${playbook_path}"
+else
+    log_err "playbook not found: ${playbook_path} (searched under ${playbook_base})"
     exit 2
 fi
 
-# Validate the GitHubRunners opt-in inputs before any vault read so a
-# misconfigured caller (NEEDS_GITHUB_RUNNERS=1 without GH_TOKEN) fails
-# before two pwsh.exe round-trips it would never be able to consume.
-needs_github_runners=0
-if [[ "${NEEDS_GITHUB_RUNNERS:-0}" == "1" ]]; then
-    if [[ -z "${GH_TOKEN:-}" ]]; then
-        log_err "NEEDS_GITHUB_RUNNERS=1 requires GH_TOKEN env var"
-        exit 2
-    fi
-    needs_github_runners=1
-fi
+# EXTRA_VAULTS is a space-separated list, possibly empty (no extras).
+# word-splitting via read -a drops the empty case to a zero-length array;
+# || true keeps a no-trailing-newline read's non-zero status from
+# tripping set -e.
+read -r -a extra_vaults <<<"${extra_vaults_line#EXTRA_VAULTS=}" || true
 
-# The host file server is its own opt-in on top of NEEDS_GITHUB_RUNNERS.
-# Register sets both (VMs fetch the tarball); deregister sets only the
-# former (nothing is fetched, so spawning the HttpListener would waste a
-# port and add a failure surface the down path does not need). The
-# file-server flag without the runners flag is meaningless - the
-# listener serves the runner tarball and the runner_binary role is
-# only loaded under NEEDS_GITHUB_RUNNERS=1.
-needs_host_file_server=0
-if [[ "${NEEDS_HOST_FILE_SERVER:-0}" == "1" ]]; then
-    if [[ "${needs_github_runners}" -ne 1 ]]; then
-        log_err "NEEDS_HOST_FILE_SERVER=1 requires NEEDS_GITHUB_RUNNERS=1"
-        exit 2
-    fi
-    needs_host_file_server=1
+# Tie the host-file-server opt-in to the token requirement: every flow that
+# stages the file server also declares a token (its downstream play consumes
+# one), so a file-server opt-in without CA_REQUIRES_TOKEN=1 is a
+# misconfiguration. Reject it here, before the tmpdir and the listener are
+# stood up, rather than deeper in the run.
+if [[ "${needs_host_file_server}" == "1" && "${requires_token}" != "1" ]]; then
+    log_err "the host file server (CA_NEEDS_HOST_FILE_SERVER=1) requires a token (CA_REQUIRES_TOKEN=1)"
+    exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -171,7 +237,7 @@ tmpdir="$(mktemp -d -t vm-ansible.XXXXXX)"
 chmod 700 "${tmpdir}"
 
 # Combined cleanup. The host file server (when the caller opted into
-# it via NEEDS_HOST_FILE_SERVER=1) is a long-lived pwsh process the
+# it via CA_NEEDS_HOST_FILE_SERVER=1) is a long-lived pwsh process the
 # bridge starts before ansible-playbook runs; killing it on every
 # exit path - including signal-induced - is the trap's job, and
 # bundling that with the tmpdir rm keeps a single EXIT handler for
@@ -181,7 +247,7 @@ host_fs_pid=""
 cleanup() {
     if [[ -n "${host_fs_pid}" ]]; then
         local stop_ps1
-        stop_ps1="$(_to_windows_path "${script_dir}/_stop-host-file-server.ps1")"
+        stop_ps1="$(_to_windows_path "${script_dir}/virtual-machines/_stop-host-file-server.ps1")"
         pwsh.exe -NoProfile -File "${stop_ps1}" \
             -ProcessId "${host_fs_pid}" >/dev/null 2>&1 || true
         host_fs_pid=""
@@ -208,216 +274,69 @@ source "${venv_activate}"
 source "${script_dir}/_ansible-env.sh"
 
 # ---------------------------------------------------------------------------
-# 4. Vault reads. Each call validates its payload via jq empty before
-#    returning, so a malformed secret fails here with the vault name
-#    in the message - not later inside ansible-playbook. chmod 600 on
-#    each file mirrors the tmpdir restriction. The GitHubRunners read
-#    is gated by NEEDS_GITHUB_RUNNERS so the create-users / remove-users
-#    entry points do not pay for a pwsh.exe round-trip they cannot
-#    consume.
+# 4. Vault reads. The contract-declared inventory vault is always read
+#    (the fleet the dispatch targets). Then each contract-declared extra
+#    vault is read generically into its own tmpdir file - the bridge names
+#    no vault, it reads whatever the contract listed, so a consumer pays
+#    only for what it declares. Each
+#    read validates its payload via jq empty before returning, so a
+#    malformed secret fails here with the vault name in the message - not
+#    later inside ansible-playbook. chmod 600 mirrors the tmpdir
+#    restriction. The declared extra vaults accumulate as generic
+#    --vault-config Name=path pairs handed to the extra-vars composer,
+#    which owns the vault-name -> per-domain dispatch.
 # ---------------------------------------------------------------------------
 provisioner_file="${tmpdir}/provisioner.json"
-users_file="${tmpdir}/users.json"
+inventory_secret="${inventory_vault}Config-${SECRET_SUFFIX}"
 
-log_info "Reading vault secret ${VM_PROVISIONER_VAULT}/${VM_PROVISIONER_SECRET} ..."
-"${script_dir}/_read-vault-config.sh" "${VM_PROVISIONER_VAULT}" "${VM_PROVISIONER_SECRET}" \
+log_info "Reading vault secret ${inventory_vault}/${inventory_secret} ..."
+"${script_dir}/_read-vault-config.sh" "${inventory_vault}" "${inventory_secret}" \
     > "${provisioner_file}"
 chmod 600 "${provisioner_file}"
 
-log_info "Reading vault secret ${VM_USERS_VAULT}/${VM_USERS_SECRET} ..."
-"${script_dir}/_read-vault-config.sh" "${VM_USERS_VAULT}" "${VM_USERS_SECRET}" \
-    > "${users_file}"
-chmod 600 "${users_file}"
+extra_vault_args=()
+for vault in "${extra_vaults[@]}"; do
+    vault_file="${tmpdir}/vault-${vault}.json"
+    vault_secret="${vault}Config-${SECRET_SUFFIX}"
+    log_info "Reading vault secret ${vault}/${vault_secret} ..."
+    "${script_dir}/_read-vault-config.sh" "${vault}" "${vault_secret}" \
+        > "${vault_file}"
+    chmod 600 "${vault_file}"
+    extra_vault_args+=( --vault-config "${vault}=${vault_file}" )
+done
 
-# Entry scripts opt in to the runners pipeline by exporting
-# NEEDS_GITHUB_RUNNERS=1 (and GH_TOKEN). The bridge itself never
-# prompts - the operator edge (ops/register-runners.sh) owns that.
-runners_file=""
+# Lift the token out of the environment when the contract declared one,
+# then clear GH_TOKEN unconditionally: a required token is carried to the
+# composer (and the staging helper) by value via the local below, and a
+# stray GH_TOKEN that no contract asked for must still never reach
+# ansible-playbook's environment. The downstream play receives the token
+# via the chmod-600 extra-vars file only.
 github_token=""
+if [[ "${requires_token}" == "1" ]]; then
+    # ${GH_TOKEN:-} (with default) signals the intentional external
+    # reference to shellcheck; the contract parser already proved it
+    # non-empty whenever requires_token is 1.
+    github_token="${GH_TOKEN:-}"
+fi
+unset GH_TOKEN || true
+
 host_base_url=""
 runner_version=""
-if [[ "${needs_github_runners}" -eq 1 ]]; then
-    runners_file="${tmpdir}/runners.json"
-    log_info "Reading vault secret ${GITHUB_RUNNERS_VAULT}/${GITHUB_RUNNERS_SECRET} ..."
-    "${script_dir}/_read-vault-config.sh" "${GITHUB_RUNNERS_VAULT}" "${GITHUB_RUNNERS_SECRET}" \
-        > "${runners_file}"
-    chmod 600 "${runners_file}"
-
-    # Lift the token into a local so we can clear GH_TOKEN from the
-    # bridge's environment before invoking ansible-playbook. The
-    # downstream play receives the token via the chmod-600 extra-vars
-    # file only; nothing else in this process tree needs it in env.
-    github_token="${GH_TOKEN}"
-    unset GH_TOKEN
-fi
 
 # ---------------------------------------------------------------------------
-# 4b. Router-VM resolution (feature-53 NAT topology)
-#
-#     Workloads on a per-environment private switch are not reachable
-#     from the controller (WSL on the host) directly - the Ansible
-#     bridge must thread its ssh through the router via ProxyCommand.
-#     Find the router row in VmProvisionerConfig (kind == 'router'),
-#     resolve its upstream IPv4 via Hyper-V KVP when externalDhcp=true
-#     leaves ipAddress empty in the vault, and export ROUTER_* env
-#     vars consumed by the downstream helpers.
-#
-#     Two distinct addresses are kept separate on purpose:
-#
-#       ROUTER_IP       the router's TRUE upstream LAN IP (its identity
-#                       on the Hyper-V switch, e.g. 192.168.137.10).
-#                       NEVER rewritten - it is a topological fact.
-#       ROUTER_SSH_HOST the address the controller actually opens an SSH
-#                       connection to. Equals ROUTER_IP on direct hosts;
-#                       under WSL it is rewritten to the host portproxy
-#                       endpoint (the WSL adapter cannot reach the
-#                       Internal-switch subnet through ICS NAT).
-#
-#     Consumers:
-#
-#       - _build-inventory.sh    : injects ansible_ssh_common_args per
-#                                  workload (ProxyCommand+sshpass) aimed
-#                                  at ROUTER_SSH_HOST - the SSH endpoint.
-#       - _assert-router-reachable.sh : probes ROUTER_SSH_HOST.
-#       - _stage-host-fileserver.sh : binds the listener on the host
-#                                  adapter sharing the router's upstream
-#                                  /24 (Get-VmSwitchHostIp on ROUTER_IP,
-#                                  the topological IP - NOT the SSH
-#                                  endpoint, which under WSL points at
-#                                  the host's own WSL adapter and would
-#                                  resolve no Hyper-V switch adapter).
-#       - ansible-playbook'd ssh : reads $SSHPASS at sshpass -e time
-#                                  to authenticate to the router
-#                                  without putting the password in
-#                                  argv.
-#
-#     When no router row is present (single-switch topology), the
-#     ROUTER_* vars stay empty and every downstream helper takes its
-#     legacy direct-routing branch.
+# 4b. Router-VM resolution (NAT topology). Delegated to the
+#     ops/virtual-machines/_resolve-router.sh module: resolve_router finds
+#     the router row, resolves its upstream IP (static or Hyper-V KVP),
+#     applies the WSL portproxy redirect, exports the ROUTER_* / SSHPASS
+#     env the inventory builder and host-file-server staging consume, and
+#     runs the reachability pre-flight. A no-op when the fleet has no
+#     router row. The module is the contained home for this estate's
+#     Hyper-V / ICS / netsh-portproxy topology knowledge, kept out of the
+#     otherwise consumer-agnostic orchestrator.
 # ---------------------------------------------------------------------------
-router_row="$(jq -c '[ .[] | select((.kind // "") == "router") ][0] // empty' "${provisioner_file}")"
-if [[ -n "${router_row}" ]]; then
-    router_vm_name="$(printf '%s' "${router_row}" | jq -r '.vmName // empty')"
-    router_switch="$( printf '%s' "${router_row}" | jq -r '.externalSwitchName // empty')"
-    ROUTER_USERNAME="$(printf '%s' "${router_row}" | jq -r '.username // empty')"
-    ROUTER_PASSWORD="$(printf '%s' "${router_row}" | jq -r '.password // empty')"
-    static_router_ip="$(printf '%s' "${router_row}" | jq -r '.ipAddress // empty')"
-    if [[ -z "${router_vm_name}" || -z "${router_switch}" || -z "${ROUTER_USERNAME}" || -z "${ROUTER_PASSWORD}" ]]; then
-        log_err "router row missing required fields (vmName/externalSwitchName/username/password)"
-        exit 1
-    fi
-
-    if [[ -n "${static_router_ip}" ]]; then
-        ROUTER_IP="${static_router_ip}"
-        log_info "Router '${router_vm_name}' static IP from vault: ${ROUTER_IP}"
-    else
-        # Get-VmKvpIpAddress polls KVP until the router publishes its
-        # ext0 IPv4; tail -n1 strips any noise pwsh.exe might emit
-        # before the value (status lines, warnings) on slow imports.
-        # This poll blocks with no output until the router boots far
-        # enough to publish KVP - the single most common silent stall in
-        # this flow, so it gets its own before/after markers.
-        log_info "Resolving router '${router_vm_name}' upstream IP via Hyper-V KVP on switch '${router_switch}' (polls until the router publishes; can take minutes on a cold boot) ..."
-        ROUTER_IP="$(pwsh.exe -NoProfile -NoLogo -Command \
-            "Import-Module Infrastructure.HyperV -MinimumVersion 0.11.0; Get-VmKvpIpAddress -VmName '${router_vm_name}' -SwitchName '${router_switch}'" \
-            2>/dev/null | tr -d '\r' | tail -n1)"
-        if [[ -z "${ROUTER_IP}" ]]; then
-            log_err "Get-VmKvpIpAddress returned empty for router '${router_vm_name}' on switch '${router_switch}'"
-            exit 1
-        fi
-        log_info "Router '${router_vm_name}' KVP IP resolved: ${ROUTER_IP}"
-    fi
-
-    # ROUTER_SSH_HOST defaults to the router's true LAN IP: on direct
-    # (non-WSL) hosts the SSH endpoint and the topological IP are one and
-    # the same. The WSL branch below overrides only this SSH endpoint,
-    # leaving ROUTER_IP untouched for the Get-VmSwitchHostIp lookup in
-    # _stage-host-fileserver.sh.
-    ROUTER_SSH_HOST="${ROUTER_IP}"
-
-    # WSL2-on-Windows portproxy redirect. WSL2 runs as its own
-    # Hyper-V guest with its own NAT and cannot reach the host's
-    # Internal-switch subnet (e.g. 192.168.137.0/24, the ICS-served
-    # network where the router lives) through ICS NAT. The
-    # Vm-Provisioner ensures a host-side netsh portproxy rule
-    # forwarding <listenAddr>:<port> -> <routerIp>:22 at provisioning
-    # time; here we discover that rule from inside WSL (via
-    # pwsh.exe -> netsh) and point ROUTER_SSH_HOST/ROUTER_PORT at it.
-    # ROUTER_IP itself is deliberately NOT rewritten - it remains the
-    # router's upstream LAN IP so _stage-host-fileserver.sh can resolve
-    # the host's Internal-switch adapter from it.
-    #
-    # Reaching the host portproxy from WSL has two cases:
-    #   - WSL mirrored networking mode: 127.0.0.1 from WSL IS the
-    #     host's loopback. Direct hit.
-    #   - WSL NAT mode (default): 127.0.0.1 is WSL's OWN loopback,
-    #     NOT the host's. Must aim at the host's WSL-side gateway IP
-    #     (the IP reported by `ip route show default | awk '{print $3}'`).
-    #     This requires the provisioner's portproxy to listen on
-    #     0.0.0.0 (its default) rather than 127.0.0.1, so the
-    #     listener is reachable from the WSL vEthernet interface.
-    #
-    # We probe 127.0.0.1 first (the mirrored-mode happy path), and
-    # fall back to the WSL gateway IP if the probe fails. nc -z is
-    # the minimal "is something listening?" check; -w1 caps the
-    # wait at one second so a non-listening 127.0.0.1 does not
-    # delay the fallback.
-    #
-    # Listen-port auto-discovery (no hardcoded port): we parse netsh
-    # output for any rule whose ConnectAddress matches the router's
-    # ROUTER_IP and use whichever ListenPort the provisioner chose.
-    # The listen address regex accepts both 0.0.0.0 (default) and
-    # 127.0.0.1 (operator-pinned). The provisioner's default is
-    # 2222; operators who override via -ListenPort keep working.
-    #
-    # No-op on non-WSL hosts (Linux CI, Mac, etc. - no netsh, no
-    # ICS NAT to work around) and on WSL hosts without a matching
-    # portproxy rule (ROUTER_SSH_HOST stays equal to ROUTER_IP, the
-    # direct path).
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        log_info "WSL detected; discovering host netsh portproxy rule for ${ROUTER_IP}:22 ..."
-        portproxy_port="$(pwsh.exe -NoProfile -NoLogo -Command \
-            "& netsh interface portproxy show v4tov4 2>\$null | Where-Object { \$_ -match '^(0\.0\.0\.0|127\.0\.0\.1)\s+(\d+)\s+${ROUTER_IP//./\\.}\s+22' } | ForEach-Object { (\$_ -split '\s+' | Where-Object { \$_ })[1] } | Select-Object -First 1" \
-            2>/dev/null | tr -d '\r' | tail -n1)"
-        if [[ -n "${portproxy_port}" ]]; then
-            # Pick a reachable target. 127.0.0.1 works in mirrored
-            # mode; otherwise the WSL gateway IP works for NAT mode
-            # when the provisioner's portproxy listens on 0.0.0.0.
-            target_ip="127.0.0.1"
-            if ! nc -z -w1 "${target_ip}" "${portproxy_port}" >/dev/null 2>&1; then
-                wsl_gateway="$(ip route show default 2>/dev/null | awk '/^default/ {print $3}' | head -n1)"
-                if [[ -n "${wsl_gateway}" ]]; then
-                    target_ip="${wsl_gateway}"
-                fi
-            fi
-            echo "_run-playbook.sh: WSL detected; routing via host portproxy ${target_ip}:${portproxy_port} -> ${ROUTER_IP}:22"
-            ROUTER_SSH_HOST="${target_ip}"
-            ROUTER_PORT="${portproxy_port}"
-            export ROUTER_PORT
-        fi
-    fi
-
-    # SSHPASS is the env-based auth channel for sshpass -e: ansible-
-    # playbook's ssh subprocesses inherit it and pass it through to
-    # sshpass inside the ProxyCommand. The password never appears in
-    # argv (no `sshpass -p`), so `ps` listings stay clean.
-    export ROUTER_IP ROUTER_SSH_HOST ROUTER_USERNAME
-    export SSHPASS="${ROUTER_PASSWORD}"
-    # Avoid leaving the cleartext in a non-exported var the rest of the
-    # script could accidentally interpolate into a log line. SSHPASS
-    # is the only legitimate consumer from here on.
-    unset ROUTER_PASSWORD
-
-    # -----------------------------------------------------------------------
-    # 4c. Router reachability pre-flight. Delegated to the sibling helper
-    #     so the orchestrator stays thin and the probe is tested against
-    #     just its nc/ssh boundary. A non-zero exit (unreachable) aborts
-    #     the bridge here under set -e - before ansible-playbook spends its
-    #     ~136s per-host connect-retry budget on a hop the helper already
-    #     proved broken. The helper's stderr names the failed segment.
-    # -----------------------------------------------------------------------
-    "${script_dir}/_assert-router-reachable.sh" "${ROUTER_SSH_HOST}" "${ROUTER_PORT:-22}"
-fi
+# shellcheck source=ops/virtual-machines/_resolve-router.sh
+source "${script_dir}/virtual-machines/_resolve-router.sh"
+resolve_router "${provisioner_file}"
 
 # ---------------------------------------------------------------------------
 # 5. Inventory generation. Pure stdin -> stdout transform; redirected
@@ -427,37 +346,42 @@ fi
 # ---------------------------------------------------------------------------
 hosts_file="${tmpdir}/hosts.json"
 log_info "Building Ansible inventory ..."
-"${script_dir}/_build-inventory.sh" < "${provisioner_file}" > "${hosts_file}"
+"${script_dir}/virtual-machines/_build-inventory.sh" < "${provisioner_file}" > "${hosts_file}"
 chmod 600 "${hosts_file}"
 
 # ---------------------------------------------------------------------------
-# 5b. Host file server staging (NEEDS_HOST_FILE_SERVER opt-in only).
+# 5b. Host file server staging (contract NEEDS_HOST_FILE_SERVER opt-in).
 #
-#     The whole resolve-tarball-then-listener pipeline lives in its
-#     own helper so this orchestrator stays a thin sequence of
-#     one-line dispatch steps. The helper prints three KEY=value
-#     lines on stdout - RUNNER_VERSION, BASE_URL, PID - which we
-#     parse into locals for use below (extra-vars compose, EXIT
-#     trap). The listener it backgrounds lives until the EXIT trap
-#     hands its pid to _stop-host-file-server.ps1.
+#     The serve-the-staged-directory listener lives in its own helper
+#     so this orchestrator stays a thin sequence of one-line dispatch
+#     steps. The helper prints three KEY=value lines on stdout -
+#     RUNNER_VERSION, BASE_URL, PID - which we parse into locals for
+#     use below (extra-vars compose, EXIT trap). The listener it
+#     backgrounds lives until the EXIT trap hands its pid to
+#     _stop-host-file-server.ps1.
 #
-#     The deregister flow leaves NEEDS_HOST_FILE_SERVER unset and so
+#     The deregister flow leaves CA_NEEDS_HOST_FILE_SERVER unset and so
 #     skips this block entirely: nothing is fetched on the down path,
 #     and host_fs_pid stays empty so the EXIT trap's stop call is a
 #     no-op.
 # ---------------------------------------------------------------------------
-if [[ "${needs_host_file_server}" -eq 1 ]]; then
+if [[ "${needs_host_file_server}" == "1" ]]; then
     listener_log="${tmpdir}/fileserver.out"
     # stage_out captures the helper's stdout (its KEY=value contract), so
-    # its own progress lines go to stderr and surface here. This step
-    # resolves the runner version, downloads the ~100MB runner tarball on
-    # a cache miss, then starts the listener - the download is the second
-    # most common silent stall after the KVP poll.
-    log_info "Staging host file server (resolve runner version, cache tarball, start listener) ..."
-    stage_out="$("${script_dir}/_stage-host-fileserver.sh" \
-        --provisioner-config "${provisioner_file}" \
-        --github-token       "${github_token}" \
-        --listener-log       "${listener_log}")"
+    # its own progress lines go to stderr and surface here. The consumer
+    # pre-staged the directory and resolved its version, so this step only
+    # binds a listener over that directory - it fetches nothing.
+    log_info "Staging host file server (start listener over the staged directory) ..."
+    # The consumer always supplies the directory to serve and its artifact
+    # version (the substrate stages nothing itself); hand both to the
+    # serve-only helper, which rejects the call if either is missing.
+    stage_args=(
+        --provisioner-config "${provisioner_file}"
+        --listener-log       "${listener_log}"
+        --staging-dir        "${host_file_server_dir}"
+        --runner-version     "${host_file_server_version}"
+    )
+    stage_out="$("${script_dir}/virtual-machines/_stage-host-fileserver.sh" "${stage_args[@]}")"
     log_info "Host file server staged."
 
     runner_version="$(grep '^RUNNER_VERSION=' <<<"${stage_out}" | head -n1 | cut -d= -f2-)"
@@ -475,25 +399,30 @@ fi
 #    payloads never appear on argv where `ps` could see them.
 # ---------------------------------------------------------------------------
 extra_vars_file="${tmpdir}/extra-vars.json"
-extra_vars_args=(
-    --provisioner-config "${provisioner_file}"
-    --users-config       "${users_file}"
-)
-if [[ -n "${runners_file}" ]]; then
+extra_vars_args=( --provisioner-config "${provisioner_file}" )
+# When a consumer owns the per-domain fragment, the composer resolves it
+# from <consumer-root>/ops; empty keeps the composer on its own ops/.
+if [[ -n "${consumer_root}" ]]; then
+    extra_vars_args+=( --consumer-root "${consumer_root}" )
+fi
+# Forward every contract-declared vault generically; the composer maps
+# each Name to the per-domain fragment helper that owns its shape.
+extra_vars_args+=( "${extra_vault_args[@]}" )
+# Token by value when the contract declared one. The composer enforces
+# the token<->vault pairing, so the bridge only forwards it and never
+# decides which vault consumes it.
+if [[ -n "${github_token}" ]]; then
+    extra_vars_args+=( --github-token "${github_token}" )
+fi
+# File-server pair only when the caller opted in: the deregister entry
+# leaves host_base_url / runner_version empty, and the extra-vars doc
+# genuinely omits the two keys rather than emitting empties (absence
+# beats a stale URL for the down-direction roles).
+if [[ "${needs_host_file_server}" == "1" ]]; then
     extra_vars_args+=(
-        --runners-config "${runners_file}"
-        --github-token   "${github_token}"
+        --host-base-url  "${host_base_url}"
+        --runner-version "${runner_version}"
     )
-    # File-server pair only when the caller opted in: the deregister
-    # entry leaves host_base_url / runner_version empty, and the
-    # extra-vars doc genuinely omits the two keys rather than emitting
-    # empties (absence beats stale URL for the down-direction roles).
-    if [[ "${needs_host_file_server}" -eq 1 ]]; then
-        extra_vars_args+=(
-            --host-base-url  "${host_base_url}"
-            --runner-version "${runner_version}"
-        )
-    fi
 fi
 
 log_info "Composing extra-vars ..."
@@ -502,14 +431,18 @@ log_info "Composing extra-vars ..."
 chmod 600 "${extra_vars_file}"
 
 # ---------------------------------------------------------------------------
-# 7. Dispatch. cd to repo root so role/playbook paths resolve naturally
-#    and ansible.cfg is picked up. Forwarded args follow the playbook
-#    path so operator flags reach ansible-playbook unmodified.
+# 7. Dispatch. cd to repo root so ansible.cfg is picked up and any
+#    substrate-relative path resolves naturally. The playbook is passed by
+#    its resolved absolute path (playbook_resolved) so a consumer-owned
+#    playbook outside this tree is found regardless of cwd; roles resolve
+#    through the absolute ANSIBLE_ROLES_PATH _ansible-env.sh exported, not
+#    cwd. Forwarded args follow the playbook so operator flags reach
+#    ansible-playbook unmodified.
 # ---------------------------------------------------------------------------
 cd "${repo_root}"
-log_info "Dispatching ansible-playbook ${playbook_path} (PLAY/TASK output follows) ..."
+log_info "Dispatching ansible-playbook ${playbook_resolved} (PLAY/TASK output follows) ..."
 ansible-playbook \
     -i "${hosts_file}" \
     --extra-vars "@${extra_vars_file}" \
-    "${playbook_path}" \
+    "${playbook_resolved}" \
     "$@"
