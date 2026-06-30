@@ -454,10 +454,10 @@ STUB
 }
 
 @test "CA_NEEDS_HOST_FILE_SERVER=1 without a token fails fast" {
-    # Staging downloads the runner tarball from the GitHub API, which
-    # needs the token. The bridge ties the two capability flags together
-    # and rejects before any vault read or listener stand-up - a generic
-    # coupling that names no consumer.
+    # Every flow that opts into the host file server also declares a token
+    # (its downstream play consumes one). The bridge ties the two flags
+    # together and rejects a file-server opt-in without a token before any
+    # vault read or listener stand-up.
     export CA_NEEDS_HOST_FILE_SERVER=1
     unset CA_REQUIRES_TOKEN
     unset GH_TOKEN
@@ -509,31 +509,12 @@ STUB
     [ ! -s "${ANSIBLE_PLAYBOOK_STUB_LOG}.env" ]
 }
 
-@test "CA_NEEDS_HOST_FILE_SERVER=1 calls the staging helper with the provisioner config and token" {
-    export CA_EXTRA_VAULTS=GitHubRunners
-    export CA_REQUIRES_TOKEN=1
-    export CA_NEEDS_HOST_FILE_SERVER=1
-    export GH_TOKEN="ghp_example"
-
-    run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
-    [ "${status}" -eq 0 ]
-
-    trace="$(cat "${TRACE_FILE}")"
-    [[ "${trace}" == *"stage-host-fileserver:"*"--provisioner-config"*"--github-token"*"ghp_example"* ]]
-    [[ "${trace}" == *"stage-host-fileserver:"*"--listener-log"* ]]
-
-    # Staging fires between the extra-vault read and extra-vars compose;
-    # any reorder would corrupt the extra-vars payload.
-    [ "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" -lt \
-      "$(awk '/^stage-host-fileserver:/{print NR; exit}'           "${TRACE_FILE}")" ]
-    [ "$(awk '/^stage-host-fileserver:/{print NR; exit}' "${TRACE_FILE}")" -lt \
-      "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
-}
-
-@test "consumer-staged directory: passes --staging-dir + --runner-version to the staging helper" {
-    # When the consumer pre-stages the directory and resolves the version
-    # (CA_HOST_FILE_SERVER_DIR / CA_HOST_FILE_SERVER_VERSION), the bridge
-    # hands both to the serve-only helper rather than letting it self-resolve.
+@test "CA_NEEDS_HOST_FILE_SERVER=1 hands the serve-only staging helper the consumer-staged directory and version, not a token" {
+    # The consumer pre-stages the directory and resolves the version
+    # (CA_HOST_FILE_SERVER_DIR / CA_HOST_FILE_SERVER_VERSION); the bridge
+    # hands both to the serve-only helper. No token is forwarded to it - the
+    # helper fetches nothing, so the token has no consumer there (it still
+    # reaches the registration play via the composer).
     export CA_EXTRA_VAULTS=GitHubRunners
     export CA_REQUIRES_TOKEN=1
     export CA_NEEDS_HOST_FILE_SERVER=1
@@ -544,9 +525,20 @@ STUB
     run "${BASH_BIN}" "${TEST_REPO}/ops/_run-playbook.sh" playbooks/_noop.yml
     [ "${status}" -eq 0 ]
 
-    trace="$(cat "${TRACE_FILE}")"
-    [[ "${trace}" == *"stage-host-fileserver:"*'--staging-dir'*'C:\Users\Test\runner-cache'* ]]
-    [[ "${trace}" == *"stage-host-fileserver:"*"--runner-version"*"3.1.4"* ]]
+    stage_line="$(grep '^stage-host-fileserver:' "${TRACE_FILE}")"
+    [[ "${stage_line}" == *"--provisioner-config"* ]]
+    [[ "${stage_line}" == *"--listener-log"* ]]
+    [[ "${stage_line}" == *'--staging-dir'*'C:\Users\Test\runner-cache'* ]]
+    [[ "${stage_line}" == *"--runner-version"*"3.1.4"* ]]
+    # The serve-only helper never receives the token.
+    [[ "${stage_line}" != *"--github-token"* ]]
+
+    # Staging fires between the extra-vault read and extra-vars compose;
+    # any reorder would corrupt the extra-vars payload.
+    [ "$(awk '/^read-vault-config:GitHubRunners:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^stage-host-fileserver:/{print NR; exit}'           "${TRACE_FILE}")" ]
+    [ "$(awk '/^stage-host-fileserver:/{print NR; exit}' "${TRACE_FILE}")" -lt \
+      "$(awk '/^build-extra-vars:/{print NR; exit}'      "${TRACE_FILE}")" ]
 }
 
 @test "CA_NEEDS_HOST_FILE_SERVER=1 threads BASE_URL + runner_version into extra-vars" {

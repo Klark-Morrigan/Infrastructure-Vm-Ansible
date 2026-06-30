@@ -178,10 +178,10 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The inventory fragment is always substrate, so it stays on this composer's
-# own tree. The per-domain fragments (e.g. GitHubRunners) are
-# consumer-owned once extracted, so they resolve from <consumer-root>/ops
-# when a consumer root was declared; empty keeps them on this composer's ops/
-# - the substrate's own flows and the retained forks.
+# own tree. The per-domain fragments (e.g. GitHubRunners) are consumer-owned,
+# so they resolve from <consumer-root>/ops when a consumer root was declared;
+# empty keeps them on this composer's own ops/ (where only the always-on
+# inventory fragment lives, so the substrate's own flows resolve unchanged).
 fragment_dir="${script_dir}"
 if [[ -n "${consumer_root}" ]]; then
     fragment_dir="${consumer_root}/ops"

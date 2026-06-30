@@ -473,11 +473,6 @@ flowchart LR
 - **README:** Infrastructure-GitHubRunners' README index documents the
   register/deregister/status operator flows and the CI bar.
 
-```mermaid
-flowchart LR
-  GR[GitHubRunners] --> CI[ci + molecule] --> GREEN[green]
-```
-
 ### Step 4.3 - Re-point the E2E runners-ansible flow at GitHubRunners
 
 Update Infrastructure-E2E so the `ansible` runners flow resolves
@@ -511,24 +506,110 @@ flowchart LR
   E2E -->|ansible| ANS
 ```
 
-### Step 4.4 - Remove the runner fork from Common-Ansible
+### Step 4.4.1 - Delete the runner fork from Common-Ansible
 
 With GitHubRunners running its own copy (the Step 3.5 mechanism, adopted
-in 4.1), delete the runner roles/playbooks/wrappers, the runner
-extra-vars fragment and its `GitHubRunners` arm in `_build-extra-vars.sh`,
-and `playbooks/tasks/_ensure-acl-present.yml` (retained in Step 3.6 only
-because the runner playbooks still included it - it now leaves with them).
+in 4.1), delete every runner-specific artifact from Common-Ansible while
+the composer's `GitHubRunners)` dispatch arm stays in place. The arm
+resolves the owner's fragment from `CA_CONSUMER_ROOT`, so the GitHubRunners
+owner keeps dispatching through it; only the substrate's own runner flows
+(deleted here) ever used the local fragment. Dissolving that arm into a
+generic rule is the separate Step 4.4.2, kept apart so the pure deletion
+and the dispatch-contract change each get their own review.
 
-- **Reason:** Single source of truth once the owner is proven.
-- **Tests:** Common-Ansible CI green as pure substrate; no runner code or
-  `GitHubRunners` references remain.
-- **README:** Remove the runner operator-flow sections and every
-  `GitHubRunners` reference from this repo's README, leaving substrate +
-  toolchains documented.
+Remove:
+
+- the `runner_binary`, `runner_entry_resolve`, `runner_registration`,
+  `runner_service` roles and their molecule scenarios;
+- the `register-runners.yml` / `deregister-runners.yml` /
+  `runner-status.yml` playbooks and their runner-only task includes
+  (`_handle-unreachable-entry.yml`, `_runner-status-one.yml`), plus
+  `playbooks/tasks/_ensure-acl-present.yml` (retained in Step 3.6 only
+  because the runner playbooks still included it - it leaves with them);
+- the runner wrappers (`register-runners` / `deregister-runners` /
+  `runner-status` / `setup-runners-secrets`, `.sh` + `.bat`);
+- the runner ops helpers `_build-extra-vars-runners.sh` (the local fork
+  fragment), `_require-gh-token.sh`, `_resolve-runner-version.ps1`,
+  `_ensure-runner-tarball.ps1`;
+- the retained-fork path in
+  `ops/virtual-machines/_stage-host-fileserver.sh` (resolve-runner-version
+  + cache-the-tarball via the two `../` `.ps1`), making it serve-only -
+  the consumer always supplies `--staging-dir` + `--runner-version`; the
+  matching fork fallback and the `--github-token` forward to the staging
+  helper drop from `ops/_run-playbook.sh`;
+- the runner tests (`Tests/molecule/runner_*`, the runner bats
+  `_build-extra-vars-runners` / `register-runners` / `deregister-runners`,
+  `setup-runners-secrets.Tests.ps1`, and the runner-only `Tests/ansible/`
+  deregister smoke playbook with its fixture inventory and the shared
+  `Tests/mock-github-api.py`). Update the surviving substrate bats
+  (`_run-playbook.bats`, `_stage-host-fileserver.bats`, the local-fragment
+  cases in `_build-extra-vars.bats`) so they no longer exercise the deleted
+  fork path; the `GitHubRunners)` arm itself stays covered via the
+  consumer-root path until 4.4.2.
+
+- **Reason:** A fork kept past proof becomes a second source of truth; the
+  owner is proven (4.3), so the substrate's runner copy goes. Leaving the
+  dispatch arm untouched isolates this pure deletion from the contract
+  change in 4.4.2.
+- **Tests:** Common-Ansible CI green with no runner roles / playbooks /
+  wrappers present; the GitHubRunners consumer still dispatches through the
+  retained `GitHubRunners)` arm (register/deregister run end to end); the
+  serve-only `_stage-host-fileserver.bats` covers the consumer-staged path
+  with the fork fallback gone.
+- **README:** Remove the Vault setup / Register runners / Deregister
+  runners / runner Roles sections from this repo's README and index. The
+  Bridge contract and Consume-the-substrate sections stay (still naming
+  `GitHubRunners` as the example consumer) for 4.4.2 to genericize.
 
 ```mermaid
 flowchart LR
-  CA[Common-Ansible] -->|delete fork| SUB[substrate + toolchains only]
+  CA[Common-Ansible] -->|delete runner fork, keep dispatch arm| SUB[substrate + retained GitHubRunners arm]
+  GR[GitHubRunners owner] -->|CA_CONSUMER_ROOT via arm| SUB
+```
+
+### Step 4.4.2 - Generalize the extra-vars dispatch and dissolve the GitHubRunners arm
+
+The composer `ops/_build-extra-vars.sh` carries the substrate's last
+hardcoded consumer identity: a `GitHubRunners)` arm that maps that vault
+name to `_build-extra-vars-runners.sh` and routes the token / file-server
+flags to it. The GitHubRunners owner kept only the fragment (4.1) and
+dispatches *through* this arm, so it cannot simply be deleted - it is
+dissolved into a generic rule, and the owner adopts the convention in
+lockstep (one cross-repo step, per the [Conventions](#conventions)):
+
+- substrate: each declared vault `<Name>` resolves
+  `_build-extra-vars-<Name>.sh` under the fragment dir, receives its config
+  through a generic flag, and is forwarded the optional
+  `--github-token` / `--host-base-url` / `--runner-version` when the
+  contract supplied them. The consistency checks stay but lose the
+  `GitHubRunners` literal (a token, or a file-server pair, requires at least
+  one declared extra vault). `ops/_run-playbook.sh` already forwards every
+  declared vault generically, so its dispatch is unchanged;
+- GitHubRunners owner: rename
+  `hyper-v/ubuntu/Ansible/ops/_build-extra-vars-runners.sh` to
+  `_build-extra-vars-GitHubRunners.sh` (matching the `<Name>` derivation)
+  and consume the generic config flag; update its fragment bats.
+
+- **Reason:** Dissolving the arm - not deleting it - removes the
+  substrate's last consumer-specific identity while keeping the consumer
+  that routes through it working. A future toolchain domain then plugs in
+  as a peer `_build-extra-vars-<Name>.sh` with no substrate change.
+- **Tests:** updated `_build-extra-vars.bats` / `_run-playbook.bats` assert
+  the generic derivation and forwarding (and reject a declared vault whose
+  fragment is absent); the GitHubRunners consumer dispatches via the renamed
+  fragment (register/deregister run end to end); a repo-wide grep confirms
+  no `GitHubRunners` reference remains in the substrate.
+- **README:** Scrub `GitHubRunners` from the Bridge contract and
+  Consume-the-substrate sections, genericizing the dispatch description and
+  examples to the `_build-extra-vars-<Name>.sh` convention - leaving
+  substrate + toolchains documented.
+
+```mermaid
+flowchart LR
+  subgraph CA[Common-Ansible substrate]
+    GEN["generic _build-extra-vars-&lt;Name&gt;.sh dispatch"]
+  end
+  GR[GitHubRunners owner] -->|rename fragment to _build-extra-vars-GitHubRunners.sh| GEN
 ```
 
 ## Section 5 - Migrate existing toolchains to Ansible

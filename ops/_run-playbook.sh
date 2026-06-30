@@ -59,7 +59,8 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 # ansible-playbook, nc, and the WSL router-relay redirect below - lives in
 # the WSL controller that ops/bootstrap-controller provisions. But the
 # operator entry points launch it through Git Bash (the menu's
-# Invoke-BashScript, and register-runners.bat via _find-bash.bat). Under Git
+# Invoke-BashScript, and a consumer's `.bat` wrapper via _find-bash.bat).
+# Under Git
 # Bash none of that toolchain exists: ansible is not on PATH, .venv/bin's
 # python3 is a Linux symlink, nc is absent, and the relay redirect is
 # skipped because /proc/version is not "microsoft". So when we detect a Git
@@ -140,10 +141,9 @@ source "${BASH_SOURCE[0]%/*}/imports/_to-windows-path.sh"
 # Why this orchestrator narrates each phase via log_info (from imports/_log.sh):
 # every phase below is silent on its own - vault reads and the
 # KVP/portproxy/staging pwsh.exe round-trips capture or redirect their
-# stdout, and the longest of them (the KVP IP poll, the runner-tarball
-# download) can block for minutes. Without a per-phase marker the
-# operator sees the caller's "Registering runners ..." line and then
-# nothing, unable to tell which phase is stuck; the timestamp turns that
+# stdout, and the longest of them (the KVP IP poll) can block for minutes.
+# Without a per-phase marker the operator sees the caller's progress line and
+# then nothing, unable to tell which phase is stuck; the timestamp turns that
 # stall into a measurable per-phase duration.
 
 # ---------------------------------------------------------------------------
@@ -179,9 +179,9 @@ extra_vaults_line="$(grep '^EXTRA_VAULTS=' <<<"${contract}" | head -n1)"
 needs_host_file_server="$(grep '^NEEDS_HOST_FILE_SERVER=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 requires_token="$(grep '^REQUIRES_TOKEN=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 consumer_root="$(grep '^CONSUMER_ROOT=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
-# When the consumer pre-staged the directory the file server serves (and
-# resolved its artifact version), these carry it through; empty means the
-# substrate stages the directory itself (the retained-fork path).
+# The consumer pre-stages the directory the file server serves and resolves
+# its artifact version; these carry both through to the serve-only staging
+# helper, which binds a listener over the given directory and fetches nothing.
 host_file_server_dir="$(grep '^HOST_FILE_SERVER_DIR=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 host_file_server_version="$(grep '^HOST_FILE_SERVER_VERSION=' <<<"${contract}" | head -n1 | cut -d= -f2-)"
 
@@ -190,8 +190,8 @@ host_file_server_version="$(grep '^HOST_FILE_SERVER_VERSION=' <<<"${contract}" |
 # extra-vars fragment (_build-extra-vars.sh) all resolve from it rather than
 # from this substrate root - the location half of consumer-agnosticism that
 # lets a consumer own its playbook/roles/fragment while reusing the bridge.
-# Empty -> the substrate's own root, the unchanged path the retained forks
-# take. A named-but-absent root is an operator/wiring error, caught here
+# Empty -> the substrate's own root, the path the bridge's own flows take. A
+# named-but-absent root is an operator/wiring error, caught here
 # before any vault read rather than surfacing as a confusing "playbook not
 # found" or "role not found" later.
 if [[ -n "${consumer_root}" && ! -d "${consumer_root}" ]]; then
@@ -217,12 +217,11 @@ fi
 # tripping set -e.
 read -r -a extra_vaults <<<"${extra_vaults_line#EXTRA_VAULTS=}" || true
 
-# Staging the host file server downloads the runner tarball from the
-# GitHub API, which needs the token; tie the two capability flags
-# together here so a caller that opts into the file server without a
-# token fails before the tmpdir and the listener are stood up. This is a
-# generic capability coupling (file server needs token), not consumer
-# knowledge - the bridge still names no specific consumer.
+# Tie the host-file-server opt-in to the token requirement: every flow that
+# stages the file server also declares a token (its downstream play consumes
+# one), so a file-server opt-in without CA_REQUIRES_TOKEN=1 is a
+# misconfiguration. Reject it here, before the tmpdir and the listener are
+# stood up, rather than deeper in the run.
 if [[ "${needs_host_file_server}" == "1" && "${requires_token}" != "1" ]]; then
     log_err "the host file server (CA_NEEDS_HOST_FILE_SERVER=1) requires a token (CA_REQUIRES_TOKEN=1)"
     exit 2
@@ -278,9 +277,9 @@ source "${script_dir}/_ansible-env.sh"
 # 4. Vault reads. The contract-declared inventory vault is always read
 #    (the fleet the dispatch targets). Then each contract-declared extra
 #    vault is read generically into its own tmpdir file - the bridge names
-#    no vault, it reads whatever the contract listed, so register-runners
-#    pays only for GitHubRunners and a consumer pays only for what it
-#    declares. Each
+#    no vault, it reads whatever the contract listed, so a consumer pays
+#    only for what it declares (the GitHubRunners owner pays only for
+#    GitHubRunners). Each
 #    read validates its payload via jq empty before returning, so a
 #    malformed secret fails here with the vault name in the message - not
 #    later inside ansible-playbook. chmod 600 mirrors the tmpdir
@@ -354,13 +353,13 @@ chmod 600 "${hosts_file}"
 # ---------------------------------------------------------------------------
 # 5b. Host file server staging (contract NEEDS_HOST_FILE_SERVER opt-in).
 #
-#     The whole resolve-tarball-then-listener pipeline lives in its
-#     own helper so this orchestrator stays a thin sequence of
-#     one-line dispatch steps. The helper prints three KEY=value
-#     lines on stdout - RUNNER_VERSION, BASE_URL, PID - which we
-#     parse into locals for use below (extra-vars compose, EXIT
-#     trap). The listener it backgrounds lives until the EXIT trap
-#     hands its pid to _stop-host-file-server.ps1.
+#     The serve-the-staged-directory listener lives in its own helper
+#     so this orchestrator stays a thin sequence of one-line dispatch
+#     steps. The helper prints three KEY=value lines on stdout -
+#     RUNNER_VERSION, BASE_URL, PID - which we parse into locals for
+#     use below (extra-vars compose, EXIT trap). The listener it
+#     backgrounds lives until the EXIT trap hands its pid to
+#     _stop-host-file-server.ps1.
 #
 #     The deregister flow leaves CA_NEEDS_HOST_FILE_SERVER unset and so
 #     skips this block entirely: nothing is fetched on the down path,
@@ -370,27 +369,19 @@ chmod 600 "${hosts_file}"
 if [[ "${needs_host_file_server}" == "1" ]]; then
     listener_log="${tmpdir}/fileserver.out"
     # stage_out captures the helper's stdout (its KEY=value contract), so
-    # its own progress lines go to stderr and surface here. This step
-    # resolves the runner version, downloads the ~100MB runner tarball on
-    # a cache miss, then starts the listener - the download is the second
-    # most common silent stall after the KVP poll.
+    # its own progress lines go to stderr and surface here. The consumer
+    # pre-staged the directory and resolved its version, so this step only
+    # binds a listener over that directory - it fetches nothing.
     log_info "Staging host file server (start listener over the staged directory) ..."
+    # The consumer always supplies the directory to serve and its artifact
+    # version (the substrate stages nothing itself); hand both to the
+    # serve-only helper, which rejects the call if either is missing.
     stage_args=(
         --provisioner-config "${provisioner_file}"
-        --github-token       "${github_token}"
         --listener-log       "${listener_log}"
+        --staging-dir        "${host_file_server_dir}"
+        --runner-version     "${host_file_server_version}"
     )
-    # When the consumer pre-staged the directory and resolved its artifact
-    # version, hand both to the serve-only helper so the substrate stages
-    # nothing itself - it just binds a listener over the given directory. Empty
-    # keeps the helper on its retained-fork path (resolve runner version, cache
-    # the tarball), removed once the runner fork leaves in Step 4.4.
-    if [[ -n "${host_file_server_dir}" ]]; then
-        stage_args+=(
-            --staging-dir    "${host_file_server_dir}"
-            --runner-version "${host_file_server_version}"
-        )
-    fi
     stage_out="$("${script_dir}/virtual-machines/_stage-host-fileserver.sh" "${stage_args[@]}")"
     log_info "Host file server staged."
 

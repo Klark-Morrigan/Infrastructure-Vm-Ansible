@@ -32,17 +32,16 @@
 #   CA_NEEDS_HOST_FILE_SERVER  Optional. "1" to have the bridge stage the
 #                              host file server; any other value (incl.
 #                              unset) -> off.
-#   CA_HOST_FILE_SERVER_DIR    Optional, default empty. The Windows-form
-#                              directory the consumer has already staged for
-#                              the host file server to serve. Set -> the
-#                              bridge serves this directory and the substrate
-#                              stages nothing itself (the consumer owns the
-#                              "which artifact" knowledge). Empty -> the
-#                              bridge falls back to staging the directory
-#                              itself (the substrate's retained-fork path).
-#                              Requires CA_NEEDS_HOST_FILE_SERVER=1, and must
-#                              be supplied together with
-#                              CA_HOST_FILE_SERVER_VERSION.
+#   CA_HOST_FILE_SERVER_DIR    The Windows-form directory the consumer has
+#                              already staged for the host file server to
+#                              serve. The consumer owns the "which artifact"
+#                              knowledge: it pre-stages the directory and
+#                              resolves the version, then declares both here,
+#                              and the bridge serves what it was given (it
+#                              stages nothing itself). Supply it together with
+#                              CA_HOST_FILE_SERVER_VERSION whenever
+#                              CA_NEEDS_HOST_FILE_SERVER=1; requires
+#                              CA_NEEDS_HOST_FILE_SERVER=1.
 #   CA_HOST_FILE_SERVER_VERSION  Optional, default empty. The artifact version
 #                              the consumer resolved for the staged directory,
 #                              threaded to the consumer's per-domain fragment
@@ -154,15 +153,14 @@ read -r -a extra_vaults_arr <<<"${extra_vaults_raw//,/ }" || true
 consumer_root="${CA_CONSUMER_ROOT:-}"
 
 # ---------------------------------------------------------------------------
-# Host file server staging inputs. When a consumer pre-stages the directory
-# the file server serves (the runner owner resolves its tarball version and
-# caches it), it declares the directory and that version here. Both or
-# neither: a directory with no version would serve a file the roles cannot
-# name, and a version with no directory has nothing to serve. They only make
-# sense when the file server is enabled, so a stray pair without
-# CA_NEEDS_HOST_FILE_SERVER=1 is a wiring error caught here. Empty/unset keeps
-# the substrate's own staging path (the retained fork resolves the tarball
-# itself).
+# Host file server staging inputs. The consumer pre-stages the directory the
+# file server serves and resolves its artifact version (the runner owner
+# caches its tarball), then declares both here. Both or neither: a directory
+# with no version would serve a file the roles cannot name, and a version with
+# no directory has nothing to serve. They only make sense when the file server
+# is enabled, so a stray pair without CA_NEEDS_HOST_FILE_SERVER=1 is a wiring
+# error caught here; conversely the serve-only staging helper requires the
+# directory whenever the file server is enabled (it stages nothing itself).
 # ---------------------------------------------------------------------------
 host_file_server_dir="${CA_HOST_FILE_SERVER_DIR:-}"
 host_file_server_version="${CA_HOST_FILE_SERVER_VERSION:-}"

@@ -12,23 +12,20 @@
 # steps. The serve-only path is one pwsh.exe round-trip (start the
 # HttpListener, long-lived and backgrounded).
 #
-# Inputs:
-#   --provisioner-config <path>  Always: drives host-IP / target-VM-IP
-#                                resolution for the listener bind.
-#   --listener-log <path>        Always: the listener's stdout is redirected
-#                                here so this helper can grep BASE_URL+PID.
-#   --staging-dir <dir>          The Windows-form directory to serve. Supplied
-#   --runner-version <ver>       with the artifact version by a consumer that
-#                                pre-staged the directory. Both together.
-#   --github-token <value>       Required only on the retained-fork fallback
-#                                (no --staging-dir): the substrate then
-#                                resolves the runner version and caches the
-#                                tarball itself. Removed with the runner fork
-#                                in Step 4.4.
+# Inputs (all required - the consumer always pre-stages the directory and
+# resolves its artifact version, then hands both here; this helper only binds
+# a listener over what it was given):
+#   --provisioner-config <path>  Drives host-IP / target-VM-IP resolution for
+#                                the listener bind.
+#   --listener-log <path>        The listener's stdout is redirected here so
+#                                this helper can grep BASE_URL+PID.
+#   --staging-dir <dir>          The Windows-form directory to serve.
+#   --runner-version <ver>       The artifact version that directory holds,
+#                                echoed back on the contract below.
 #
 # Output contract (stdout, in the order emitted):
 #
-#   RUNNER_VERSION=<x.y.z>          (echoed from --runner-version, or resolved)
+#   RUNNER_VERSION=<x.y.z>          (echoed from --runner-version)
 #   BASE_URL=http://<host-ip>:<port>
 #   PID=<pwsh-process-id>
 #
@@ -53,30 +50,19 @@ source "${BASH_SOURCE[0]%/*}/../_die-on-unknown-flag.sh"
 source "${BASH_SOURCE[0]%/*}/../imports/_to-windows-path.sh"
 
 provisioner_path=""
-token=""
-token_set=0
 listener_log=""
 staging_dir=""
 runner_version=""
 
 usage() {
     echo "usage: _stage-host-fileserver.sh --provisioner-config <path>" \
-         "--listener-log <path>" \
-         "[--staging-dir <dir> --runner-version <ver>] [--github-token <value>]" >&2
+         "--listener-log <path> --staging-dir <dir> --runner-version <ver>" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --provisioner-config)
             provisioner_path="${2:-}"
-            shift 2 || true
-            ;;
-        --github-token)
-            # ${2-} (no colon) so a literal empty value reaches the
-            # non-empty check below rather than being silently dropped
-            # by parameter expansion's default branch.
-            token="${2-}"
-            token_set=1
             shift 2 || true
             ;;
         --listener-log)
@@ -97,7 +83,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${provisioner_path}" || -z "${listener_log}" ]]; then
+if [[ -z "${provisioner_path}" || -z "${listener_log}" \
+   || -z "${staging_dir}" || -z "${runner_version}" ]]; then
     usage
     exit 2
 fi
@@ -105,88 +92,25 @@ if [[ ! -f "${provisioner_path}" ]]; then
     log_err "provisioner config not found: ${provisioner_path}"
     exit 1
 fi
-# The staged directory and its version are a pair, supplied together by a
-# consumer that pre-staged the artifact.
-if [[ -n "${staging_dir}" && -z "${runner_version}" ]] \
-   || [[ -z "${staging_dir}" && -n "${runner_version}" ]]; then
-    log_err "--staging-dir and --runner-version must be supplied together"
-    exit 2
-fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Why this helper narrates each step via log_info (from imports/_log.sh): its
-# stdout is the KEY=value contract the caller captures by command
-# substitution, and each step is a silent pwsh.exe round-trip - the
-# tarball cache miss in particular downloads ~100MB with no output - so
-# the steps announce themselves on stderr instead, where they neither
-# corrupt that contract nor leave the operator staring at a stall.
+# Why this helper narrates via log_info (from imports/_log.sh): its stdout is
+# the KEY=value contract the caller captures by command substitution, so the
+# steps announce themselves on stderr instead - the listener start is a silent
+# pwsh.exe round-trip, and a marker there neither corrupts that contract nor
+# leaves the operator staring at a stall.
 
 # ---------------------------------------------------------------------------
-# 1-2. Acquire the directory to serve and its artifact version.
-#
-#   Consumer-staged path: --staging-dir / --runner-version were supplied, so
-#   the consumer already resolved the version and cached the artifact. Nothing
-#   to do here but serve what was handed over - the file server knows nothing
-#   about runner tarballs.
-#
-#   Retained-fork fallback (no --staging-dir): the substrate resolves the
-#   runner version and caches the tarball itself via the ../ runner-tarball
-#   resolvers. This is the pre-extraction behaviour the Common-Ansible runner
-#   fork still relies on; it (and the two ../ .ps1 references) leaves when the
-#   runner fork is removed in Step 4.4.
+# 1. Serve the consumer-staged directory. The consumer already resolved the
+#    artifact version and cached its files, so there is nothing to fetch here -
+#    the file server serves whatever directory it was handed and knows nothing
+#    about runner tarballs (the same reuse a later JDK / .NET consumer relies on).
 # ---------------------------------------------------------------------------
-if [[ -z "${staging_dir}" ]]; then
-    if [[ "${token_set}" -ne 1 || -z "${token}" ]]; then
-        log_err "--github-token is required when --staging-dir is not supplied"
-        exit 2
-    fi
-
-    log_info "Resolving latest actions/runner version via GitHub API ..."
-    resolve_ps1="$(_to_windows_path "${script_dir}/../_resolve-runner-version.ps1")"
-    # Capture pwsh.exe's stderr - where _resolve-runner-version.ps1 writes its
-    # error, e.g. "401 - check the GH_TOKEN scopes" for a bad/expired token -
-    # to a temp file instead of discarding it, so a failure surfaces the cause
-    # rather than dying silently under `set -o pipefail`. stdout stays the
-    # clean version string; the captured stderr is printed only on failure.
-    resolve_err="$(mktemp)"
-    if runner_version="$(pwsh.exe -NoProfile -NoLogo \
-            -File "${resolve_ps1}" \
-            -Token "${token}" 2>"${resolve_err}" \
-            | tr -d '\r' | tail -n1)" && [[ -n "${runner_version}" ]]; then
-        rm -f "${resolve_err}"
-    else
-        log_err "failed to resolve runner version (GitHub API error below):"
-        while IFS= read -r line; do
-            [[ -n "${line}" ]] && log_err "  ${line}"
-        done < "${resolve_err}"
-        rm -f "${resolve_err}"
-        exit 1
-    fi
-
-    log_info "Ensuring runner tarball ${runner_version} is cached (downloads ~100MB on a cache miss) ..."
-    ensure_ps1="$(_to_windows_path "${script_dir}/../_ensure-runner-tarball.ps1")"
-    tar_path="$(pwsh.exe -NoProfile -NoLogo \
-        -File "${ensure_ps1}" \
-        -Version "${runner_version}" 2>/dev/null \
-        | tr -d '\r' | tail -n1)"
-    if [[ -z "${tar_path}" ]]; then
-        log_err "failed to stage runner tarball"
-        exit 1
-    fi
-    # tar_path is a Windows path (Join-Path output, e.g.
-    # C:\Users\...\runner-cache\actions-...tar.gz). bash `dirname` keys on '/'
-    # and would return '.' for a backslash path, so strip the last component
-    # directly - the result stays in Windows form, which is what the
-    # listener's -StagingDir argument needs.
-    staging_dir="${tar_path%[\\/]*}"
-    log_info "Runner tarball ready: ${tar_path}"
-else
-    log_info "Serving consumer-staged directory ${staging_dir} (runner ${runner_version}) ..."
-fi
+log_info "Serving consumer-staged directory ${staging_dir} (runner ${runner_version}) ..."
 
 # ---------------------------------------------------------------------------
-# 3. Decide where to bind the listener.
+# 2. Decide where to bind the listener.
 #
 #    Two paths, picked by the caller's ROUTER_IP environment variable:
 #
@@ -226,7 +150,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Start the listener in the background and poll its stdout for
+# 3. Start the listener in the background and poll its stdout for
 #    BASE_URL + PID. The listener prints both within milliseconds of
 #    Listener.Start() returning; anything slower than ~10s is a real
 #    failure (a missed firewall rule, a stale URL ACL, an exit code
@@ -264,7 +188,7 @@ if [[ -z "${host_base_url}" || -z "${host_fs_pid}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Emit the three contract lines for the bridge to parse. printf
+# 4. Emit the three contract lines for the bridge to parse. printf
 #    so there is no trailing whitespace and the keys match the docs.
 # ---------------------------------------------------------------------------
 printf 'RUNNER_VERSION=%s\n' "${runner_version}"

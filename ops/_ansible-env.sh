@@ -13,11 +13,11 @@
 # cfg, falling back to compiled-in defaults. The fallback flips
 # host_key_checking from False to True (breaking SSH to fresh VMs at
 # the first connection), drops interpreter_python=auto_silent (extra
-# per-host warnings), and resets roles_path to its defaults (so
-# `roles: [{ role: runner_binary }]` in playbooks/register-runners.yml
-# fails with "role 'runner_binary' was not found" because Ansible only looks
-# under playbooks/roles/, ~/.ansible/roles/, etc. - never under the
-# repo-root roles/ directory where this project keeps them).
+# per-host warnings), and resets roles_path to its defaults (so a play
+# that lists a repo-local role by short name fails with "role '<name>'
+# was not found" because Ansible only looks under playbooks/roles/,
+# ~/.ansible/roles/, etc. - never under the repo-root roles/ directory
+# where this project keeps them).
 #
 # Three things to know about the workaround:
 #
@@ -65,8 +65,8 @@
 # own), that consumer's roles/ leads the search path so its own roles
 # resolve by short name, with the substrate roles/ appended so reusable
 # substrate roles still resolve. consumer_root unset - the substrate's own
-# flows (the retained runner fork, bootstrap, the bats suite) - keeps the
-# substrate roles/ alone, unchanged. The `:-` guard tolerates callers
+# flows (bootstrap, the bats suite) - keeps the substrate roles/ alone,
+# unchanged. The `:-` guard tolerates callers
 # (bootstrap) that never set the var.
 if [[ -n "${consumer_root:-}" ]]; then
     export ANSIBLE_ROLES_PATH="${consumer_root}/roles:${repo_root}/roles"

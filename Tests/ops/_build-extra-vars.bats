@@ -13,6 +13,15 @@
 # which helper, which cross-flag combinations are rejected, and how
 # the fragments merge into the canonical extra-vars JSON the bridge
 # consumes.
+#
+# The substrate no longer ships its own runners fragment - the
+# GitHubRunners arm resolves _build-extra-vars-runners.sh from
+# <consumer-root>/ops - so every test that dispatches through that arm
+# supplies --consumer-root pointing at a stub fragment (CONSUMER below).
+# The stub emits the same key shape the real fragment would, derived from
+# the flags the composer forwards, so what is tested here is the
+# composer's dispatch + merge, not the fragment's internals (those live
+# in the consumer repo).
 # Run with: bats Tests/ops/_build-extra-vars.bats
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops" && pwd)/_build-extra-vars.sh"
@@ -29,6 +38,35 @@ setup() {
     # called. Tests that need richer documents overwrite these.
     printf '%s' '[{"vmName":"a","ipAddress":"10.0.0.1"}]' > "${PROV}"
     printf '%s' '[{"vmName":"a","runnerName":"r1"}]'      > "${RUNNERS}"
+
+    # Consumer-owned runners fragment. The GitHubRunners arm resolves it
+    # from <consumer-root>/ops; this stub mirrors the real fragment's
+    # output (github_runners_config + github_token always, plus the
+    # file-server pair when present) from the flags the composer forwards,
+    # so the dispatch + merge is what gets exercised.
+    CONSUMER="${TEST_TMP}/runner-consumer"
+    mkdir -p "${CONSUMER}/ops"
+    cat >"${CONSUMER}/ops/_build-extra-vars-runners.sh" <<'STUB'
+#!/usr/bin/env bash
+cfg=""; token=""; base_url=""; version=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --runners-config) cfg="$2";      shift 2 ;;
+        --github-token)   token="$2";    shift 2 ;;
+        --host-base-url)  base_url="$2"; shift 2 ;;
+        --runner-version) version="$2";  shift 2 ;;
+        *) shift ;;
+    esac
+done
+jq -n \
+   --argjson cfg "$(cat "${cfg}")" \
+   --arg token "${token}" \
+   --arg base_url "${base_url}" \
+   --arg version "${version}" \
+   '{github_runners_config: $cfg, github_token: $token}
+    + (if $base_url != "" then {host_file_server_base_url: $base_url, runner_version: $version} else {} end)'
+STUB
+    chmod +x "${CONSUMER}/ops/_build-extra-vars-runners.sh"
 }
 
 teardown() {
@@ -73,7 +111,8 @@ teardown() {
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --vault-config "GitHubRunners=${RUNNERS}" \
-        --github-token "ghp_example"
+        --github-token "ghp_example" \
+        --consumer-root "${CONSUMER}"
     [ "${status}" -eq 0 ]
     [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config" ]
 
@@ -121,7 +160,8 @@ EOF
         --vault-config "GitHubRunners=${RUNNERS}" \
         --github-token "ghp_example" \
         --host-base-url "http://10.10.0.1:8745" \
-        --runner-version "2.999.0"
+        --runner-version "2.999.0" \
+        --consumer-root "${CONSUMER}"
     [ "${status}" -eq 0 ]
     [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,host_file_server_base_url,runner_version,vm_provisioner_config" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_runners_config[0].runnerName')" = "r1" ]
@@ -138,7 +178,8 @@ EOF
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --vault-config "GitHubRunners=${RUNNERS}" \
-        --github-token "ghp_example"
+        --github-token "ghp_example" \
+        --consumer-root "${CONSUMER}"
     [ "${status}" -eq 0 ]
     [ "$(printf '%s' "${output}" | jq -r 'keys | sort | join(",")')" = "github_runners_config,github_token,vm_provisioner_config" ]
     [ "$(printf '%s' "${output}" | jq -r '.github_token')" = "ghp_example" ]

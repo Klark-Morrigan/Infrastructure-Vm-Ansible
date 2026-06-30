@@ -1,20 +1,17 @@
 #!/usr/bin/env bats
 # Tests for ops/virtual-machines/_stage-host-fileserver.sh - the host
-# file server branch of the bridge. Two paths:
-#   - Consumer-staged (--staging-dir / --runner-version supplied): the
-#     helper only starts the listener over the given directory and echoes
-#     the version - no resolve, no download.
-#   - Retained-fork fallback (no --staging-dir, --github-token required):
-#     the substrate resolves the runner version and caches the tarball
-#     itself via the two ../ .ps1 resolvers. Removed in Step 4.4.
-# Either way it emits three KEY=value lines (RUNNER_VERSION / BASE_URL /
-# PID) on stdout for the bridge to parse.
+# file server branch of the bridge. Serve-only: the consumer always
+# supplies --staging-dir / --runner-version (it pre-staged the directory
+# and resolved the version), so the helper just starts the listener over
+# the given directory and echoes the version back - it resolves nothing
+# and downloads nothing. It emits three KEY=value lines (RUNNER_VERSION /
+# BASE_URL / PID) on stdout for the bridge to parse.
 #
 # Scope here is the helper's orchestration only: argument validation,
-# pwsh.exe dispatch order, BASE_URL/PID polling, and stdout shape.
-# Each PowerShell helper has its own Pester coverage; the pwsh.exe
-# stub on PATH discriminates by `-File <basename>` to mimic each
-# helper's contract output.
+# pwsh.exe dispatch (bind path + listener start), BASE_URL/PID polling,
+# and stdout shape. Each PowerShell helper has its own Pester coverage;
+# the pwsh.exe stub on PATH discriminates by `-File <basename>` /
+# `-Command` to mimic each helper's contract output.
 # Run with: bats Tests/ops/_stage-host-fileserver.bats
 
 SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../../ops/virtual-machines" && pwd)/_stage-host-fileserver.sh"
@@ -26,14 +23,18 @@ setup() {
     _bats_init_temp stageHostFs
     PROV="${TEST_TMP}/provisioner.json"
     LISTENER_LOG="${TEST_TMP}/fileserver.out"
+    # The consumer-staged directory and its version, supplied on every call.
+    STAGING_DIR='C:\Users\Test\runner-cache'
+    STAGING_VERSION="3.1.4"
 
     # Minimal valid provisioner config: one VM with an ipAddress so
     # the bind-IP derivation step finds something to use. Tests that
     # need a different shape overwrite this.
     printf '%s' '[{"vmName":"a","ipAddress":"10.10.0.50"}]' > "${PROV}"
 
-    # pwsh.exe stub on PATH. Each helper's -File argument selects the
-    # branch and produces the contract output.
+    # pwsh.exe stub on PATH. The serve-only helper dispatches only the
+    # listener start (-File _start-host-file-server.ps1) and, on the NAT
+    # topology, Get-VmSwitchHostIp (-Command).
     STUBS="${TEST_TMP}/stubs"
     mkdir -p "${STUBS}"
     # Per-run log capturing every pwsh.exe argv. Lets tests assert
@@ -75,20 +76,10 @@ if [[ -n "${cmd}" ]]; then
             ;;
     esac
 fi
-# The bridge now hands pwsh.exe a Windows path (wslpath -w), so strip the
+# The bridge hands pwsh.exe a Windows path (wslpath -w), so strip the
 # last path component on either separator rather than using basename, which
 # keys on '/' alone and would leave a backslash path intact.
 case "${file##*[\\/]}" in
-    _resolve-runner-version.ps1)
-        if [[ -n "${PWSH_STUB_VERSION_EXIT:-}" && "${PWSH_STUB_VERSION_EXIT}" != "0" ]]; then
-            echo "${PWSH_STUB_VERSION_STDERR:-Resolve-RunnerVersion: GitHub returned 401 - check the GH_TOKEN scopes.}" >&2
-            exit "${PWSH_STUB_VERSION_EXIT}"
-        fi
-        echo "${PWSH_STUB_VERSION:-2.999.0}"
-        ;;
-    _ensure-runner-tarball.ps1)
-        echo "${PWSH_STUB_TAR:-C:\\Users\\Test\\AppData\\Local\\Temp\\runner-cache\\actions-runner-linux-x64-2.999.0.tar.gz}"
-        ;;
     _start-host-file-server.ps1)
         if [[ -n "${PWSH_STUB_START_EXIT:-}" && "${PWSH_STUB_START_EXIT}" != "0" ]]; then
             echo "stub-start-failure" >&2
@@ -131,10 +122,22 @@ teardown() {
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"usage:"* ]]
 
+    # provisioner only - listener-log / staging-dir / runner-version absent.
     run "${BASH_BIN}" "${SCRIPT}" --provisioner-config "${PROV}"
     [ "${status}" -eq 2 ]
 
-    run "${BASH_BIN}" "${SCRIPT}" --provisioner-config "${PROV}" --github-token "x"
+    # --runner-version missing (the staged directory has no declared version).
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}"
+    [ "${status}" -eq 2 ]
+
+    # --staging-dir missing (no directory to serve).
+    run "${BASH_BIN}" "${SCRIPT}" \
+        --provisioner-config "${PROV}" \
+        --listener-log "${LISTENER_LOG}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -eq 2 ]
 }
 
@@ -144,45 +147,18 @@ teardown() {
     [[ "${output}" == *"unknown argument"* ]]
 }
 
-@test "fallback path: fails when --github-token is empty and no directory was staged" {
-    # Without --staging-dir the helper must resolve the version itself, which
-    # needs a token; an empty one on this path is rejected up front.
-    run "${BASH_BIN}" "${SCRIPT}" \
-        --provisioner-config "${PROV}" \
-        --github-token "" \
-        --listener-log "${LISTENER_LOG}"
-    [ "${status}" -eq 2 ]
-    [[ "${output}" == *"github-token"* ]]
-    [[ "${output}" == *"--staging-dir is not supplied"* ]]
-}
-
-@test "rejects --staging-dir without --runner-version (and vice versa)" {
-    run "${BASH_BIN}" "${SCRIPT}" \
-        --provisioner-config "${PROV}" \
-        --listener-log "${LISTENER_LOG}" \
-        --staging-dir 'C:\Users\Test\runner-cache'
-    [ "${status}" -eq 2 ]
-    [[ "${output}" == *"must be supplied together"* ]]
-
-    run "${BASH_BIN}" "${SCRIPT}" \
-        --provisioner-config "${PROV}" \
-        --listener-log "${LISTENER_LOG}" \
-        --runner-version "2.999.0"
-    [ "${status}" -eq 2 ]
-    [[ "${output}" == *"must be supplied together"* ]]
-}
-
-@test "consumer-staged path: serves the given directory and echoes the version without resolving" {
-    # With the directory and version supplied, the helper must NOT invoke the
-    # runner-tarball resolvers - it only starts the listener over the staged
-    # directory and echoes the supplied version. No token is needed.
+@test "serves the given directory and echoes the supplied version without resolving" {
+    # With the directory and version supplied, the helper only starts the
+    # listener over the staged directory and echoes the supplied version.
+    # It must not resolve a version or download a tarball - the consumer
+    # already did both - and needs no token.
     export PWSH_STUB_BASE_URL="http://10.10.0.1:8745"
     export PWSH_STUB_FS_PID="55501"
 
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
         --listener-log "${LISTENER_LOG}" \
-        --staging-dir 'C:\Users\Test\runner-cache' \
+        --staging-dir "${STAGING_DIR}" \
         --runner-version "3.1.4"
     [ "${status}" -eq 0 ]
 
@@ -190,18 +166,18 @@ teardown() {
     [[ "${output}" == *"BASE_URL=http://10.10.0.1:8745"* ]]
     [[ "${output}" == *"PID=55501"* ]]
 
-    # The resolve/ensure round-trips must not have run.
+    # Only the listener start was dispatched - no resolver / tarball helper.
+    grep -q '_start-host-file-server.ps1' "${PWSH_INVOCATIONS_LOG}"
     ! grep -q '_resolve-runner-version.ps1' "${PWSH_INVOCATIONS_LOG}"
     ! grep -q '_ensure-runner-tarball.ps1'   "${PWSH_INVOCATIONS_LOG}"
-    # Only the listener start was dispatched.
-    grep -q '_start-host-file-server.ps1' "${PWSH_INVOCATIONS_LOG}"
 }
 
 @test "fails when provisioner config file is missing" {
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${TEST_TMP}/does-not-exist.json" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"provisioner config not found"* ]]
 }
@@ -212,42 +188,11 @@ teardown() {
     printf '%s' '[]' > "${PROV}"
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"no VMs with ipAddress"* ]]
-}
-
-@test "happy path emits the three contract lines on stdout" {
-    export PWSH_STUB_VERSION="2.999.0"
-    export PWSH_STUB_BASE_URL="http://10.10.0.1:8745"
-    export PWSH_STUB_FS_PID="78901"
-
-    run "${BASH_BIN}" "${SCRIPT}" \
-        --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
-    [ "${status}" -eq 0 ]
-
-    [[ "${output}" == *"RUNNER_VERSION=2.999.0"* ]]
-    [[ "${output}" == *"BASE_URL=http://10.10.0.1:8745"* ]]
-    [[ "${output}" == *"PID=78901"* ]]
-}
-
-@test "runner version resolution failure surfaces the resolver's stderr and aborts" {
-    # A bad/expired token makes _resolve-runner-version.ps1 exit non-zero with
-    # its 401 message on stderr. The helper must surface that message (not die
-    # silently under pipefail) and abort before any tarball / listener work.
-    export PWSH_STUB_VERSION_EXIT=1
-    export PWSH_STUB_VERSION_STDERR="Resolve-RunnerVersion: GitHub returned 401 - check the GH_TOKEN scopes."
-
-    run "${BASH_BIN}" "${SCRIPT}" \
-        --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
-    [ "${status}" -ne 0 ]
-    [[ "${output}" == *"failed to resolve runner version"* ]]
-    [[ "${output}" == *"401 - check the GH_TOKEN scopes"* ]]
 }
 
 @test "ROUTER_IP unset: passes -TargetVmIp anchored on the first workload" {
@@ -259,8 +204,9 @@ teardown() {
 
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -eq 0 ]
 
     start_args="$(grep -- '-File' "${PWSH_INVOCATIONS_LOG}" | grep _start-host-file-server.ps1)"
@@ -280,8 +226,9 @@ teardown() {
 
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -eq 0 ]
 
     # Get-VmSwitchHostIp was invoked with the router IP.
@@ -306,8 +253,9 @@ teardown() {
 
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"Get-VmSwitchHostIp returned empty"* ]]
 }
@@ -317,8 +265,9 @@ teardown() {
 
     run "${BASH_BIN}" "${SCRIPT}" \
         --provisioner-config "${PROV}" \
-        --github-token "ghp_x" \
-        --listener-log "${LISTENER_LOG}"
+        --listener-log "${LISTENER_LOG}" \
+        --staging-dir "${STAGING_DIR}" \
+        --runner-version "${STAGING_VERSION}"
     [ "${status}" -ne 0 ]
     # The helper appends the captured listener log to stderr so the
     # bridge surfaces actionable detail rather than a bare exit code.
