@@ -413,17 +413,26 @@ Common-Ansible until 4.4.
 The runner config secret is **not** relocated as an Ansible wrapper. Both
 the Ansible flow and GitHubRunners' existing PowerShell flow read the same
 `GitHubRunnersConfig-<suffix>` secret from one local SecretStore vault,
-written by the PowerShell-impl `hyper-v/ubuntu/setup-secrets.ps1`. The
+written by the shared `hyper-v/ubuntu/shared/setup-secrets.ps1`. The
 Common-Ansible fork's `setup-runners-secrets.*` only existed to reach that
 writer across repos; co-located in GitHubRunners it would be a redundant
 pass-through, so the Ansible flow points operators at the shared writer
 directly and no Ansible secrets entry point is added.
 
-Because both impls now coexist in GitHubRunners (and in Infrastructure-Vm-
-Users), the tests are split by impl to mirror the production directory
-layout: the PowerShell tests live under `Tests/hyper-v/`, the Ansible tests
-under `Tests/{ops,molecule,ansible}`. The shared secret store is set up by
-the PowerShell-impl writer and read by both.
+Because both impls now coexist in GitHubRunners, the repo is organised into
+self-contained per-impl slices under `hyper-v/ubuntu/`: `shared/` (the vault
+setup both impls read), `PowerShell/` (the orchestrators), and `Ansible/`
+(roles, playbooks, ops) - each carrying its own `Tests/`. Nesting the Ansible
+slice keeps the substrate consumption working unchanged (the wrappers point
+`CA_CONSUMER_ROOT` at the `Ansible/` slice, so the bridge stays agnostic), but
+two seams need a shim: the `ops/imports/` sibling-resolvers walk three extra
+levels, and a root `ansible.cfg` (`roles_path -> hyper-v/ubuntu/Ansible/roles`)
+keeps the fleet ansible-lint gate - which only activates on root-level
+`playbooks/`/`roles/`/`ansible.cfg` - linting the nested content. The shim is
+lint-only; the runtime bridge uses the substrate's own `ansible.cfg`.
+Infrastructure-Vm-Users is organised into the same self-contained slices
+(`shared`/`PowerShell`/`Ansible`); its Infrastructure-E2E wiring is re-pointed
+to the moved `PowerShell/` and `Ansible/ops/` flows accordingly.
 
 Decouple the host file server from the runner-tarball resolvers as part
 of this move. `ops/virtual-machines/_stage-host-fileserver.sh` stays
